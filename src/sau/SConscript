@@ -1,0 +1,4 @@
+Import("*")
+
+Source("command.cc")
+GTest("command.test", "command.test.cc", "command.cc")
