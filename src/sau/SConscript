@@ -1,4 +1,7 @@
 Import("*")
 
+Source("address_generator.cc")
 Source("command.cc")
+GTest("address_generator.test", "address_generator.test.cc",
+      "address_generator.cc", "command.cc")
 GTest("command.test", "command.test.cc", "command.cc")
