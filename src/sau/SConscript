@@ -2,6 +2,8 @@ Import("*")
 
 Source("address_generator.cc")
 Source("command.cc")
+Source("token_pipeline.cc")
 GTest("address_generator.test", "address_generator.test.cc",
       "address_generator.cc", "command.cc")
 GTest("command.test", "command.test.cc", "command.cc")
+GTest("token_pipeline.test", "token_pipeline.test.cc", "token_pipeline.cc")
