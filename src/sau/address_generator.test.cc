@@ -20,9 +20,9 @@ makeCommand(uint32_t flowLoops = 1, uint32_t instructionLoops = 1)
         1,
         Operation::Gemm,
         Precision::Int8,
-        {0x1000, 4, 16, 0x100, 0x1000},
-        {0x2000, 4, 16, 0x100, 0x1000},
-        {0x3000, 4, 16, 0, 0x1000},
+        {0x1000, 4, 32, 0x100, 0x1000},
+        {0x2000, 4, 32, 0x100, 0x1000},
+        {0x3000, 4, 32, 0, 0x1000},
         flowLoops,
         instructionLoops,
         4 * flowLoops * instructionLoops,
@@ -48,13 +48,13 @@ TEST(AddressGenerator, LoadsBThenStreamsA)
     EXPECT_EQ(generator.totalReadBeats(), 8);
     EXPECT_THAT(collect(generator), ElementsAre(
         Beat{StreamKind::OperandB, 0x2000, 0, false},
-        Beat{StreamKind::OperandB, 0x2010, 1, false},
-        Beat{StreamKind::OperandB, 0x2020, 2, false},
-        Beat{StreamKind::OperandB, 0x2030, 3, true},
+        Beat{StreamKind::OperandB, 0x2020, 1, false},
+        Beat{StreamKind::OperandB, 0x2040, 2, false},
+        Beat{StreamKind::OperandB, 0x2060, 3, true},
         Beat{StreamKind::OperandA, 0x1000, 0, false},
-        Beat{StreamKind::OperandA, 0x1010, 1, false},
-        Beat{StreamKind::OperandA, 0x1020, 2, false},
-        Beat{StreamKind::OperandA, 0x1030, 3, true}));
+        Beat{StreamKind::OperandA, 0x1020, 1, false},
+        Beat{StreamKind::OperandA, 0x1040, 2, false},
+        Beat{StreamKind::OperandA, 0x1060, 3, true}));
     EXPECT_TRUE(generator.empty());
 }
 
@@ -66,21 +66,21 @@ TEST(AddressGenerator, RepeatsBThenAForEachFlow)
     EXPECT_EQ(generator.totalReadBeats(), 16);
     EXPECT_THAT(collect(generator), ElementsAre(
         Beat{StreamKind::OperandB, 0x2000, 0, false},
-        Beat{StreamKind::OperandB, 0x2010, 1, false},
-        Beat{StreamKind::OperandB, 0x2020, 2, false},
-        Beat{StreamKind::OperandB, 0x2030, 3, true},
+        Beat{StreamKind::OperandB, 0x2020, 1, false},
+        Beat{StreamKind::OperandB, 0x2040, 2, false},
+        Beat{StreamKind::OperandB, 0x2060, 3, true},
         Beat{StreamKind::OperandA, 0x1000, 0, false},
-        Beat{StreamKind::OperandA, 0x1010, 1, false},
-        Beat{StreamKind::OperandA, 0x1020, 2, false},
-        Beat{StreamKind::OperandA, 0x1030, 3, true},
+        Beat{StreamKind::OperandA, 0x1020, 1, false},
+        Beat{StreamKind::OperandA, 0x1040, 2, false},
+        Beat{StreamKind::OperandA, 0x1060, 3, true},
         Beat{StreamKind::OperandB, 0x2100, 0, false},
-        Beat{StreamKind::OperandB, 0x2110, 1, false},
-        Beat{StreamKind::OperandB, 0x2120, 2, false},
-        Beat{StreamKind::OperandB, 0x2130, 3, true},
+        Beat{StreamKind::OperandB, 0x2120, 1, false},
+        Beat{StreamKind::OperandB, 0x2140, 2, false},
+        Beat{StreamKind::OperandB, 0x2160, 3, true},
         Beat{StreamKind::OperandA, 0x1100, 0, false},
-        Beat{StreamKind::OperandA, 0x1110, 1, false},
-        Beat{StreamKind::OperandA, 0x1120, 2, false},
-        Beat{StreamKind::OperandA, 0x1130, 3, true}));
+        Beat{StreamKind::OperandA, 0x1120, 1, false},
+        Beat{StreamKind::OperandA, 0x1140, 2, false},
+        Beat{StreamKind::OperandA, 0x1160, 3, true}));
 }
 
 TEST(AddressGenerator, AppliesInstructionFlowAndBeatStrides)

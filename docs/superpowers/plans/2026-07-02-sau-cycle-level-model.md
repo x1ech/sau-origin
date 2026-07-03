@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and RTL-calibrate the first usable gem5 SAU cycle-level model for int8 GEMM, with real 128-bit timing memory traffic, retry/backpressure, token-pipeline timing, trace output, and explanatory statistics.
+**Goal:** Build and RTL-calibrate the first usable gem5 SAU cycle-level model for int8 GEMM, with real 256-bit timing memory traffic, retry/backpressure, token-pipeline timing, trace output, and explanatory statistics.
 
-**Architecture:** Implement a `ClockedObject` whose scheduler moves metadata tokens through operand loading, systolic-array execution, draining, and writeback. A custom `RequestPort` issues each 128-bit read or write beat at an explicit SAU clock edge; fixed-latency RTL and gem5 runs emit the same CSV event schema for exact differential comparison.
+**Architecture:** Implement a `ClockedObject` whose scheduler moves metadata tokens through operand loading, systolic-array execution, draining, and writeback. A custom `RequestPort` issues each 256-bit read or write beat at an explicit SAU clock edge; fixed-latency RTL and gem5 runs emit the same CSV event schema for exact differential comparison.
 
 **Tech Stack:** C++17, gem5 SimObject/Python configuration, gem5 timing ports and event queue, gem5 statistics, GoogleTest, Python 3 `unittest`, SystemVerilog/VCS RTL regression.
 
@@ -55,7 +55,7 @@ unrelated files.
 - Create `src/sau/command.hh`, `src/sau/command.cc`
   - Command construction and admission validation.
 - Create `src/sau/address_generator.hh`, `src/sau/address_generator.cc`
-  - Ordered 128-bit beat generation.
+  - Ordered 256-bit beat generation.
 - Create `src/sau/token_pipeline.hh`, `src/sau/token_pipeline.cc`
   - Capacity-limited token buffers and array fill/II/drain behavior.
 - Create `src/sau/memory_port.hh`, `src/sau/memory_port.cc`
@@ -107,7 +107,7 @@ struct StreamDesc
 {
     Addr base = 0;
     uint32_t beats = 0;
-    uint32_t strideBytes = 16;
+    uint32_t strideBytes = 32;
     uint32_t flowStrideBytes = 0;
     uint32_t instructionStrideBytes = 0;
 };
@@ -397,21 +397,21 @@ Cover one valid command and each rejected condition:
 TEST(SauCommand, AcceptsAlignedInt8Gemm)
 {
     auto cmd = makeCommand();
-    EXPECT_NO_THROW(validateCommand(cmd, 16));
+    EXPECT_NO_THROW(validateCommand(cmd, 32));
 }
 
 TEST(SauCommand, RejectsZeroBeatStream)
 {
     auto cmd = makeCommand();
     cmd.operandA.beats = 0;
-    EXPECT_THROW(validateCommand(cmd, 16), std::invalid_argument);
+    EXPECT_THROW(validateCommand(cmd, 32), std::invalid_argument);
 }
 
 TEST(SauCommand, RejectsMisalignedAddress)
 {
     auto cmd = makeCommand();
     cmd.output.base = 0x3004;
-    EXPECT_THROW(validateCommand(cmd, 16), std::invalid_argument);
+    EXPECT_THROW(validateCommand(cmd, 32), std::invalid_argument);
 }
 
 TEST(SauCommand, RejectsInconsistentWorkItems)
@@ -419,14 +419,14 @@ TEST(SauCommand, RejectsInconsistentWorkItems)
     auto cmd = makeCommand();
     cmd.workItems = cmd.operandA.beats * cmd.flowLoops *
                     cmd.instructionLoops - 1;
-    EXPECT_THROW(validateCommand(cmd, 16), std::invalid_argument);
+    EXPECT_THROW(validateCommand(cmd, 32), std::invalid_argument);
 }
 ```
 
 `makeCommand()` uses
-A=`{0x1000, 4, 16, 0x100, 0x1000}`,
-B=`{0x2000, 4, 16, 0x100, 0x1000}`,
-output=`{0x3000, 4, 16, 0, 0x1000}`, one flow, one instruction, and four
+A=`{0x1000, 4, 32, 0x100, 0x1000}`,
+B=`{0x2000, 4, 32, 0x100, 0x1000}`,
+output=`{0x3000, 4, 32, 0, 0x1000}`, one flow, one instruction, and four
 work items.
 
 - [ ] **Step 3: Verify the test fails to compile**
@@ -449,7 +449,7 @@ void validateCommand(const SauCommand &command, unsigned beatBytes);
 
 Validation must require:
 
-- `beatBytes == 16`;
+- `beatBytes == 32`;
 - all three bases aligned to `beatBytes`;
 - nonzero beats, stride, loops, and work items;
 - `workItems == operandA.beats * flowLoops * instructionLoops`;
@@ -504,13 +504,13 @@ TEST(AddressGenerator, LoadsBThenStreamsA)
     AddressGenerator gen(cmd);
     EXPECT_THAT(collect(gen), ElementsAre(
         Beat{StreamKind::OperandB, 0x2000, 0, false},
-        Beat{StreamKind::OperandB, 0x2010, 1, false},
-        Beat{StreamKind::OperandB, 0x2020, 2, false},
-        Beat{StreamKind::OperandB, 0x2030, 3, true},
+        Beat{StreamKind::OperandB, 0x2020, 1, false},
+        Beat{StreamKind::OperandB, 0x2040, 2, false},
+        Beat{StreamKind::OperandB, 0x2060, 3, true},
         Beat{StreamKind::OperandA, 0x1000, 0, false},
-        Beat{StreamKind::OperandA, 0x1010, 1, false},
-        Beat{StreamKind::OperandA, 0x1020, 2, false},
-        Beat{StreamKind::OperandA, 0x1030, 3, true}));
+        Beat{StreamKind::OperandA, 0x1020, 1, false},
+        Beat{StreamKind::OperandA, 0x1040, 2, false},
+        Beat{StreamKind::OperandA, 0x1060, 3, true}));
 }
 ```
 
@@ -672,7 +672,7 @@ class SauModel(ClockedObject):
 
     system = Param.System(Parent.any, "System used for requestor IDs")
     memory = RequestPort("SAU timing-memory request port")
-    beat_bytes = Param.Unsigned(16, "SRAM beat size")
+    beat_bytes = Param.Unsigned(32, "SRAM beat size")
     read_issue_width = Param.Unsigned(1, "Maximum accepted reads per cycle")
     write_issue_width = Param.Unsigned(1, "Maximum accepted writes per cycle")
     max_outstanding_reads = Param.Unsigned(4, "Read response slots")
@@ -962,7 +962,7 @@ system = System(
     ),
     mem_mode="timing",
     mem_ranges=[AddrRange("64MiB")],
-    membus=SystemXBar(width=16),
+    membus=SystemXBar(width=32),
 )
 system.memory = SimpleMemory(
     range=system.mem_ranges[0],
@@ -1170,7 +1170,7 @@ completeOffset
 ```
 
 Add a focused system-test verifier that checks all names exist, command counts
-are one, byte totals equal beat totals times 16, and constrained command
+are one, byte totals equal beat totals times 32, and constrained command
 latency exceeds fixed command latency.
 
 - [ ] **Step 2: Add DSE monotonicity checks**

@@ -2,7 +2,7 @@
 
 > **面向执行本计划的 agent：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项实施。所有步骤使用 `- [ ]` 复选框跟踪。
 
-**目标：** 实现并通过 RTL 标定的首个 gem5 SAU 周期级模型，支持 int8 GEMM、真实 128-bit timing 内存请求、retry/backpressure、token 流水、事件轨迹和可解释的性能统计。
+**目标：** 实现并通过 RTL 标定的首个 gem5 SAU 周期级模型，支持 int8 GEMM、真实 256-bit timing 内存请求、retry/backpressure、token 流水、事件轨迹和可解释的性能统计。
 
 **架构：** 使用 `ClockedObject` 驱动元数据 token 在操作数加载、阵列执行、排空和写回阶段之间流动。自定义 `RequestPort` 在明确的 SAU 时钟边沿逐 beat 发送请求；RTL 与 gem5 输出相同格式的 CSV，用于固定延迟环境下逐周期差分。
 
@@ -89,7 +89,7 @@ struct StreamDesc
 {
     Addr base = 0;
     uint32_t beats = 0;
-    uint32_t strideBytes = 16;
+    uint32_t strideBytes = 32;
     uint32_t flowStrideBytes = 0;
     uint32_t instructionStrideBytes = 0;
 };
@@ -302,7 +302,7 @@ GTest("command.test", "command.test.cc", "command.cc")
 覆盖合法命令，以及：
 
 - beat 数为 0；
-- 地址不按 16 byte 对齐；
+- 地址不按 32 byte 对齐；
 - loop 或 stride 为 0；
 - `workItems` 与 A beat/loop 不一致；
 - output beat 总数与 work item 不一致；
@@ -321,6 +321,9 @@ scons build/ALL/sau/command.test.opt -j4
 ```cpp
 void validateCommand(const SauCommand &command, unsigned beatBytes);
 ```
+
+校验必须要求 `beatBytes == 32`，并按该粒度检查三个 stream 的
+base 地址对齐。
 
 所有乘法先用 64-bit 做溢出检查，再缩窄。
 
@@ -353,8 +356,8 @@ git commit -m "feat: define SAU timing command"
 基准输入：
 
 ```text
-B: 0x2000, 0x2010, 0x2020, 0x2030
-A: 0x1000, 0x1010, 0x1020, 0x1030
+B: 0x2000, 0x2020, 0x2040, 0x2060
+A: 0x1000, 0x1020, 0x1040, 0x1060
 ```
 
 测试两次 flow 与两次 instruction 的地址公式：
@@ -487,7 +490,7 @@ git commit -m "feat: model SAU token pipeline"
 必须包含：
 
 - `system` 与 `memory` port；
-- 16-byte beat；
+- 32-byte beat；
 - read/write issue width；
 - read/write outstanding 上限；
 - input/output buffer 容量；
@@ -578,7 +581,7 @@ class SauMemoryPort : public RequestPort
 };
 ```
 
-每个 packet 使用准确的 16-byte 大小。write payload 清零。发送失败时仅保留一个
+每个 packet 使用准确的 32-byte 大小。write payload 清零。发送失败时仅保留一个
 blocked packet；retry 成功后才发出 accepted 回调。
 
 - [ ] **步骤 3：保证响应只在下一 SAU 边沿可见**
@@ -697,7 +700,7 @@ git commit -m "feat: run SAU GEMM timing pipeline"
 系统包含：
 
 - 1GHz 可配置 SAU clock；
-- `SystemXBar(width=16)`；
+- `SystemXBar(width=32)`；
 - `SimpleMemory`；
 - `SauModel`；
 - timing mode；

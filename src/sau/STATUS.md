@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 ## Goal
 
@@ -23,8 +23,10 @@ Design and implementation references:
 - Worktree: `/home/xch/workspace/gem5/.worktrees/sau-command-types`
 - Development remote: `sau-origin`
 - Latest implementation commit: `6b3fc7165a feat: generate SAU operand beats`
-- First milestone scope: direct command injection, int8 GEMM, and 16-byte
+- First milestone scope: direct command injection, int8 GEMM, and 32-byte
   timing-memory beats.
+- The memory contract was corrected on 2026-07-03 from a legacy 128-bit
+  assumption to the active RTL's 256-bit interface.
 
 ## Task Progress
 
@@ -49,7 +51,7 @@ Design and implementation references:
 - `SauCommand`, stream descriptors, beats, pipeline tokens, phases, and event
   kinds.
 - Admission validation for:
-  - int8 GEMM and 16-byte beats;
+  - int8 GEMM and 32-byte beats;
   - aligned stream bases;
   - nonzero beats, strides, loops, and work items;
   - consistent work-item and output-beat counts; and
@@ -100,7 +102,8 @@ Results:
 
 - gem5 style check: passed.
 - Address generator tests: 3/3 passed.
-- Command validation tests: 13/13 passed.
+- Command validation tests: 14/14 passed, including rejection of the legacy
+  16-byte beat size.
 - Build warnings about unavailable Capstone and HDF5 are unrelated to the SAU
   unit tests.
 

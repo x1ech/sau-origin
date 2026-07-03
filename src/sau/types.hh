@@ -51,7 +51,7 @@ struct StreamDesc
 {
     Addr base = 0;
     uint32_t beats = 0;
-    uint32_t strideBytes = 16;
+    uint32_t strideBytes = 32;
     uint32_t flowStrideBytes = 0;
     uint32_t instructionStrideBytes = 0;
 };

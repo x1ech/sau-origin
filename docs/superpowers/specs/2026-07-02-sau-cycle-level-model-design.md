@@ -41,7 +41,7 @@ The first usable milestone supports:
 
 - direct injection of decoded SAU commands from a test harness;
 - int8 GEMM;
-- 128-bit timing reads and writes through the gem5 memory system;
+- 256-bit timing reads and writes through the gem5 memory system;
 - configurable request concurrency, buffers, and systolic-array timing;
 - fixed-latency RTL differential calibration;
 - variable-latency and retry/backpressure tests; and
@@ -80,7 +80,7 @@ The model is divided into focused units:
 
 - **`SauCommand`**: immutable, decoded low-level command descriptor.
 - **`SauScheduler`**: command lifetime, abstract phases, and dependencies.
-- **`AddressGenerator`**: ordered 128-bit read/write beat generation.
+- **`AddressGenerator`**: ordered 256-bit read/write beat generation.
 - **`SauMemoryPort`**: timing requests, responses, retry, and outstanding
   limits.
 - **`InputBuffer`**: capacity and metadata for returned operand tokens.
@@ -181,14 +181,19 @@ includes command-start delay, feeder delay, array fill and drain, initiation
 interval, result latency, and writeback offsets. Calibration constants must
 not be scattered through control logic.
 
-Array dimensions, beat width, buffer depths, request issue width, outstanding
-limits, and pipeline characteristics remain configurable DSE parameters.
+Array dimensions, buffer depths, request issue width, outstanding limits, and
+pipeline characteristics remain configurable DSE parameters. The first
+milestone fixes the beat width at 256 bits to match the current RTL:
+`SA_pkg::SRAM_DATA_WIDTH` is 256, `SA_CORE` uses that width on its SRAM
+interface, and `sa_element/mem_addr.sv` converts word strides to byte strides
+with a five-bit shift. Legacy 128-bit defaults in `sa_execute/sram_addr.sv`
+are not the active interface contract.
 
 ## 8. Memory and Data Semantics
 
 The model sends actual `ReadReq` and `WriteReq` packets through a custom
 `RequestPort`. A custom port is required because the model must control each
-128-bit beat's issue cycle, retry behavior, and outstanding count; bulk
+256-bit beat's issue cycle, retry behavior, and outstanding count; bulk
 `DmaPort` actions do not expose the required per-beat scheduling contract.
 
 The timing model does not consume returned operand values. Input packet data is
@@ -324,4 +329,3 @@ The first milestone is complete only when:
 - performance and stall statistics explain the measured command latency;
 - unsupported modes fail explicitly; and
 - no arithmetic correctness is claimed or tested.
-

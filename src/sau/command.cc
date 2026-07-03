@@ -39,9 +39,9 @@ validateStream(const StreamDesc &stream, unsigned beatBytes)
 void
 validateCommand(const SauCommand &command, unsigned beatBytes)
 {
-    if (beatBytes != 16) {
+    if (beatBytes != 32) {
         throw std::invalid_argument(
-            "first SAU milestone requires 16-byte beats");
+            "first SAU milestone requires 32-byte beats");
     }
     if (command.operation != Operation::Gemm) {
         throw std::invalid_argument("first SAU milestone supports GEMM only");
