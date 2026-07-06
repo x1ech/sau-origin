@@ -4,10 +4,11 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/statistics.hh"
-#include "mem/port.hh"
 #include "params/SauModel.hh"
+#include "sau/memory_port.hh"
 #include "sau/trace_writer.hh"
 #include "sau/types.hh"
 #include "sim/clocked_object.hh"
@@ -25,28 +26,13 @@ namespace sau
 // 继承 ClockedObject 拥有独立时钟域，tick() 每拍推进流水。
 // 下属组件：MemoryPort（内存通信）、TraceWriter（事件记录）、统计组、
 // AddressGenerator / TokenBuffer / ArrayPipeline（待集成）。
-class SauModel : public ClockedObject
+class SauModel : public ClockedObject, private SauMemoryPortOwner
 {
   private:
-    // ========== 嵌套类：SAU 专用内存端口 ==========
-    // 继承 RequestPort，实现 timing 模式下的读写请求发送/响应接收/retry 协议。
-    class MemoryPort : public RequestPort
-    {
-      public:
-        MemoryPort(const std::string &name, SauModel &owner);
-
-      protected:
-        bool recvTimingResp(PacketPtr packet) override; // 收到读响应或写完成
-        void recvReqRetry() override;                    // 下游通知可以重发被拒请求
-
-      private:
-        SauModel &owner; // 回指所属 SauModel，回调时需访问其内部状态
-    };
-
     // ========== 硬件参数（从 Sau.py 注入，构造后不可变） ==========
-    MemoryPort memoryPort;            // 唯一内存端口
     System *const system;             // 所属 System 对象（用于分配 requestor ID）
     const RequestorID requestorId;    // 全局唯一请求者 ID
+    SauMemoryPort memoryPort;         // 唯一内存端口
 
     const unsigned beatBytes;         // 单 beat 字节数
     const unsigned readIssueWidth;    // 每拍最多发送多少个读请求
@@ -67,12 +53,15 @@ class SauModel : public ClockedObject
     // 当前命令所处的 SAU 执行阶段
     Phase phase = Phase::Idle;
     uint64_t sauCycle = 0;                    // SAU 内部周期计数（相对命令开始时刻）
+    std::vector<Beat> visibleMemoryResponses;
 
     TraceWriter traceWriter;                  // CSV 事件日志输出
     EventFunctionWrapper tickEvent;           // gem5 事件：每个时钟边沿触发 tick()
 
     // ========== 核心调度（每个时钟边沿执行一次） ==========
     void tick();
+    void requestAccepted(const Beat &beat, bool write) override;
+    void responseAvailable() override;
 
     // ========== 统计组 ==========
     struct SauStats : public statistics::Group

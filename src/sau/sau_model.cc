@@ -1,10 +1,10 @@
 #include "sau/sau_model.hh"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
 #include "base/logging.hh"
-#include "debug/SAU.hh"
 #include "sau/command.hh"
 #include "sim/system.hh"
 
@@ -57,39 +57,30 @@ buildStartupCommand(const SauModelParams &params)
     };
 }
 
+const char *
+streamName(StreamKind stream)
+{
+    switch (stream) {
+      case StreamKind::OperandA:
+        return "operand_a";
+      case StreamKind::OperandB:
+        return "operand_b";
+      case StreamKind::Output:
+        return "output";
+    }
+
+    throw std::invalid_argument("unknown SAU stream kind");
+}
+
 } // anonymous namespace
-
-// ==================== MemoryPort ====================
-
-SauModel::MemoryPort::MemoryPort(const std::string &name, SauModel &owner)
-    : RequestPort(name), owner(owner)
-{
-}
-
-bool
-SauModel::MemoryPort::recvTimingResp(PacketPtr packet)
-{
-    // 【骨架阶段】收到任何 timing 响应都直接 panic
-    // 任务 7 集成时改为：入队响应 → 调度 tick()
-    panic("%s received an unexpected timing response during skeleton stage",
-          owner.name());
-}
-
-void
-SauModel::MemoryPort::recvReqRetry()
-{
-    // 【骨架阶段】收到 retry 回调只打印
-    // 任务 7 集成时改为：设置 retry 标志 → 调度 tick() 重试发送
-    DPRINTF(SAU, "Ignoring request retry before timing port integration\n");
-}
 
 // ==================== SauModel 构造 ====================
 
 SauModel::SauModel(const Params &params)
     : ClockedObject(params),                       // 注册时钟域
-      memoryPort(name() + ".memory", *this),      // 端口命名为 "<name>.memory"
       system(params.system),
       requestorId(system->getRequestorId(this)),  // 从 System 获取全局唯一 ID
+      memoryPort(name() + ".memory", *this, requestorId, params.beat_bytes),
       beatBytes(params.beat_bytes),
       readIssueWidth(params.read_issue_width),
       writeIssueWidth(params.write_issue_width),
@@ -172,6 +163,23 @@ SauModel::submitCommand(const SauCommand &command)
 void
 SauModel::tick()
 {
+    panic_if(memoryPort.hasBlockedPacket() && memoryPort.canIssue(),
+             "blocked packet must stop new issue");
+    panic_if(memoryPort.outstandingReads() > maxOutstandingReads,
+             "read outstanding limit exceeded");
+    panic_if(memoryPort.outstandingWrites() > maxOutstandingWrites,
+             "write outstanding limit exceeded");
+
+    auto responses = memoryPort.takeVisibleResponses();
+    panic_if(!responses.empty() && !activeCommand,
+             "SAU memory response arrived without an active command");
+    for (const auto &beat : responses) {
+        visibleMemoryResponses.push_back(beat);
+        traceWriter.emit(
+            sauCycle, EventKind::ReadResponseVisible, activeCommand->id,
+            streamName(beat.stream), 0, beat.index, phase);
+    }
+
     // 没有活跃命令 → 空转返回
     if (!activeCommand) {
         return;
@@ -204,6 +212,43 @@ SauModel::tick()
 
     ++sauCycle;
     schedule(tickEvent, clockEdge(Cycles(1))); // 下一拍继续 tick
+}
+
+void
+SauModel::requestAccepted(const Beat &beat, bool write)
+{
+    panic_if(!activeCommand,
+             "SAU memory request accepted without an active command");
+
+    if (write) {
+        ++stats.writeRequests;
+        stats.writeBytes += beatBytes;
+        stats.maxOutstandingWriteCount = std::max(
+            static_cast<unsigned>(
+                stats.maxOutstandingWriteCount.value()),
+            memoryPort.outstandingWrites());
+    } else {
+        ++stats.readRequests;
+        stats.readBytes += beatBytes;
+        stats.maxOutstandingReadCount = std::max(
+            static_cast<unsigned>(
+                stats.maxOutstandingReadCount.value()),
+            memoryPort.outstandingReads());
+    }
+
+    traceWriter.emit(
+        sauCycle,
+        write ? EventKind::WriteAccepted : EventKind::ReadAccepted,
+        activeCommand->id, streamName(beat.stream), beat.address,
+        beat.index, phase);
+}
+
+void
+SauModel::responseAvailable()
+{
+    if (!tickEvent.scheduled()) {
+        schedule(tickEvent, nextCycle());
+    }
 }
 
 // ==================== Drain（仿真暂停/checkpoint 支持） ====================
