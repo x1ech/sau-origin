@@ -1,9 +1,17 @@
 Import("*")
 
+SimObject("Sau.py", sim_objects=["SauModel"])
+
 Source("address_generator.cc")
 Source("command.cc")
+Source("sau_model.cc")
 Source("token_pipeline.cc")
+Source("trace_writer.cc")
+
+DebugFlag("SAU")
+
 GTest("address_generator.test", "address_generator.test.cc",
       "address_generator.cc", "command.cc")
 GTest("command.test", "command.test.cc", "command.cc")
 GTest("token_pipeline.test", "token_pipeline.test.cc", "token_pipeline.cc")
+GTest("trace_writer.test", "trace_writer.test.cc", "trace_writer.cc")
