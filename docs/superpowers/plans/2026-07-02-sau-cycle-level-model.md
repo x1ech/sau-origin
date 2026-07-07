@@ -16,19 +16,24 @@ This plan implements only the first milestone from
 `docs/superpowers/specs/2026-07-02-sau-cycle-level-model-design.md`:
 
 - direct synthetic command injection;
-- int8 GEMM without software-configurable reuse/transpose modes, while
-  modeling the RTL-observed Operand-A `register_file_in` preload and internal
-  A reuse boundary;
+- int8 GEMM using the RTL reuse path, where reuse means routing operands
+  through `register_file_in`; the first milestone models the observed
+  Operand-A preload and resident array-input behavior without CSR decode;
 - real timing reads and writes;
 - fixed-memory RTL calibration;
 - variable-memory retry and backpressure validation.
 
 Do not add custom RISC-V instructions, CSR wiring, interrupts, functional
-arithmetic, int16, convolution, padding, transpose, or new programmable reuse
-policies in this plan. The one reuse behavior that is in scope is the measured
-matmul datapath behavior where Operand-A is loaded once into the SAU-side
-`register_file_in` abstraction and then virtually reused for array input while
-Operand-B streams from SRAM responses.
+arithmetic, int16, convolution, padding, or transpose in this plan. Reuse is in
+scope only in the RTL sense of using `register_file_in`: the first milestone
+hardwires the measured int8 GEMM behavior where Operand-A is loaded once into
+the SAU-side `register_file_in` abstraction and then reused for array input
+while Operand-B streams from SRAM responses. Decoding CSR reuse fields and
+covering every operator-specific `register_file_in` timing variant are later
+work.
+
+The direct-command model should assume the target operator uses
+`register_file_in`, matching the current RTL CSR-configured operator path.
 
 The work spans two repositories. Use separate feature branches and separate
 commits:
@@ -161,7 +166,9 @@ struct PipelineToken
 ```
 
 For the first milestone, the baseline read and array-input policy follows the
-RTL-observed matmul datapath:
+RTL-observed matmul reuse datapath. In this RTL, “reuse” means whether operands
+use `register_file_in`; this plan models that boundary at cycle/timing level,
+not as a separate functional feature:
 
 ```text
 external SRAM reads:
@@ -176,11 +183,11 @@ array input:
     accept a virtual A beat from resident register_file_in
 ```
 
-This is reuse at the architecture/timing boundary: repeated A array-input beats
-do not imply repeated external A SRAM reads. It is not RTL-register-accurate
-modeling of register ports, banks, stored data values, transpose, or any
-software-selectable reuse policy. The RTL trace created in Task 1 is the
-authority for one-cycle offsets and phase boundaries.
+Repeated A array-input beats do not imply repeated external A SRAM reads,
+because they are supplied from the modeled `register_file_in` residency. This
+is the RTL reuse path, but it is still not RTL-register-accurate modeling of
+register ports, banks, stored data values, or transpose behavior. The RTL trace
+created in Task 1 is the authority for one-cycle offsets and phase boundaries.
 
 ---
 
@@ -598,7 +605,7 @@ git commit -m "feat: generate SAU operand beats"
 
 ---
 
-### Task 4.5: Model the Operand-A `register_file_in` reuse boundary
+### Task 4.5: Model the Operand-A `register_file_in` reuse path
 
 **Files:**
 - Create: `src/sau/a_register_file.hh`
@@ -1562,7 +1569,7 @@ git commit -m "docs: complete SAU timing model milestone"
 Create separate design/implementation plans, in this order, after the first
 milestone passes:
 
-1. additional programmable reuse policies, transpose, and int16 timing
+1. CSR-decoded `register_file_in`/reuse control, transpose, and int16 timing
    policies;
 2. pointwise, standard, and depthwise convolution plus padding;
 3. RISC-V `msetins1..7`, CSR, and completion-interrupt integration;

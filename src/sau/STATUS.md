@@ -25,8 +25,12 @@ Design and implementation references:
 - Worktree: `/home/xch/workspace/gem5/.worktrees/sau-command-types`
 - Development remote: `sau-origin`
 - Latest completed milestone: `SauModel` now schedules external reads,
-  A-register-file preload/reuse, B streaming, array timing, output writeback,
+  RTL-style `register_file_in` reuse for Operand-A, B streaming, array timing,
+  output writeback,
   phase progression, command completion, and drain behavior.
+- The current direct-command model assumes the target operator uses the RTL
+  `register_file_in` path; CSR decode of reuse/control fields is not yet
+  modeled.
 - First milestone scope: direct command injection, int8 GEMM, and 32-byte
   timing-memory beats.
 - The memory contract was corrected on 2026-07-03 from a legacy 128-bit
@@ -87,12 +91,13 @@ Design and implementation references:
 - The accepted command is copied into the generator, so later caller-side
   changes cannot alter an active sequence.
 
-### A register-file-in abstraction
+### A register-file-in reuse path
 
 - `ARegisterFileIn` records Operand-A preload beats and reports when a command
   instruction's A data is resident.
-- It models the architecture-relevant reuse boundary only; it does not model
-  RTL register width, ports, or stored data values.
+- It models RTL reuse at the architecture-relevant timing boundary: in this
+  RTL, reuse means the operand is supplied through `register_file_in`.
+- It does not model RTL register width, ports, banks, or stored data values.
 - It exposes virtual Operand-A array-input beats after preload. These beats use
   address zero because array input trace events are not external SRAM accesses.
 - This fixes the old implicit assumption that every A array input required a

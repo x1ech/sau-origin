@@ -17,8 +17,9 @@
 定义的首个里程碑：
 
 - 由测试配置直接注入已解码的 SAU 命令；
-- 支持不含软件可配置 reuse/transpose 模式的 int8 GEMM，同时建模 RTL
-  观察到的 Operand-A `register_file_in` preload 与 SAU 内部 A 复用边界；
+- 支持走 RTL reuse 路径的 int8 GEMM；这里 reuse 指操作数是否经过
+  `register_file_in`，首里程碑建模观察到的 Operand-A preload 与 resident
+  array-input 行为，但不做 CSR decode；
 - 真实发送 timing read/write；
 - 与固定延迟 SRAM 下的 RTL 逐周期标定；
 - 验证可变延迟、retry 和 buffer backpressure。
@@ -28,7 +29,8 @@
 - RISC-V `msetins1..7`；
 - CSR、完成中断；
 - 数值计算；
-- int16、transpose、软件可配置 reuse 策略；
+- int16、transpose、CSR reuse 字段 decode 以及所有算子专用的
+  `register_file_in` 时序变体；
 - PWConv、普通卷积、DWConv、padding；
 - RTL 寄存器级等价。
 
@@ -130,7 +132,12 @@ struct PipelineToken
 } // namespace gem5::sau
 ```
 
-首阶段采用 RTL 观察到的 matmul 数据路径：
+首阶段采用 RTL 观察到的 matmul reuse 数据路径。这里的 “reuse” 按 RTL 语义
+理解为是否使用 `register_file_in`；本计划在周期/时序层面建模这个边界，而不是
+把它当成额外的功能模型：
+
+由于当前目标算子的 CSR 配置都会走 `register_file_in`，direct-command 阶段先
+直接假定该路径开启；后续 CSR 集成阶段再补 decode 和不同算子的时序差异。
 
 ```text
 外部 SRAM read：
@@ -145,10 +152,10 @@ struct PipelineToken
     从 resident register_file_in 生成一个虚拟 A beat
 ```
 
-这属于体系结构/时序边界上的 A 复用：重复出现的 A array input 不代表重复发起
-外部 A SRAM read。它不是 RTL 寄存器端口、bank、存储数据值、transpose 或软件可配置
-reuse 策略的寄存器级建模。具体一拍偏移和 phase 边界以任务 1 产生的 RTL trace
-为准。
+重复出现的 A array input 不代表重复发起外部 A SRAM read，因为它由模型中的
+`register_file_in` resident 状态提供。这就是 RTL reuse 路径；但它仍不是 RTL
+寄存器端口、bank、存储数据值或 transpose 行为的寄存器级建模。具体一拍偏移和
+phase 边界以任务 1 产生的 RTL trace 为准。
 
 ---
 
@@ -431,7 +438,7 @@ git commit -m "feat: generate SAU operand beats"
 
 ---
 
-## 任务 4.5：建模 Operand-A `register_file_in` 复用边界
+## 任务 4.5：建模 Operand-A `register_file_in` reuse 路径
 
 **文件：**
 
@@ -1235,7 +1242,7 @@ git commit -m "docs: complete SAU timing model milestone"
 
 首里程碑通过后，按以下顺序分别设计和实施：
 
-1. 额外的软件可配置 reuse 策略、transpose、int16；
+1. CSR decode 后的 `register_file_in`/reuse 控制、transpose、int16；
 2. PWConv、普通卷积、DWConv、padding；
 3. RISC-V `msetins1..7`、CSR、完成中断；
 4. 可选 Functional Backend。
