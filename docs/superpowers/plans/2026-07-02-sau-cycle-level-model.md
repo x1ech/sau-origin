@@ -258,9 +258,11 @@ event, `array_drain` when the final A input is accepted
 (`data_A_last && last_flow_time_f && last_ins_time_s`), `writeback` at the
 first accepted output write after that point, and `complete` on
 `sau_crossbar_done`. Emit one `phase_changed` row on each abstract transition.
-Use command ID `1` for this single-command reference case. CSV cycles remain
-raw testbench cycles; the comparator normalizes both traces to their respective
-`command_accepted` cycle.
+Assign stable command IDs in acceptance order, starting at `1`. CSV cycles
+remain raw testbench cycles; the comparator normalizes both traces to their
+respective first `command_accepted` cycle. The corrected Task 1 package for
+`INT8_SAU_MATMUL_TEST_ID_0` contains two commands, so do not assume the trace
+is single-command.
 
 - [ ] **Step 2: Add the deterministic Make target**
 
@@ -295,7 +297,8 @@ Expected:
 
 - simulation reports `TEST PASSED`;
 - `sim/vcs/build/sau_regress/int8_gemm_timing.csv` is non-empty;
-- the trace has exactly one `command_accepted` and one `command_complete`;
+- the trace has at least one `command_accepted` and the same number of
+  `command_complete` rows;
 - cycles are monotonically increasing.
 
 If VCS is unavailable, stop this task and record the exact command and missing
@@ -367,11 +370,12 @@ Expected: FAIL because `compare_rows` does not exist.
 - [ ] **Step 4: Implement strict and causal comparison**
 
 `read_trace(path)` must validate the exact header, parse cycles as integers,
-reject unknown event names, require exactly one `command_accepted`, and
-subtract its cycle from every row. `compare_rows(expected, actual, "strict")`
-compares every normalized field and row count. `"causal"` compares
-event/stream/address/beat/phase sequence and checks nondecreasing actual cycles
-while ignoring absolute cycle differences.
+reject unknown event names, require at least one `command_accepted`, and
+subtract the first `command_accepted` cycle from every row. Multiple commands
+are legal and are distinguished by `command_id`. `compare_rows(expected,
+actual, "strict")` compares every normalized field and row count. `"causal"`
+compares event/stream/address/beat/phase sequence and checks nondecreasing
+actual cycles while ignoring absolute cycle differences.
 
 The CLI must be:
 

@@ -7,9 +7,9 @@
     "n": 256
   },
   "npu_repo_head": "c0d588a28fefdab28b7770d90486277c56b40acd",
-  "npu_worktree_diff_sha256": "33f816714cf395ed865ca85bf2833d15e2a194ecb203663691d713198db9372f",
+  "npu_worktree_diff_sha256": "178ef8bb22eeaba914128812515bbe8e4885fc118974e18dc05be2b8a1456143",
   "operation": "int8_gemm",
-  "run_command": "make -f sim/vcs/script/case_sau_regress/Makefile timing_trace TEST_ID=0 BASELINE_DIR=/home/xch/work/npu_lpnpu/sim/vcs/build/sau_regress/baseline/run1",
+  "run_command": "make -f sim/vcs/script/case_sau_regress/Makefile timing_trace TEST_ID=0 BASELINE_DIR=/home/xch/work/npu_lpnpu/sim/vcs/build/sau_regress/baseline/int8_gemm_32x32",
   "sa_cols": 32,
   "sa_rows": 32,
   "schema_version": 1,
@@ -18,10 +18,10 @@
   "sram_data_bits": 256,
   "testcase_dir": "/home/xch/work/npu_lpnpu/testcase/sau_regress_matmul/INT8_SAU_MATMUL_TEST_ID_0",
   "testcase_sha256": {
-    "instruction.hex": "e928e6600b83ce37014f3771b4dcbd97a9fde97ce8f06b5675cca0f0b8af663c",
-    "memory.hex": "c9ee794a2fac07fa247e139b88db3bf06a94f9f9edcf230ebcd004ecd6430a76",
-    "memory_mod_0.hex": "73fec1268fa86a88e002700ba03a65527b8ce15f91d3f9ede2c926bcea4c5a04",
-    "memory_mod_1.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1",
+    "instruction.hex": "a0c2c048034df7b3ebbb840c81fd7aa77cd6a2d0600587230cbe9c56ad63a8fc",
+    "memory.hex": "e22ca789806df553cfa7a8049dcc748fa4811e7d1a658ce15c82bac2d73fe3d5",
+    "memory_mod_0.hex": "44ff8d4fa950fef7bf7293871373d8c493d702fdc2944ccc22e1dbcc3d6e7377",
+    "memory_mod_1.hex": "bd01d79a79a546443228c3e208a778afd0b482da82ad52abe5666cc611c57707",
     "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
   }
 }

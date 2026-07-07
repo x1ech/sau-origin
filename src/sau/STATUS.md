@@ -40,7 +40,7 @@ Design and implementation references:
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| 1. Capture deterministic RTL timing reference | Complete | Imported and validated the RTL-side package from `/home/xch/workspace/sau_task1_baseline.tar.gz`. The available testcase is `INT8_SAU_MATMUL_TEST_ID_0` with matrix 64x256x256, not the originally requested 32x32x32. Public reference files live in `tests/gem5/sau/ref/int8_gemm_64x256x256/`. |
+| 1. Capture deterministic RTL timing reference | Complete / refreshed | Re-imported and validated the corrected RTL-side package from `/home/xch/workspace/sau_task1_baseline.tar.gz` on 2026-07-07. The testcase is `INT8_SAU_MATMUL_TEST_ID_0` with matrix 64x256x256, not the originally requested 32x32x32. Public reference files live in `tests/gem5/sau/ref/int8_gemm_64x256x256/`. |
 | 2. Add the common trace comparator | Complete | Adds `util/sau/compare_trace.py` and unit tests. Strict mode compares every normalized field; causal mode compares event order and metadata while allowing latency shifts with nondecreasing actual cycles. |
 | 3. Add command types and admission validation | Complete | Commit `b61ec79f60`; defines stable command/token types and validates the first-milestone contract. |
 | 4. Implement deterministic beat generation | Complete / calibrated | Commit `6b3fc7165a`; later calibrated after Task 1 so external reads are A preload once per instruction, then B streaming per flow. |
@@ -181,25 +181,26 @@ Design and implementation references:
 ### RTL timing baseline
 
 - The RTL-side Task 1 package was received as
-  `/home/xch/workspace/sau_task1_baseline.tar.gz` and unpacked under
-  `/home/xch/workspace/sau_task1_baseline_unpack/sau_task1_baseline`.
-- Full package hashes in `SHA256SUMS` were checked successfully from the package
-  root.
+  `/home/xch/workspace/sau_task1_baseline.tar.gz` and refreshed from the
+  corrected package unpacked under
+  `/home/xch/workspace/sau_task1_baseline_unpack_20260707_real/sau_task1_baseline`.
+- Full package hashes in `SHA256SUMS` were checked successfully after mapping
+  the original RTL repository paths to the local unpacked package layout.
 - The public architecture trace, manifest, summary, diagnostic trace, analysis,
   handoff note, and checksum file were copied into
   `tests/gem5/sau/ref/int8_gemm_64x256x256/`.
 - Important measured timing values for this 64x256x256 baseline:
-  - command total: 2036 cycles;
+  - command total: 5897 cycles;
   - first read: cycle 3;
-  - first array input: cycle 77;
-  - first result: cycle 324;
-  - last array input: cycle 1689;
-  - last result: cycle 1769;
-  - first write: cycle 1777;
-  - command complete: cycle 2036;
-  - array fill latency: 247 cycles;
+  - first array input: cycle 269;
+  - first result: cycle 612;
+  - last array input: cycle 5550;
+  - last result: cycle 5630;
+  - first write: cycle 2513;
+  - command complete: cycle 5897;
+  - array fill latency: 343 cycles;
   - array drain latency: 80 cycles;
-  - last result to first write: 8 cycles;
+  - last result to first write: -3117 cycles;
   - last write to complete: 4 cycles.
 - The original task asked for 32x32x32, but the available RTL testcase is
   64x256x256 and was accepted as the current baseline. These absolute cycle
@@ -208,7 +209,8 @@ Design and implementation references:
 ### Trace comparator
 
 - `util/sau/compare_trace.py` reads the public seven-column SAU architecture
-  trace and normalizes cycles to each trace's `command_accepted` row.
+  trace and normalizes cycles to each trace's first `command_accepted` row.
+  Multiple commands are legal and are distinguished by `command_id`.
 - `strict` mode compares every normalized field and reports every mismatch.
 - `causal` mode compares the event/stream/address/beat/phase sequence and
   requires nondecreasing actual cycles, while ignoring absolute latency
@@ -253,7 +255,7 @@ python3 util/sau/compare_trace.py --mode strict \
 
 Results:
 
-- SAU trace comparator tests: 7/7 passed.
+- SAU trace comparator tests: 8/8 passed.
 - SAU trace comparator strict and causal self-comparison against the imported
   RTL reference trace passed.
 - SAU trace comparator strict mode reported the expected cycle mismatch for a
@@ -292,10 +294,11 @@ Results:
   schema, event ordering, and the currently accepted baseline case, but its
   absolute cycle counts must not be generalized to other dimensions without
   additional RTL traces.
-- The handoff document and `manifest.json` disagree on the tracked working-tree
-  diff SHA-256 (`0424c4...` vs `33f816...`). The package contents themselves
-  passed `SHA256SUMS`, so this is recorded as a provenance metadata risk rather
-  than a trace-integrity failure.
+- The corrected package `SHA256SUMS` records paths from the remote RTL
+  repository layout, not the local unpack directory. Local verification requires
+  remapping `sim/vcs/build/sau_regress/baseline/int8_gemm_32x32/` to the package
+  root and `testcase/sau_regress_matmul/INT8_SAU_MATMUL_TEST_ID_0/` to
+  `testcase_INT8_SAU_MATMUL_TEST_ID_0/`.
 - The address generator assumes the command has already passed admission
   validation.
 - Task 8 did not add a direct `SauModel` unit test because constructing the

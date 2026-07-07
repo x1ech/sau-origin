@@ -6,7 +6,7 @@ The public SAU trace schema is:
     cycle,event,command_id,stream,address,beat,phase
 
 `read_trace()` validates the fixed schema, parses integer fields, and
-normalizes all cycles so the single `command_accepted` row is cycle 0.
+normalizes all cycles so the first `command_accepted` row is cycle 0.
 `compare_rows()` supports:
 
 * strict: every normalized field must match exactly;
@@ -118,10 +118,9 @@ def read_trace(path):
                 command_cycles.append(row["cycle"])
             rows.append(row)
 
-    if len(command_cycles) != 1:
+    if not command_cycles:
         raise TraceFormatError(
-            f"{path}: expected exactly one command_accepted row, "
-            f"got {len(command_cycles)}"
+            f"{path}: expected at least one command_accepted row, got 0"
         )
 
     command_cycle = command_cycles[0]

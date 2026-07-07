@@ -191,8 +191,10 @@ u_dut.u_dut_kui.SAU_1_inst
 - `phase_changed`
 - `command_complete`
 
-stream 必须根据 `input_switch_s` 判断，不能根据地址猜测。单命令基准的
-command ID 固定为 1。
+stream 必须根据 `input_switch_s` 判断，不能根据地址猜测。command ID 按命令接收
+顺序从 1 开始稳定分配。corrected Task 1 package 中
+`INT8_SAU_MATMUL_TEST_ID_0` 含两个 command，不能再假设基准 trace 只有一个
+command。
 
 - [ ] **步骤 2：建立抽象 phase 映射**
 
@@ -232,7 +234,8 @@ timing_trace: compile
 make -f sim/vcs/script/case_sau_regress/Makefile timing_trace
 ```
 
-预期：仿真出现 `TEST PASSED`，CSV 非空，且只有一个命令开始和一个命令完成。
+预期：仿真出现 `TEST PASSED`，CSV 非空，至少有一个命令开始，且
+`command_accepted` 与 `command_complete` 数量一致。
 若缺少 VCS，必须记录命令与缺失工具，不得伪造 golden trace。
 
 - [ ] **步骤 5：提交 RTL instrumentation**
@@ -281,8 +284,9 @@ python3 -m unittest util.sau.compare_trace_test -v
 
 - [ ] **步骤 4：实现比较器**
 
-`read_trace()` 校验七列表头，要求恰好一个 `command_accepted`，并以该事件为
-cycle 0 归一化。strict 比较全部字段和行数；causal 比较事件顺序、stream、
+`read_trace()` 校验七列表头，要求至少一个 `command_accepted`，并以第一个
+`command_accepted` 为 cycle 0 归一化。多 command trace 合法，通过
+`command_id` 区分。strict 比较全部字段和行数；causal 比较事件顺序、stream、
 address、beat、phase，并要求实际 cycle 单调不减。
 
 CLI：

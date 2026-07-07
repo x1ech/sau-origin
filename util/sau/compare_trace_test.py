@@ -152,6 +152,27 @@ class TraceComparatorTest(unittest.TestCase):
 
         self.assertEqual([0, 0, 3], [row["cycle"] for row in parsed])
 
+    def test_read_trace_accepts_multiple_commands(self):
+        rows = [
+            "10,phase_changed,1,none,0x00000000,0,operand_load",
+            "10,command_accepted,1,none,0x00000000,0,operand_load",
+            "13,command_complete,1,none,0x00000000,0,complete",
+            "20,phase_changed,2,none,0x00000000,0,operand_load",
+            "20,command_accepted,2,none,0x00000000,0,operand_load",
+            "23,command_complete,2,none,0x00000000,0,complete",
+        ]
+        with tempfile.NamedTemporaryFile("w", delete=False) as trace:
+            trace.write(make_trace(rows))
+            trace_path = trace.name
+        self.addCleanup(os.unlink, trace_path)
+
+        parsed = read_trace(trace_path)
+
+        self.assertEqual([0, 0, 3, 10, 10, 13],
+                         [row["cycle"] for row in parsed])
+        self.assertEqual([1, 1, 1, 2, 2, 2],
+                         [row["command_id"] for row in parsed])
+
     def test_read_trace_rejects_unknown_event(self):
         rows = [
             "0,phase_changed,1,none,0x00000000,0,operand_load",
