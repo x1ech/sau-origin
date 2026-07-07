@@ -19,14 +19,14 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 7 complete, with a Task 4.5 calibration patch
-  for RTL-observed A preload/B streaming behavior; Task 8 is next.
+- Current stage: Tasks 1 through 8 complete, with a Task 4.5 calibration patch
+  for RTL-observed A preload/B streaming behavior.
 - Active branch: `feature/sau-command-types`
 - Worktree: `/home/xch/workspace/gem5/.worktrees/sau-command-types`
 - Development remote: `sau-origin`
-- Latest completed milestone: the external read model now follows the
-  RTL-observed A preload plus B streaming behavior, and an abstract
-  `ARegisterFileIn` captures A-side reuse before Task 8 scheduling.
+- Latest completed milestone: `SauModel` now schedules external reads,
+  A-register-file preload/reuse, B streaming, array timing, output writeback,
+  phase progression, command completion, and drain behavior.
 - First milestone scope: direct command injection, int8 GEMM, and 32-byte
   timing-memory beats.
 - The memory contract was corrected on 2026-07-03 from a legacy 128-bit
@@ -43,9 +43,9 @@ Design and implementation references:
 | 5. Implement token buffers and array timing | Complete / calibrated boundary | Bounded token storage with configurable fill latency, initiation interval, and in-flight capacity. Added the A register-file-in abstraction boundary so A external reads and A array inputs are no longer conflated. |
 | 6. Add the SimObject, parameters, trace, and stats skeleton | Complete | Registers `SauModel`, its timing-memory port and parameters, a stable seven-column trace writer, synthetic command startup, and statistics placeholders. |
 | 7. Implement the timing memory port | Complete | Sends exact 32-byte read/write packets, retains one rejected packet for retry, tracks accepted outstanding traffic, and queues read responses for the next SAU edge. |
-| 8. Integrate scheduling, array timing, writeback, and drain | Pending | Main end-to-end behavioral model integration. |
+| 8. Integrate scheduling, array timing, writeback, and drain | Complete | `SauModel::tick()` now consumes read responses, feeds `ARegisterFileIn` plus B streaming tokens into the array pipeline, produces output tokens, issues timing writes, advances phases, checks token/request conservation, and drains only after local packet state is clear. |
 | 9. Add fixed- and constrained-memory simulations | Pending | Covers deterministic latency, retry, and backpressure. |
-| 10. Calibrate against the RTL reference | Blocked by model integration | No cycle-accuracy claim can be made until gem5 traces are generated and compared against the imported RTL reference. |
+| 10. Calibrate against the RTL reference | Pending Task 9 traces | No cycle-accuracy claim can be made until gem5 traces are generated and compared against the imported RTL reference. |
 | 11. Final regression, statistics audit, and documentation | Pending | Final milestone validation and handoff. |
 
 ## Implemented Components
@@ -97,8 +97,8 @@ Design and implementation references:
   address zero because array input trace events are not external SRAM accesses.
 - This fixes the old implicit assumption that every A array input required a
   fresh external SRAM read.
-- Task 8 must wire this into the scheduler so B read responses can pair with
-  reused A tokens at the array input boundary.
+- The scheduler now pairs B read responses with reused A tokens at the array
+  input boundary.
 
 ### Token buffering and array timing
 
@@ -109,14 +109,15 @@ Design and implementation references:
 - Ready tokens retain in-flight capacity until consumed.
 - Timing values remain configurable pending RTL calibration.
 
-### SimObject, trace, and statistics skeleton
+### SimObject, trace, and statistics
 
 - `SauModel` is a `ClockedObject` with a timing-memory request port and the
   configuration parameters required by the first milestone.
 - Startup validates and accepts one synthetic int8 GEMM command, emits stable
   trace events, and schedules cycle ticks.
-- The skeleton intentionally remains in `OperandLoad`; memory traffic and
-  phase progression belong to Tasks 7 and 8.
+- `tick()` now integrates memory response consumption, operand readiness,
+  array admission, result production, writeback issue, phase progression, and
+  command completion.
 - The CSV trace has the fixed schema
   `cycle,event,command_id,stream,address,beat,phase`, is disabled by an empty
   path, and flushes on `command_complete`.
@@ -136,6 +137,41 @@ Design and implementation references:
 - Read responses are queued by the port and become visible only when
   `SauModel::tick()` runs at the next SAU edge.
 - Accepted requests and visible responses update trace and traffic statistics.
+
+### Task 8 scheduler integration
+
+- `SauModel::tick()` now advances the model in the fixed order:
+
+  ```text
+  consumeResponses
+  -> advanceArray
+  -> produceResults
+  -> issueWrites
+  -> issueReads
+  -> updatePhase
+  -> accountCycle
+  ```
+
+- Operand-A read responses preload `ARegisterFileIn`; Operand-B read responses
+  enter the B availability queue.
+- Array input admission requires resident A for the current instruction, one
+  available B beat, array initiation-interval/capacity availability, and output
+  buffer headroom.
+- Array input trace events are emitted in RTL-observed B then A order. A-side
+  array inputs are virtual beats from resident A and do not imply fresh SRAM
+  reads.
+- Results from `ArrayPipeline` become output tokens; writes use the synthetic
+  output stream address formula.
+- `SauMemoryPort::trySend()` owns a packet once called. If a send is rejected,
+  the port retains the single blocked packet for retry, so the scheduler pops
+  the corresponding generator/output token immediately and counts acceptance
+  only in `requestAccepted()`.
+- Phase progression now covers `OperandLoad`, `ArrayActive`, `ArrayDrain`,
+  `Writeback`, and `Complete`; `exit_on_done` is effective when command
+  completion is reached.
+- `drain()` returns `Draining` while the command, blocked packet, or outstanding
+  requests are still live, and reports drained only after local packet state is
+  clear.
 
 ### RTL timing baseline
 
@@ -255,24 +291,19 @@ Results:
   diff SHA-256 (`0424c4...` vs `33f816...`). The package contents themselves
   passed `SHA256SUMS`, so this is recorded as a provenance metadata risk rather
   than a trace-integrity failure.
-- The timing-memory port is implemented, but the scheduler does not issue
-  command beats through it until Task 8.
-- `ARegisterFileIn` is implemented as a reusable component but is not yet
-  connected to `SauModel::tick()`; Task 8 must consume it.
-- Outstanding-limit checks exist at the model boundary; Task 8 must prevent
-  issue before a configured limit is exceeded and account the resulting stall.
-- The skeleton does not yet integrate address generation, token buffering,
-  array timing, phase progression, writeback, or command completion.
-- `exit_on_done` becomes effective only after command completion is implemented.
 - The address generator assumes the command has already passed admission
   validation.
-- Current tests establish deterministic component behavior and trace comparison
-  behavior, not calibrated RTL cycle-level timing accuracy.
+- Task 8 did not add a direct `SauModel` unit test because constructing the
+  SimObject plus timing-memory topology in a focused C++ test would duplicate a
+  large part of the upcoming standalone gem5 configuration. End-to-end
+  scheduler validation should be covered by Task 9's fixed/constrained memory
+  simulations.
+- Current tests establish deterministic component behavior, trace comparison
+  behavior, and compile-time integration of the scheduler. They do not yet
+  establish calibrated RTL cycle-level timing accuracy.
 
 ## Next Steps
 
-1. Implement Task 8 scheduler, array pipeline, writeback, phase progression,
-   and drain behavior.
-2. Add fixed- and constrained-memory simulations in Task 9.
-3. Use `util/sau/compare_trace.py` to compare generated gem5 traces with the
-   imported RTL baseline once Task 8 can emit end-to-end traces.
+1. Add fixed- and constrained-memory simulations in Task 9.
+2. Use `util/sau/compare_trace.py` to compare Task 9 generated gem5 traces
+   with the imported RTL baseline.

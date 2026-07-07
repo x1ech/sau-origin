@@ -843,7 +843,74 @@ git commit -m "feat: issue SAU timing memory requests"
 - Modify: `src/sau/sau_model.hh`
 - Modify: `src/sau/sau_model.cc`
 
-- [ ] **Step 1: Define the edge-ordered scheduler helpers**
+- [ ] **Step 1: Update the scheduler member state**
+
+Add these includes to `src/sau/sau_model.hh`:
+
+```cpp
+#include <deque>
+
+#include "sau/a_register_file.hh"
+#include "sau/address_generator.hh"
+#include "sau/token_pipeline.hh"
+```
+
+Add these runtime members near `visibleMemoryResponses`:
+
+```cpp
+std::optional<AddressGenerator> readGenerator;
+std::optional<ARegisterFileIn> aRegisterFile;
+std::deque<Beat> availableB;
+TokenBuffer outputBuffer;
+ArrayPipeline arrayPipeline;
+
+uint32_t currentInstruction = 0;
+uint32_t currentFlow = 0;
+uint32_t currentArrayBeat = 0;
+uint32_t nextArrayIndex = 0;
+uint32_t nextResultIndex = 0;
+uint32_t nextWriteIndex = 0;
+
+uint64_t acceptedReadBeats = 0;
+uint64_t visibleReadBeats = 0;
+uint64_t arrayAdmissions = 0;
+uint64_t resultsProduced = 0;
+uint64_t writesAccepted = 0;
+```
+
+Initialize `outputBuffer` and `arrayPipeline` in the constructor initializer
+list:
+
+```cpp
+outputBuffer(outputBufferEntries),
+arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
+```
+
+In `submitCommand()`, after `activeCommand = command`, initialize:
+
+```cpp
+readGenerator.emplace(command);
+aRegisterFile.emplace(command);
+availableB.clear();
+visibleMemoryResponses.clear();
+currentInstruction = 0;
+currentFlow = 0;
+currentArrayBeat = 0;
+nextArrayIndex = 0;
+nextResultIndex = 0;
+nextWriteIndex = 0;
+acceptedReadBeats = 0;
+visibleReadBeats = 0;
+arrayAdmissions = 0;
+resultsProduced = 0;
+writesAccepted = 0;
+```
+
+This explicitly separates external Operand-A preload from Operand-A array
+reuse. Do not reintroduce an input buffer that treats every A array input as a
+fresh SRAM read.
+
+- [ ] **Step 2: Define the edge-ordered scheduler helpers**
 
 Declare these methods in this order:
 
@@ -860,37 +927,141 @@ void accountCycle();
 `tick()` calls exactly that sequence and then either schedules the next edge
 or sleeps when idle with no pending response.
 
-- [ ] **Step 2: Implement operand readiness**
+- [ ] **Step 3: Implement response consumption**
 
-Operand-B responses increment `availableB`. Operand-A responses enter
-`inputBuffer`. A work token may enter the array only when:
+Move beats from `visibleMemoryResponses` into the correct logical resource:
 
-- all B beats for the current flow have returned;
-- one A token is available;
-- the array can accept at the current cycle; and
-- eventual output occupancy cannot exceed `output_buffer_entries`.
+```cpp
+void
+SauModel::consumeResponses()
+{
+    for (const auto &beat : visibleMemoryResponses) {
+        ++visibleReadBeats;
+        if (beat.stream == StreamKind::OperandA) {
+            aRegisterFile->load(beat);
+        } else if (beat.stream == StreamKind::OperandB) {
+            availableB.push_back(beat);
+        } else {
+            panic("unexpected SAU read response stream");
+        }
+    }
+    visibleMemoryResponses.clear();
+}
+```
 
-Emit `array_input_accepted` when the A token is consumed.
+The old plan said Operand-A responses enter `inputBuffer`; that is no longer
+correct. Operand-A responses preload `ARegisterFileIn`. Operand-A array input
+beats are later generated virtually from the resident A register file.
 
-- [ ] **Step 3: Implement result and writeback accounting**
+- [ ] **Step 4: Implement array admission with A reuse and B streaming**
+
+In `advanceArray()`, admit one work token when all of these are true:
+
+- `aRegisterFile->instructionReady(currentInstruction)`;
+- `availableB` is nonempty;
+- `arrayPipeline.canAccept(Cycles(sauCycle))`;
+- `outputBuffer.canPush()` or there is enough output headroom to avoid
+  overfilling before the next result is consumed;
+- `nextArrayIndex < activeCommand->workItems`.
+
+When admitting:
+
+```cpp
+const auto bBeat = availableB.front();
+availableB.pop_front();
+const Beat aBeat = aRegisterFile->arrayInputBeat(
+    currentInstruction, currentFlow, currentArrayBeat, nextArrayIndex);
+
+if (phase == Phase::OperandLoad) {
+    phase = Phase::ArrayActive;
+    traceWriter.emit(sauCycle, EventKind::PhaseChanged,
+                     activeCommand->id, "none", 0, 0, phase);
+}
+traceWriter.emit(sauCycle, EventKind::ArrayInputAccepted,
+                 activeCommand->id, "operand_b", 0, bBeat.index, phase);
+traceWriter.emit(sauCycle, EventKind::ArrayInputAccepted,
+                 activeCommand->id, "operand_a", 0, aBeat.index, phase);
+
+arrayPipeline.accept(activeCommand->id, nextArrayIndex,
+                     nextArrayIndex + 1 == activeCommand->workItems,
+                     Cycles(sauCycle));
+```
+
+Then increment `arrayAdmissions`, `nextArrayIndex`, and the
+`currentArrayBeat/currentFlow/currentInstruction` cursors. The cursor order is:
+
+```text
+beat within flow -> next flow -> next instruction
+```
+
+This task deliberately models only the architecture-visible effect: A is
+resident and reused; B is streamed. It does not model RTL register-file ports
+or stored values.
+
+- [ ] **Step 5: Implement result and writeback accounting**
 
 Each completed work token creates one output token until
 `command.output.beats * command.instructionLoops` tokens have been produced.
 Emit `result_produced` on insertion into `OutputBuffer`.
 
 Write addresses use `output.base + beatIndex * output.strideBytes`.
-Pop an output token only when the write request is accepted. Emit
-`write_accepted` at acceptance, not at response.
+Emit `write_accepted` at the `SauMemoryPort` acceptance callback, not at
+response time. If `trySend()` returns false, the port owns one blocked packet
+for retry; the scheduler must not reissue the same output token from
+`outputBuffer`.
 
-- [ ] **Step 4: Implement phases and completion**
+- [ ] **Step 6: Issue external reads and writes**
+
+`issueReads()` sends beats from `readGenerator`, not from array demand:
+
+```cpp
+unsigned issued = 0;
+while (issued < readIssueWidth && readGenerator &&
+       !readGenerator->empty() &&
+       memoryPort.outstandingReads() < maxOutstandingReads &&
+       memoryPort.canIssue()) {
+    const Beat beat = readGenerator->front();
+    const bool acceptedOrBlocked = memoryPort.trySend(beat, false);
+    readGenerator->pop();
+    ++issued;
+    if (!acceptedOrBlocked) {
+        ++stats.stallRequestRetry;
+        break;
+    }
+}
+```
+
+`issueWrites()` sends from `outputBuffer` in output beat order. Build the write
+beat as:
+
+```cpp
+Beat writeBeat{
+    StreamKind::Output,
+    activeCommand->output.base +
+        static_cast<Addr>(nextWriteIndex) *
+            activeCommand->output.strideBytes,
+    nextWriteIndex,
+    nextWriteIndex + 1 == activeCommand->output.beats *
+        activeCommand->instructionLoops,
+};
+```
+
+After `memoryPort.trySend(writeBeat, true)`, pop the output token because the
+port either accepted it immediately or retained it as the single blocked packet
+for retry. Increment the write-accepted counter only in `requestAccepted()`,
+because retry acceptance may happen later.
+
+- [ ] **Step 7: Implement phases and completion**
 
 Use:
 
 - `OperandLoad` from command acceptance through the first array admission;
 - `ArrayActive` while new work can still enter;
 - `ArrayDrain` after the last work admission until the last result token;
-- `Writeback` while any output token remains or a write packet is blocked;
-- `Complete` when the last write has been accepted.
+- `Writeback` after the first accepted output write while output tokens,
+  blocked write packets, or outstanding writes remain;
+- `Complete` after all expected writes are accepted and no command-local
+  memory packet state remains.
 
 Emit `phase_changed` exactly once per transition. Emit `command_complete` in
 the same SAU cycle as transition to `Complete`. If `exit_on_done`, call
@@ -900,43 +1071,66 @@ When a phase transition and its anchor event occur on the same edge, emit
 `phase_changed` first and then the anchor event using the new phase. Apply the
 same ordering in the RTL monitor.
 
-- [ ] **Step 5: Implement drain behavior**
+- [ ] **Step 8: Implement drain behavior**
 
 Return `DrainState::Drained` only when idle or complete with no blocked packet
 and zero outstanding requests. Otherwise return `Draining`; call
 `signalDrainDone()` after the final response releases all packet state.
 Do not serialize an active command in this milestone.
 
-- [ ] **Step 6: Add token and request conservation assertions**
+- [ ] **Step 9: Add token and request conservation assertions**
 
 Maintain cumulative counters and assert on every tick:
 
 ```cpp
 assert(readResponses <= acceptedReads);
-assert(arrayAdmissions <= readResponses);
+assert(aRegisterFile->totalExternalLoadBeats() <= acceptedReads);
+assert(arrayAdmissions <= aRegisterFile->totalArrayInputBeats());
 assert(resultsProduced <= arrayAdmissions);
 assert(writesAccepted <= resultsProduced);
-assert(inputBuffer.size() + arrayAdmissions <= readResponses);
+assert(availableB.size() <= visibleReadBeats);
 assert(outputBuffer.size() + writesAccepted <= resultsProduced);
 ```
 
 At `CommandComplete`, require all command-local expected counts to match and
 require both token buffers and the array pipeline to be empty.
 
-- [ ] **Step 7: Build all SAU unit tests**
+- [ ] **Step 10: Add a focused `SauModel` scheduler unit test if feasible**
+
+If a small standalone `SauModel` unit test can be written without duplicating a
+gem5 Python config, add a test that exercises:
+
+- A read responses loading `ARegisterFileIn`;
+- B read responses entering `availableB`;
+- one `array_input_accepted` pair emitted with B before A;
+- one result token and one write accepted.
+
+If this is too intrusive for this task, document the reason in `STATUS.md` and
+cover end-to-end execution in Task 9's standalone simulation instead.
+
+- [ ] **Step 11: Build all SAU unit tests**
 
 ```bash
-scons build/ALL/sau/command.test.opt \
-      build/ALL/sau/address_generator.test.opt \
-      build/ALL/sau/token_pipeline.test.opt -j4
-./build/ALL/sau/command.test.opt
-./build/ALL/sau/address_generator.test.opt
-./build/ALL/sau/token_pipeline.test.opt
+scons build/RISCV/sau/address_generator.test.opt \
+      build/RISCV/sau/a_register_file.test.opt \
+      build/RISCV/sau/command.test.opt \
+      build/RISCV/sau/memory_port.test.opt \
+      build/RISCV/sau/token_pipeline.test.opt \
+      build/RISCV/sau/trace_writer.test.opt \
+      build/RISCV/gem5.opt -j4
+
+./build/RISCV/sau/address_generator.test.opt
+./build/RISCV/sau/a_register_file.test.opt
+./build/RISCV/sau/command.test.opt
+./build/RISCV/sau/memory_port.test.opt
+./build/RISCV/sau/token_pipeline.test.opt
+./build/RISCV/sau/trace_writer.test.opt
+python3 -m unittest util.sau.compare_trace_test -v
 ```
 
 Expected: all tests PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add src/sau/sau_model.hh src/sau/sau_model.cc

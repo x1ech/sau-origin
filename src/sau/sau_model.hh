@@ -2,13 +2,17 @@
 #define __SAU_SAU_MODEL_HH__
 
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/statistics.hh"
 #include "params/SauModel.hh"
+#include "sau/a_register_file.hh"
+#include "sau/address_generator.hh"
 #include "sau/memory_port.hh"
+#include "sau/token_pipeline.hh"
 #include "sau/trace_writer.hh"
 #include "sau/types.hh"
 #include "sim/clocked_object.hh"
@@ -54,12 +58,46 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     Phase phase = Phase::Idle;
     uint64_t sauCycle = 0;                    // SAU 内部周期计数（相对命令开始时刻）
     std::vector<Beat> visibleMemoryResponses;
+    std::optional<AddressGenerator> readGenerator;
+    std::optional<ARegisterFileIn> aRegisterFile;
+    std::deque<Beat> availableB;
+    TokenBuffer outputBuffer;
+    ArrayPipeline arrayPipeline;
+
+    uint32_t currentInstruction = 0;
+    uint32_t currentFlow = 0;
+    uint32_t currentArrayBeat = 0;
+    uint32_t nextArrayIndex = 0;
+    uint32_t nextResultIndex = 0;
+    uint32_t nextWriteIndex = 0;
+
+    uint64_t acceptedReadBeats = 0;
+    uint64_t visibleReadBeats = 0;
+    uint64_t arrayAdmissions = 0;
+    uint64_t resultsProduced = 0;
+    uint64_t writesAccepted = 0;
+    uint32_t readAcceptedTraceA = 0;
+    uint32_t readAcceptedTraceB = 0;
+    uint32_t readResponseTraceA = 0;
+    uint32_t readResponseTraceB = 0;
 
     TraceWriter traceWriter;                  // CSV 事件日志输出
     EventFunctionWrapper tickEvent;           // gem5 事件：每个时钟边沿触发 tick()
 
     // ========== 核心调度（每个时钟边沿执行一次） ==========
     void tick();
+    void consumeResponses();
+    void advanceArray();
+    void produceResults();
+    void issueWrites();
+    void issueReads();
+    void updatePhase();
+    void accountCycle();
+    void transitionTo(Phase newPhase);
+    void checkConservation() const;
+    bool hasPendingWork() const;
+    bool commandLocallyComplete() const;
+    uint32_t expectedOutputBeats() const;
     void requestAccepted(const Beat &beat, bool write) override;
     void responseAvailable() override;
 

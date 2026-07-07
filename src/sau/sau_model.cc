@@ -1,11 +1,13 @@
 #include "sau/sau_model.hh"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <stdexcept>
 
 #include "base/logging.hh"
 #include "sau/command.hh"
+#include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
 namespace gem5::sau
@@ -94,6 +96,8 @@ SauModel::SauModel(const Params &params)
       commandStartCycles(params.command_start_cycles),
       exitOnDone(params.exit_on_done),
       startupCommand(buildStartupCommand(params)),  // 将 Python 参数转为 SauCommand
+      outputBuffer(outputBufferEntries),
+      arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
       traceWriter(params.trace_file),               // 打开 trace CSV 文件
       tickEvent([this] { tick(); }, name() + ".tick"),
       stats(this)                                   // 统计组挂靠在 SauModel 下
@@ -143,6 +147,25 @@ SauModel::submitCommand(const SauCommand &command)
     // 校验并记录命令
     validateCommand(command, beatBytes);
     activeCommand = command;
+    readGenerator.emplace(command);
+    aRegisterFile.emplace(command);
+    availableB.clear();
+    visibleMemoryResponses.clear();
+    currentInstruction = 0;
+    currentFlow = 0;
+    currentArrayBeat = 0;
+    nextArrayIndex = 0;
+    nextResultIndex = 0;
+    nextWriteIndex = 0;
+    acceptedReadBeats = 0;
+    visibleReadBeats = 0;
+    arrayAdmissions = 0;
+    resultsProduced = 0;
+    writesAccepted = 0;
+    readAcceptedTraceA = 0;
+    readAcceptedTraceB = 0;
+    readResponseTraceA = 0;
+    readResponseTraceB = 0;
     phase = Phase::OperandLoad;
     sauCycle = 0;
 
@@ -175,9 +198,11 @@ SauModel::tick()
              "SAU memory response arrived without an active command");
     for (const auto &beat : responses) {
         visibleMemoryResponses.push_back(beat);
+        auto &traceBeat = beat.stream == StreamKind::OperandA ?
+            readResponseTraceA : readResponseTraceB;
         traceWriter.emit(
             sauCycle, EventKind::ReadResponseVisible, activeCommand->id,
-            streamName(beat.stream), 0, beat.index, phase);
+            streamName(beat.stream), 0, traceBeat++, phase);
     }
 
     // 没有活跃命令 → 空转返回
@@ -185,7 +210,229 @@ SauModel::tick()
         return;
     }
 
-    // 统计当前 phase 的累计周期
+    consumeResponses();
+    advanceArray();
+    produceResults();
+    issueWrites();
+    issueReads();
+    updatePhase();
+    accountCycle();
+    checkConservation();
+
+    ++sauCycle;
+    if (hasPendingWork()) {
+        schedule(tickEvent, clockEdge(Cycles(1)));
+    }
+}
+
+void
+SauModel::consumeResponses()
+{
+    for (const auto &beat : visibleMemoryResponses) {
+        ++visibleReadBeats;
+        if (beat.stream == StreamKind::OperandA) {
+            aRegisterFile->load(beat);
+        } else if (beat.stream == StreamKind::OperandB) {
+            availableB.push_back(beat);
+        } else {
+            panic("unexpected SAU read response stream");
+        }
+    }
+    visibleMemoryResponses.clear();
+    stats.maxInputBufferOccupancy = std::max(
+        static_cast<unsigned>(stats.maxInputBufferOccupancy.value()),
+        static_cast<unsigned>(availableB.size()));
+}
+
+void
+SauModel::advanceArray()
+{
+    if (!activeCommand || nextArrayIndex >= activeCommand->workItems) {
+        return;
+    }
+    if (!aRegisterFile ||
+        !aRegisterFile->instructionReady(currentInstruction)) {
+        ++stats.stallInputStarvation;
+        return;
+    }
+    if (availableB.empty()) {
+        ++stats.stallInputStarvation;
+        return;
+    }
+    if (!arrayPipeline.canAccept(Cycles(sauCycle))) {
+        return;
+    }
+    if (!outputBuffer.canPush()) {
+        ++stats.stallOutputBufferFull;
+        return;
+    }
+
+    const auto bBeat = availableB.front();
+    availableB.pop_front();
+    const Beat aBeat = aRegisterFile->arrayInputBeat(
+        currentInstruction, currentFlow, currentArrayBeat, nextArrayIndex);
+    const bool lastWork = nextArrayIndex + 1 == activeCommand->workItems;
+
+    if (phase == Phase::OperandLoad) {
+        transitionTo(Phase::ArrayActive);
+    }
+    if (lastWork) {
+        transitionTo(Phase::ArrayDrain);
+    }
+
+    traceWriter.emit(
+        sauCycle, EventKind::ArrayInputAccepted, activeCommand->id,
+        streamName(bBeat.stream), 0, nextArrayIndex, phase);
+    traceWriter.emit(
+        sauCycle, EventKind::ArrayInputAccepted, activeCommand->id,
+        streamName(aBeat.stream), 0, aBeat.index, phase);
+
+    arrayPipeline.accept(activeCommand->id, nextArrayIndex, lastWork,
+                         Cycles(sauCycle));
+
+    ++arrayAdmissions;
+    ++nextArrayIndex;
+    ++currentArrayBeat;
+    if (currentArrayBeat == activeCommand->operandA.beats) {
+        currentArrayBeat = 0;
+        ++currentFlow;
+        if (currentFlow == activeCommand->flowLoops) {
+            currentFlow = 0;
+            ++currentInstruction;
+        }
+    }
+}
+
+void
+SauModel::produceResults()
+{
+    while (activeCommand && resultsProduced < expectedOutputBeats() &&
+           arrayPipeline.hasReady(Cycles(sauCycle))) {
+        if (!outputBuffer.canPush()) {
+            ++stats.stallOutputBufferFull;
+            return;
+        }
+
+        auto token = arrayPipeline.takeReady(Cycles(sauCycle));
+        token.index = nextResultIndex;
+        token.last = nextResultIndex + 1 == expectedOutputBeats();
+        outputBuffer.push(token);
+
+        traceWriter.emit(sauCycle, EventKind::ResultProduced,
+                         activeCommand->id, "output", 0, token.index, phase);
+
+        ++resultsProduced;
+        ++nextResultIndex;
+        stats.maxOutputBufferOccupancy = std::max(
+            static_cast<unsigned>(stats.maxOutputBufferOccupancy.value()),
+            static_cast<unsigned>(outputBuffer.size()));
+    }
+}
+
+void
+SauModel::issueWrites()
+{
+    if (!activeCommand || outputBuffer.size() == 0 ||
+        memoryPort.hasBlockedPacket()) {
+        return;
+    }
+    if (memoryPort.outstandingWrites() >= maxOutstandingWrites) {
+        ++stats.stallOutstandingWriteLimit;
+        return;
+    }
+
+    unsigned issued = 0;
+    while (issued < writeIssueWidth && outputBuffer.size() > 0 &&
+           memoryPort.outstandingWrites() < maxOutstandingWrites &&
+           memoryPort.canIssue()) {
+        const auto &token = outputBuffer.front();
+        const uint32_t beatIndex = token.index;
+        Beat writeBeat{
+            StreamKind::Output,
+            activeCommand->output.base +
+                static_cast<Addr>(beatIndex) *
+                    activeCommand->output.strideBytes,
+            beatIndex,
+            beatIndex + 1 == expectedOutputBeats(),
+        };
+
+        if (phase != Phase::Writeback) {
+            transitionTo(Phase::Writeback);
+        }
+
+        const bool acceptedOrBlocked = memoryPort.trySend(writeBeat, true);
+        outputBuffer.pop();
+        ++nextWriteIndex;
+        ++issued;
+        if (!acceptedOrBlocked) {
+            ++stats.stallRequestRetry;
+            break;
+        }
+    }
+}
+
+void
+SauModel::issueReads()
+{
+    if (!activeCommand || !readGenerator || readGenerator->empty() ||
+        memoryPort.hasBlockedPacket()) {
+        return;
+    }
+    if (memoryPort.outstandingReads() >= maxOutstandingReads) {
+        ++stats.stallOutstandingReadLimit;
+        return;
+    }
+
+    unsigned issued = 0;
+    while (issued < readIssueWidth && !readGenerator->empty() &&
+           memoryPort.outstandingReads() < maxOutstandingReads &&
+           memoryPort.canIssue()) {
+        const Beat beat = readGenerator->front();
+        const bool acceptedOrBlocked = memoryPort.trySend(beat, false);
+        readGenerator->pop();
+        ++issued;
+        if (!acceptedOrBlocked) {
+            ++stats.stallRequestRetry;
+            break;
+        }
+    }
+}
+
+void
+SauModel::updatePhase()
+{
+    if (!activeCommand) {
+        return;
+    }
+
+    if (phase == Phase::ArrayActive &&
+        arrayAdmissions == activeCommand->workItems) {
+        transitionTo(Phase::ArrayDrain);
+    }
+
+    if (commandLocallyComplete()) {
+        transitionTo(Phase::Complete);
+        traceWriter.emit(sauCycle, EventKind::CommandComplete,
+                         activeCommand->id, "none", 0, 0, phase);
+        ++stats.commandsCompleted;
+        activeCommand.reset();
+        readGenerator.reset();
+        aRegisterFile.reset();
+        availableB.clear();
+        if (exitOnDone) {
+            exitSimLoop("SAU command complete");
+        }
+        signalDrainDone();
+    }
+}
+
+void
+SauModel::accountCycle()
+{
+    if (!activeCommand) {
+        return;
+    }
+
     ++stats.commandCycles;
     switch (phase) {
       case Phase::OperandLoad:
@@ -204,14 +451,65 @@ SauModel::tick()
       case Phase::Complete:
         break;
     }
+}
 
-    // 【骨架阶段】tick() 未集成任何调度逻辑
-    // 任务 8 完成后将替换为：
-    //   consumeResponses() → advanceArray() → produceResults()
-    //   → issueWrites() → issueReads() → updatePhase() → accountCycle()
+void
+SauModel::transitionTo(Phase newPhase)
+{
+    if (phase == newPhase) {
+        return;
+    }
+    phase = newPhase;
+    traceWriter.emit(sauCycle, EventKind::PhaseChanged, activeCommand->id,
+                     "none", 0, 0, phase);
+}
 
-    ++sauCycle;
-    schedule(tickEvent, clockEdge(Cycles(1))); // 下一拍继续 tick
+void
+SauModel::checkConservation() const
+{
+    assert(visibleReadBeats <= acceptedReadBeats);
+    assert(resultsProduced <= arrayAdmissions);
+    assert(writesAccepted <= resultsProduced);
+    assert(writesAccepted <= nextWriteIndex);
+    assert(nextWriteIndex <= resultsProduced);
+    assert(outputBuffer.size() + writesAccepted <= resultsProduced);
+    if (aRegisterFile) {
+        assert(arrayAdmissions <= aRegisterFile->totalArrayInputBeats());
+    }
+    assert(availableB.size() <= visibleReadBeats);
+}
+
+bool
+SauModel::hasPendingWork() const
+{
+    return activeCommand || memoryPort.hasBlockedPacket() ||
+        memoryPort.outstandingReads() != 0 ||
+        memoryPort.outstandingWrites() != 0 ||
+        !visibleMemoryResponses.empty();
+}
+
+bool
+SauModel::commandLocallyComplete() const
+{
+    return activeCommand &&
+        writesAccepted == expectedOutputBeats() &&
+        outputBuffer.size() == 0 &&
+        arrayPipeline.inFlight() == 0 &&
+        (!readGenerator || readGenerator->empty()) &&
+        visibleReadBeats == acceptedReadBeats &&
+        visibleMemoryResponses.empty() &&
+        !memoryPort.hasBlockedPacket() &&
+        memoryPort.outstandingReads() == 0 &&
+        memoryPort.outstandingWrites() == 0;
+}
+
+uint32_t
+SauModel::expectedOutputBeats() const
+{
+    if (!activeCommand) {
+        return 0;
+    }
+    return activeCommand->output.beats * activeCommand->instructionLoops;
 }
 
 void
@@ -236,11 +534,21 @@ SauModel::requestAccepted(const Beat &beat, bool write)
             memoryPort.outstandingReads());
     }
 
-    traceWriter.emit(
-        sauCycle,
-        write ? EventKind::WriteAccepted : EventKind::ReadAccepted,
-        activeCommand->id, streamName(beat.stream), beat.address,
-        beat.index, phase);
+    uint32_t traceBeat = beat.index;
+    if (write) {
+        ++writesAccepted;
+    } else {
+        ++acceptedReadBeats;
+        auto &counter = beat.stream == StreamKind::OperandA ?
+            readAcceptedTraceA : readAcceptedTraceB;
+        traceBeat = counter++;
+    }
+
+    traceWriter.emit(sauCycle,
+                     write ? EventKind::WriteAccepted :
+                         EventKind::ReadAccepted,
+                     activeCommand->id, streamName(beat.stream),
+                     beat.address, traceBeat, phase);
 }
 
 void
@@ -256,20 +564,27 @@ SauModel::responseAvailable()
 DrainState
 SauModel::drain()
 {
-    // 【骨架阶段】无条件停止 tick 并报告 Drained
-    // 任务 8 完成后需检查 outstanding 请求是否全部完成
-    if (tickEvent.scheduled()) {
-        deschedule(tickEvent);
+    if (!hasPendingWork()) {
+        if (tickEvent.scheduled()) {
+            deschedule(tickEvent);
+        }
+        return DrainState::Drained;
     }
-    return DrainState::Drained;
+
+    if (!tickEvent.scheduled()) {
+        schedule(tickEvent, clockEdge(Cycles(1)));
+    }
+    return DrainState::Draining;
 }
 
 void
 SauModel::drainResume()
 {
     // 恢复仿真：如果有活跃命令且 tick 未调度，则重新启动
-    if (activeCommand && !tickEvent.scheduled()) {
+    if (hasPendingWork() && !tickEvent.scheduled()) {
         schedule(tickEvent, clockEdge(Cycles(1)));
+    } else if (!hasPendingWork() && tickEvent.scheduled()) {
+        deschedule(tickEvent);
     }
 }
 

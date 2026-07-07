@@ -613,7 +613,72 @@ git commit -m "feat: issue SAU timing memory requests"
 
 - 修改 `src/sau/sau_model.{hh,cc}`
 
-- [ ] **步骤 1：固定每个时钟边沿的执行顺序**
+- [ ] **步骤 1：增加调度所需成员状态**
+
+在 `src/sau/sau_model.hh` 中加入：
+
+```cpp
+#include <deque>
+
+#include "sau/a_register_file.hh"
+#include "sau/address_generator.hh"
+#include "sau/token_pipeline.hh"
+```
+
+在运行时状态中加入：
+
+```cpp
+std::optional<AddressGenerator> readGenerator;
+std::optional<ARegisterFileIn> aRegisterFile;
+std::deque<Beat> availableB;
+TokenBuffer outputBuffer;
+ArrayPipeline arrayPipeline;
+
+uint32_t currentInstruction = 0;
+uint32_t currentFlow = 0;
+uint32_t currentArrayBeat = 0;
+uint32_t nextArrayIndex = 0;
+uint32_t nextResultIndex = 0;
+uint32_t nextWriteIndex = 0;
+
+uint64_t acceptedReadBeats = 0;
+uint64_t visibleReadBeats = 0;
+uint64_t arrayAdmissions = 0;
+uint64_t resultsProduced = 0;
+uint64_t writesAccepted = 0;
+```
+
+构造函数初始化：
+
+```cpp
+outputBuffer(outputBufferEntries),
+arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
+```
+
+`submitCommand()` 接受命令后初始化：
+
+```cpp
+readGenerator.emplace(command);
+aRegisterFile.emplace(command);
+availableB.clear();
+visibleMemoryResponses.clear();
+currentInstruction = 0;
+currentFlow = 0;
+currentArrayBeat = 0;
+nextArrayIndex = 0;
+nextResultIndex = 0;
+nextWriteIndex = 0;
+acceptedReadBeats = 0;
+visibleReadBeats = 0;
+arrayAdmissions = 0;
+resultsProduced = 0;
+writesAccepted = 0;
+```
+
+这里必须保留 A 外部 preload 与 A 阵列输入复用的分层，不要再把每个
+A array input 都建模成一次外部 SRAM read。
+
+- [ ] **步骤 2：固定每个时钟边沿的执行顺序**
 
 ```cpp
 consumeResponses();
@@ -625,16 +690,89 @@ updatePhase();
 accountCycle();
 ```
 
-- [ ] **步骤 2：实现操作数 ready 条件**
+- [ ] **步骤 3：实现 read response 消费**
 
-只有以下条件同时满足才接收 A token：
+`consumeResponses()` 将 `visibleMemoryResponses` 分流到对应资源：
 
-- 当前 flow 的 B 已全部返回；
-- A token 已返回；
-- array 可接收；
-- output 资源不会溢出。
+```cpp
+void
+SauModel::consumeResponses()
+{
+    for (const auto &beat : visibleMemoryResponses) {
+        ++visibleReadBeats;
+        if (beat.stream == StreamKind::OperandA) {
+            aRegisterFile->load(beat);
+        } else if (beat.stream == StreamKind::OperandB) {
+            availableB.push_back(beat);
+        } else {
+            panic("unexpected SAU read response stream");
+        }
+    }
+    visibleMemoryResponses.clear();
+}
+```
 
-- [ ] **步骤 3：实现结果和写回**
+旧计划里的 “A response 进入 inputBuffer” 已经过时。现在正确模型是：
+
+```text
+A response -> ARegisterFileIn preload
+B response -> availableB queue
+A array input -> 从已 resident 的 ARegisterFileIn 虚拟生成
+```
+
+- [ ] **步骤 4：实现 A 复用 + B streaming 的阵列接收**
+
+`advanceArray()` 只有在以下条件同时满足时才接收一个 work token：
+
+- 当前 instruction 的 A 已经 `aRegisterFile->instructionReady()`；
+- `availableB` 非空；
+- `arrayPipeline.canAccept(Cycles(sauCycle))`；
+- output buffer/headroom 不会溢出；
+- `nextArrayIndex < activeCommand->workItems`。
+
+接收时先消费一个 B token，再生成虚拟 A token：
+
+```cpp
+const auto bBeat = availableB.front();
+availableB.pop_front();
+const Beat aBeat = aRegisterFile->arrayInputBeat(
+    currentInstruction, currentFlow, currentArrayBeat, nextArrayIndex);
+```
+
+如果这是第一笔阵列输入，先切 phase：
+
+```cpp
+if (phase == Phase::OperandLoad) {
+    phase = Phase::ArrayActive;
+    traceWriter.emit(sauCycle, EventKind::PhaseChanged,
+                     activeCommand->id, "none", 0, 0, phase);
+}
+```
+
+随后按 RTL trace 顺序输出 B 再 A：
+
+```cpp
+traceWriter.emit(sauCycle, EventKind::ArrayInputAccepted,
+                 activeCommand->id, "operand_b", 0, bBeat.index, phase);
+traceWriter.emit(sauCycle, EventKind::ArrayInputAccepted,
+                 activeCommand->id, "operand_a", 0, aBeat.index, phase);
+```
+
+然后送入阵列：
+
+```cpp
+arrayPipeline.accept(activeCommand->id, nextArrayIndex,
+                     nextArrayIndex + 1 == activeCommand->workItems,
+                     Cycles(sauCycle));
+```
+
+阵列输入游标顺序：
+
+```text
+beat within flow -> next flow -> next instruction
+```
+
+- [ ] **步骤 5：实现结果和写回**
 
 每个完成的 work token 产生一个 output token。写地址为：
 
@@ -642,44 +780,123 @@ accountCycle();
 output.base + beatIndex * output.strideBytes
 ```
 
-只有 timing write 被下游接受后才能 pop output token，并输出
-`write_accepted`。
+`write_accepted` 必须在 `SauMemoryPort` 的 accepted 回调里输出，而不是在
+response 时输出。如果 `trySend()` 返回 false，port 已经接管一个 blocked
+packet 等待 retry；scheduler 不能继续从 `outputBuffer` 重发同一个 output
+token。
 
-- [ ] **步骤 4：实现 phase 与完成**
+- [ ] **步骤 6：实现外部 read/write issue**
+
+`issueReads()` 只从 `readGenerator` 发送外部 SRAM read：
+
+```cpp
+unsigned issued = 0;
+while (issued < readIssueWidth && readGenerator &&
+       !readGenerator->empty() &&
+       memoryPort.outstandingReads() < maxOutstandingReads &&
+       memoryPort.canIssue()) {
+    const Beat beat = readGenerator->front();
+    const bool acceptedOrBlocked = memoryPort.trySend(beat, false);
+    readGenerator->pop();
+    ++issued;
+    if (!acceptedOrBlocked) {
+        ++stats.stallRequestRetry;
+        break;
+    }
+}
+```
+
+`issueWrites()` 从 `outputBuffer` 发写请求。写 beat：
+
+```cpp
+Beat writeBeat{
+    StreamKind::Output,
+    activeCommand->output.base +
+        static_cast<Addr>(nextWriteIndex) *
+            activeCommand->output.strideBytes,
+    nextWriteIndex,
+    nextWriteIndex + 1 == activeCommand->output.beats *
+        activeCommand->instructionLoops,
+};
+```
+
+`memoryPort.trySend(writeBeat, true)` 返回后就 pop output token，因为 port
+要么已经立即接受，要么已经把它保存为唯一 blocked packet 等待 retry。
+`writesAccepted` 只能在 `requestAccepted()` 中递增，因为 retry 接受可能发生在
+之后。
+
+- [ ] **步骤 7：实现 phase 与完成**
 
 ```text
 OperandLoad → ArrayActive → ArrayDrain → Writeback → Complete
 ```
 
-最后一个 write 被接受时完成命令；write response 仅负责释放 gem5 packet。
+phase 规则：
 
-- [ ] **步骤 5：实现 drain**
+- `OperandLoad`：从 command accepted 到第一笔 array input；
+- `ArrayActive`：仍可能接收新的 work token；
+- `ArrayDrain`：最后一个 work token 已接收，但最后一个 result 还没出来；
+- `Writeback`：第一笔 output write 已接受后，仍有 output token、blocked write
+  packet 或 outstanding write；
+- `Complete`：所有期望 write 已接受，且命令本地 packet 状态清空。
+
+`phase_changed` 必须只发一次；与 anchor event 同拍时，先发 `phase_changed`。
+`command_complete` 与切到 `Complete` 同拍发出。若 `exit_on_done=true`，调用
+`exitSimLoop("SAU command complete")`。
+
+- [ ] **步骤 8：实现 drain**
 
 仅当无 blocked packet、无 outstanding request 且模型 idle/complete 时返回
 `Drained`。首阶段不序列化执行中的命令。
 
-- [ ] **步骤 6：加入守恒断言**
+- [ ] **步骤 9：加入守恒断言**
 
 每拍检查：
 
 ```cpp
 assert(readResponses <= acceptedReads);
-assert(arrayAdmissions <= readResponses);
+assert(aRegisterFile->totalExternalLoadBeats() <= acceptedReads);
+assert(arrayAdmissions <= aRegisterFile->totalArrayInputBeats());
 assert(resultsProduced <= arrayAdmissions);
 assert(writesAccepted <= resultsProduced);
+assert(availableB.size() <= visibleReadBeats);
 ```
 
 完成时要求 buffer 和 array pipeline 为空，命令期望计数全部相等。
 
-- [ ] **步骤 7：运行全部 C++ 单测**
+- [ ] **步骤 10：如可行，增加 focused SauModel scheduler 单测**
+
+如果不需要复制大量 gem5 Python config，就加一个小测试覆盖：
+
+- A response 进入 `ARegisterFileIn`；
+- B response 进入 `availableB`；
+- `array_input_accepted` 按 B 再 A 输出；
+- result token 与 write accepted 能前进。
+
+如果这个测试在当前结构下太重，就在 `STATUS.md` 说明原因，并把端到端验证放到
+任务 9 standalone simulation。
+
+- [ ] **步骤 11：运行全部 C++/Python 单测**
 
 ```bash
-./build/ALL/sau/command.test.opt
-./build/ALL/sau/address_generator.test.opt
-./build/ALL/sau/token_pipeline.test.opt
+scons build/RISCV/sau/address_generator.test.opt \
+      build/RISCV/sau/a_register_file.test.opt \
+      build/RISCV/sau/command.test.opt \
+      build/RISCV/sau/memory_port.test.opt \
+      build/RISCV/sau/token_pipeline.test.opt \
+      build/RISCV/sau/trace_writer.test.opt \
+      build/RISCV/gem5.opt -j4
+
+./build/RISCV/sau/address_generator.test.opt
+./build/RISCV/sau/a_register_file.test.opt
+./build/RISCV/sau/command.test.opt
+./build/RISCV/sau/memory_port.test.opt
+./build/RISCV/sau/token_pipeline.test.opt
+./build/RISCV/sau/trace_writer.test.opt
+python3 -m unittest util.sau.compare_trace_test -v
 ```
 
-- [ ] **步骤 8：提交**
+- [ ] **步骤 12：提交**
 
 ```bash
 git add src/sau/sau_model.hh src/sau/sau_model.cc
