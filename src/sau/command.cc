@@ -12,6 +12,10 @@ namespace
 uint32_t
 checkedProduct(uint32_t lhs, uint32_t rhs, const char *description)
 {
+    /* 仿真层安全检查：将乘法提升至64位避免溢出回绕。
+     * RTL 无此机制 —— 硬件计数器以固定位宽自旋，溢出是其自然行为。
+     * 此处仅防止用户非法配置导致模型静默异常。 */
+
     const auto product = static_cast<uint64_t>(lhs) * rhs;
     if (product > std::numeric_limits<uint32_t>::max()) {
         throw std::invalid_argument(description);
@@ -22,6 +26,7 @@ checkedProduct(uint32_t lhs, uint32_t rhs, const char *description)
 void
 validateStream(const StreamDesc &stream, unsigned beatBytes)
 {
+    //非法拦截
     if (stream.beats == 0) {
         throw std::invalid_argument(
             "SAU stream must contain at least one beat");

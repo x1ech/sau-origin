@@ -1,0 +1,41 @@
+{
+  "command_cycles": 2036,
+  "counts": {
+    "array_operand_a": 1568,
+    "array_operand_b": 1568,
+    "read_operand_a": 64,
+    "read_operand_b": 1584,
+    "results": 256,
+    "writes": 256
+  },
+  "first_cycle": {
+    "array_input": 77,
+    "complete": 2036,
+    "read": 3,
+    "result": 324,
+    "write": 1777
+  },
+  "last_cycle": {
+    "array_input": 1689,
+    "read": 1684,
+    "result": 1769,
+    "write": 2032
+  },
+  "latency_cycles": {
+    "command_to_first_read": 3,
+    "first_array_input_to_first_result": 247,
+    "last_array_input_to_last_result": 80,
+    "last_result_to_first_write": 8,
+    "last_write_to_complete": 4
+  },
+  "ratios": {
+    "array_a_per_result": "1568/256",
+    "array_b_per_result": "1568/256",
+    "results_per_write": "256/256"
+  },
+  "result_intervals": {
+    "max": 171,
+    "min": 1,
+    "mode": 1
+  }
+}
