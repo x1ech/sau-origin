@@ -29,8 +29,8 @@
 - RISC-V `msetins1..7`；
 - CSR、完成中断；
 - 数值计算；
-- int16、transpose、CSR reuse 字段 decode 以及所有算子专用的
-  `register_file_in` 时序变体；
+- int16、泛化 transpose engine、CSR reuse 字段 decode 以及所有算子专用的
+  `register_file_in`/transpose 时序变体；
 - PWConv、普通卷积、DWConv、padding；
 - RTL 寄存器级等价。
 
@@ -1021,6 +1021,113 @@ python3 -m unittest util.sau.compare_trace_test -v
 ```bash
 git add src/sau/sau_model.hh src/sau/sau_model.cc
 git commit -m "feat: run SAU GEMM timing pipeline"
+```
+
+---
+
+## 任务 8.5：校准并建模 matmul 的 `TRANSPOSE_LOAD/CLIP` 时序路径
+
+任务 9 不能在任务 8.5 之前开始，除非明确记录 standalone simulation 会与 corrected
+RTL baseline 存在预期差异。
+
+**文件：**
+
+- 修改 `src/sau/Sau.py`
+- 修改 `src/sau/sau_model.{hh,cc}`
+- 修改 `src/sau/STATUS.md`
+- 复用现有 SAU C++ 测试，并在任务 9 用 standalone trace 验证。
+
+- [ ] **步骤 1：记录 corrected baseline 的 RTL 状态分布**
+
+使用 corrected diagnostic trace：
+
+```bash
+python3 - <<'PY'
+import csv, collections
+p = "tests/gem5/sau/ref/int8_gemm_64x256x256/diagnostic.csv"
+counts = collections.Counter()
+with open(p) as f:
+    for row in csv.DictReader(f):
+        cycle = int(row["cycle"])
+        if cycle <= 5897:
+            counts[row["core_state"]] += 1
+for state, count in counts.most_common():
+    print(state, count)
+PY
+```
+
+corrected package 中每个 command 的预期状态 span：
+
+```text
+REGISTER_LOAD    256 cycles
+TRANSPOSE_LOAD    32 cycles
+REUSE_LOAD      1854 cycles
+TRANSPOSE_CLIP   231 cycles
+D_OUT             99 cycles
+FIRST_LOAD        33 cycles
+REGISTER_UNLOAD  265 cycles
+```
+
+这些状态不是当前 matmul baseline 的可选边角路径。`TRANSPOSE_LOAD` 每个 command
+出现一次，`TRANSPOSE_CLIP` 在多个 flow boundary 高频出现。
+
+- [ ] **步骤 2：替换 “A/B 同拍成对 array input” 假设**
+
+corrected public trace 显示 A/B array-input window 有 32-cycle skew：
+
+```text
+command 1: A array_input cycles 269..2392, B array_input cycles 301..2425
+command 2: A array_input cycles 3394..5517, B array_input cycles 3426..5550
+```
+
+因此 gem5 不应要求每个 A/B array input 必须同周期接收。需要在周期级建模
+transpose/reuse 路径引入的 32-cycle skew；当同周期同时出现 A/B 时，仍保持事件
+顺序稳定。
+
+- [ ] **步骤 3：增加显式时序参数**
+
+默认值先匹配 corrected baseline：
+
+```python
+register_load_cycles = Param.Cycles(256, "A register_file_in preload span")
+transpose_load_cycles = Param.Cycles(32, "matmul transpose-load span")
+transpose_clip_cycles = Param.Cycles(33, "per-flow transpose-clip span")
+final_first_load_cycles = Param.Cycles(33, "final first-load tail span")
+register_unload_cycles = Param.Cycles(265, "writeback/unload completion span")
+```
+
+这些是 timing-policy 参数，不是 RTL 寄存器级状态复制。
+
+- [ ] **步骤 4：更新 `SauModel` 调度**
+
+调度器至少要能表达 corrected trace 形状：
+
+- 外部 A read 在第一段 B stream 前完成；
+- A array input 在 `REGISTER_LOAD + TRANSPOSE_LOAD` 后开始；
+- B array input 相对 A array input 晚 32 cycles；
+- 每个 flow boundary 有类似 `TRANSPOSE_CLIP` 的 gap；
+- 末尾使用 `FIRST_LOAD/D_OUT` tail，再进入 register unload/writeback completion。
+
+继续保留 token/request 守恒断言。
+
+- [ ] **步骤 5：用任务 9 生成的 trace 验证形状**
+
+任务 9 能生成 gem5 trace 后运行：
+
+```bash
+python3 util/sau/compare_trace.py --mode causal \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
+    m5out/sau-fixed/sau.csv
+```
+
+完整标定前，至少要求 event order 与 stream/beat metadata 能对齐；strict cycle
+accuracy 留到任务 10。
+
+- [ ] **步骤 6：提交**
+
+```bash
+git add src/sau docs/superpowers/plans src/sau/STATUS.md
+git commit -m "feat: model SAU matmul transpose timing path"
 ```
 
 ---

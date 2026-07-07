@@ -48,7 +48,8 @@ Design and implementation references:
 | 6. Add the SimObject, parameters, trace, and stats skeleton | Complete | Registers `SauModel`, its timing-memory port and parameters, a stable seven-column trace writer, synthetic command startup, and statistics placeholders. |
 | 7. Implement the timing memory port | Complete | Sends exact 32-byte read/write packets, retains one rejected packet for retry, tracks accepted outstanding traffic, and queues read responses for the next SAU edge. |
 | 8. Integrate scheduling, array timing, writeback, and drain | Complete | `SauModel::tick()` now consumes read responses, feeds `ARegisterFileIn` plus B streaming tokens into the array pipeline, produces output tokens, issues timing writes, advances phases, checks token/request conservation, and drains only after local packet state is clear. |
-| 9. Add fixed- and constrained-memory simulations | Pending | Covers deterministic latency, retry, and backpressure. |
+| 8.5. Calibrate matmul transpose/reuse timing path | Pending | Corrected RTL baseline shows high-frequency `TRANSPOSE_LOAD` and `TRANSPOSE_CLIP` states; current scheduler still lacks this timing policy and same-cycle A/B input pairing is too simple. |
+| 9. Add fixed- and constrained-memory simulations | Pending after Task 8.5 | Covers deterministic latency, retry, and backpressure after the corrected matmul transpose/reuse timing path is represented. |
 | 10. Calibrate against the RTL reference | Pending Task 9 traces | No cycle-accuracy claim can be made until gem5 traces are generated and compared against the imported RTL reference. |
 | 11. Final regression, statistics audit, and documentation | Pending | Final milestone validation and handoff. |
 
@@ -162,9 +163,10 @@ Design and implementation references:
 - Array input admission requires resident A for the current instruction, one
   available B beat, array initiation-interval/capacity availability, and output
   buffer headroom.
-- Array input trace events are emitted in RTL-observed B then A order. A-side
-  array inputs are virtual beats from resident A and do not imply fresh SRAM
-  reads.
+- Array input trace events are currently emitted as paired B then A events.
+  This is now known to be an oversimplification for the corrected RTL baseline:
+  A and B array-input windows are skewed by about 32 cycles due to the
+  matmul transpose/reuse path.
 - Results from `ArrayPipeline` become output tokens; writes use the synthetic
   output stream address formula.
 - `SauMemoryPort::trySend()` owns a packet once called. If a send is rejected,
@@ -202,6 +204,28 @@ Design and implementation references:
   - array drain latency: 80 cycles;
   - last result to first write: -3117 cycles;
   - last write to complete: 4 cycles.
+- The corrected trace contains two commands. Each command has the same
+  diagnostic state profile:
+
+  ```text
+  REGISTER_LOAD    256 cycles
+  TRANSPOSE_LOAD    32 cycles
+  REUSE_LOAD      1854 cycles
+  TRANSPOSE_CLIP   231 cycles
+  D_OUT             99 cycles
+  FIRST_LOAD        33 cycles
+  REGISTER_UNLOAD  265 cycles
+  ```
+
+- `TRANSPOSE_LOAD` and `TRANSPOSE_CLIP` are therefore part of the active matmul
+  timing path, not a low-priority future extension. The public trace also shows
+  A and B array-input windows are skewed by about 32 cycles:
+
+  ```text
+  command 1: A 269..2392, B 301..2425
+  command 2: A 3394..5517, B 3426..5550
+  ```
+
 - The original task asked for 32x32x32, but the available RTL testcase is
   64x256x256 and was accepted as the current baseline. These absolute cycle
   counts must not be treated as a 32x32x32 calibration.
@@ -304,14 +328,18 @@ Results:
 - Task 8 did not add a direct `SauModel` unit test because constructing the
   SimObject plus timing-memory topology in a focused C++ test would duplicate a
   large part of the upcoming standalone gem5 configuration. End-to-end
-  scheduler validation should be covered by Task 9's fixed/constrained memory
-  simulations.
+  scheduler validation should be covered after Task 8.5 and Task 9.
+- The Task 8 scheduler currently admits A/B array inputs as paired events. This
+  is insufficient for the corrected RTL baseline because the matmul
+  `TRANSPOSE_LOAD/CLIP` path creates staggered A/B array-input windows.
 - Current tests establish deterministic component behavior, trace comparison
   behavior, and compile-time integration of the scheduler. They do not yet
   establish calibrated RTL cycle-level timing accuracy.
 
 ## Next Steps
 
-1. Add fixed- and constrained-memory simulations in Task 9.
-2. Use `util/sau/compare_trace.py` to compare Task 9 generated gem5 traces
+1. Complete Task 8.5: calibrate and model the matmul
+   `TRANSPOSE_LOAD/TRANSPOSE_CLIP` timing path.
+2. Add fixed- and constrained-memory simulations in Task 9.
+3. Use `util/sau/compare_trace.py` to compare Task 9 generated gem5 traces
    with the imported RTL baseline.

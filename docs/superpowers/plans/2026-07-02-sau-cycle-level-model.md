@@ -24,13 +24,15 @@ This plan implements only the first milestone from
 - variable-memory retry and backpressure validation.
 
 Do not add custom RISC-V instructions, CSR wiring, interrupts, functional
-arithmetic, int16, convolution, padding, or transpose in this plan. Reuse is in
-scope only in the RTL sense of using `register_file_in`: the first milestone
-hardwires the measured int8 GEMM behavior where Operand-A is loaded once into
-the SAU-side `register_file_in` abstraction and then reused for array input
-while Operand-B streams from SRAM responses. Decoding CSR reuse fields and
-covering every operator-specific `register_file_in` timing variant are later
-work.
+arithmetic, int16, convolution, padding, or a generic transpose engine in this
+plan. Reuse is in scope in the RTL sense of using `register_file_in`: the first
+milestone hardwires the measured int8 GEMM behavior where Operand-A is loaded
+once into the SAU-side `register_file_in` abstraction and then reused for array
+input while Operand-B streams from SRAM responses. The corrected RTL baseline
+shows `TRANSPOSE_LOAD` and `TRANSPOSE_CLIP` as high-frequency states in this
+matmul path, so their cycle-level timing effect is in scope for the first
+milestone. Decoding CSR reuse fields and covering every operator-specific
+`register_file_in`/transpose timing variant are later work.
 
 The direct-command model should assume the target operator uses
 `register_file_in`, matching the current RTL CSR-configured operator path.
@@ -1268,6 +1270,117 @@ Expected: all tests PASS.
 ```bash
 git add src/sau/sau_model.hh src/sau/sau_model.cc
 git commit -m "feat: run SAU GEMM timing pipeline"
+```
+
+---
+
+### Task 8.5: Calibrate and model the matmul `TRANSPOSE_LOAD/CLIP` timing path
+
+Task 9 must not start until Task 8.5 has either implemented the calibrated
+matmul transpose/reuse timing policy or explicitly documented why the
+standalone simulation is expected to differ from the corrected RTL baseline.
+
+**Files:**
+- Modify: `src/sau/Sau.py`
+- Modify: `src/sau/sau_model.hh`
+- Modify: `src/sau/sau_model.cc`
+- Modify: `src/sau/STATUS.md`
+- Test: existing SAU C++ tests and Task 9 standalone trace comparison.
+
+- [ ] **Step 1: Record the corrected baseline state spans**
+
+Use the corrected diagnostic trace:
+
+```bash
+python3 - <<'PY'
+import csv, collections
+p = "tests/gem5/sau/ref/int8_gemm_64x256x256/diagnostic.csv"
+counts = collections.Counter()
+with open(p) as f:
+    for row in csv.DictReader(f):
+        cycle = int(row["cycle"])
+        if cycle <= 5897:
+            counts[row["core_state"]] += 1
+for state, count in counts.most_common():
+    print(state, count)
+PY
+```
+
+Expected per command in the corrected package:
+
+```text
+REGISTER_LOAD    256 cycles
+TRANSPOSE_LOAD    32 cycles
+REUSE_LOAD      1854 cycles
+TRANSPOSE_CLIP   231 cycles
+D_OUT             99 cycles
+FIRST_LOAD        33 cycles
+REGISTER_UNLOAD  265 cycles
+```
+
+These states are not optional for this matmul baseline. In particular,
+`TRANSPOSE_LOAD` appears once per command and `TRANSPOSE_CLIP` appears once per
+flow-loop boundary before the final `FIRST_LOAD/D_OUT` tail.
+
+- [ ] **Step 2: Replace the same-cycle A/B array-input assumption**
+
+The corrected public trace shows staggered array-input windows:
+
+```text
+command 1: A array_input cycles 269..2392, B array_input cycles 301..2425
+command 2: A array_input cycles 3394..5517, B array_input cycles 3426..5550
+```
+
+Do not require every A and B array input to be admitted on the same SAU cycle.
+Model the 32-cycle skew introduced by the transpose/reuse path at cycle-level
+granularity. Preserve event order within a cycle when both streams are present.
+
+- [ ] **Step 3: Add explicit timing parameters**
+
+Add parameters with defaults matching the corrected baseline:
+
+```python
+register_load_cycles = Param.Cycles(256, "A register_file_in preload span")
+transpose_load_cycles = Param.Cycles(32, "matmul transpose-load span")
+transpose_clip_cycles = Param.Cycles(33, "per-flow transpose-clip span")
+final_first_load_cycles = Param.Cycles(33, "final first-load tail span")
+register_unload_cycles = Param.Cycles(265, "writeback/unload completion span")
+```
+
+Keep these as timing-policy knobs, not RTL register-accurate state replicas.
+
+- [ ] **Step 4: Update `SauModel` scheduling**
+
+The scheduler must be able to reproduce the corrected trace shape:
+
+- external A reads complete before the first B stream;
+- A array input begins after `REGISTER_LOAD + TRANSPOSE_LOAD` timing;
+- B array input begins 32 cycles after A array input;
+- each flow boundary includes a `TRANSPOSE_CLIP`-like gap;
+- the final tail uses `FIRST_LOAD/D_OUT` timing before register unload/writeback
+  completion.
+
+Preserve token/request conservation assertions.
+
+- [ ] **Step 5: Verify against the corrected baseline shape**
+
+After Task 9 can generate a gem5 trace, compare against:
+
+```bash
+python3 util/sau/compare_trace.py --mode causal \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
+    m5out/sau-fixed/sau.csv
+```
+
+Expected before full calibration: event order and stream/beat metadata should
+match, while strict cycles may still differ. Do not claim cycle accuracy until
+Task 10.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/sau docs/superpowers/plans src/sau/STATUS.md
+git commit -m "feat: model SAU matmul transpose timing path"
 ```
 
 ---
