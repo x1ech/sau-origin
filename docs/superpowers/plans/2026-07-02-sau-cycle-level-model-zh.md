@@ -17,7 +17,8 @@
 定义的首个里程碑：
 
 - 由测试配置直接注入已解码的 SAU 命令；
-- 支持不含 reuse/transpose 的 int8 GEMM；
+- 支持不含软件可配置 reuse/transpose 模式的 int8 GEMM，同时建模 RTL
+  观察到的 Operand-A `register_file_in` preload 与 SAU 内部 A 复用边界；
 - 真实发送 timing read/write；
 - 与固定延迟 SRAM 下的 RTL 逐周期标定；
 - 验证可变延迟、retry 和 buffer backpressure。
@@ -27,7 +28,7 @@
 - RISC-V `msetins1..7`；
 - CSR、完成中断；
 - 数值计算；
-- int16、reuse、transpose；
+- int16、transpose、软件可配置 reuse 策略；
 - PWConv、普通卷积、DWConv、padding；
 - RTL 寄存器级等价。
 
@@ -52,7 +53,10 @@ clean/reset，不得删除目录或批量删除文件，不得格式化无关代
 - `src/sau/Sau.py`：端口、时序、容量、trace 和测试命令参数。
 - `src/sau/types.hh`：命令、数据流、beat、token 和状态类型。
 - `src/sau/command.{hh,cc}`：命令构造及接收校验。
-- `src/sau/address_generator.{hh,cc}`：逐 beat 地址生成。
+- `src/sau/address_generator.{hh,cc}`：外部 256-bit read beat 生成：
+  Operand-A 每个 instruction preload 一次，Operand-B 按 flow streaming。
+- `src/sau/a_register_file.{hh,cc}`：体系结构层面的 `register_file_in`
+  抽象，用于记录 resident Operand-A，并生成虚拟 A 阵列输入 beat。
 - `src/sau/token_pipeline.{hh,cc}`：buffer 与阵列流水。
 - `src/sau/memory_port.{hh,cc}`：timing packet、retry 和 outstanding。
 - `src/sau/trace_writer.{hh,cc}`：统一 CSV 输出。
@@ -126,9 +130,25 @@ struct PipelineToken
 } // namespace gem5::sau
 ```
 
-首阶段采用 RTL 非复用 GEMM 顺序：先完整加载 Operand B，再流式读取
-Operand A；按 `flowLoops` 和 `instructionLoops` 重复。具体一拍偏移以任务 1
-产生的 RTL trace 为准。
+首阶段采用 RTL 观察到的 matmul 数据路径：
+
+```text
+外部 SRAM read：
+  对每个 instruction：
+    先把 Operand-A 全部 preload 到 register_file_in 一次
+    对每个 flow：
+      从 SRAM response stream Operand-B
+
+阵列输入：
+  当当前 instruction 的 A 已 resident，且有一个 B beat 可见时：
+    从 B response queue 接收 B
+    从 resident register_file_in 生成一个虚拟 A beat
+```
+
+这属于体系结构/时序边界上的 A 复用：重复出现的 A array input 不代表重复发起
+外部 A SRAM read。它不是 RTL 寄存器端口、bank、存储数据值、transpose 或软件可配置
+reuse 策略的寄存器级建模。具体一拍偏移和 phase 边界以任务 1 产生的 RTL trace
+为准。
 
 ---
 
@@ -343,7 +363,7 @@ git commit -m "feat: define SAU timing command"
 
 ---
 
-## 任务 4：实现确定性的地址生成
+## 任务 4：实现确定性的外部 beat 生成
 
 **文件：**
 
@@ -351,22 +371,22 @@ git commit -m "feat: define SAU timing command"
 - 新建 `src/sau/address_generator.test.cc`
 - 修改 `src/sau/SConscript`
 
-- [ ] **步骤 1：先写 B→A 顺序测试**
+- [ ] **步骤 1：先写 A preload → B streaming 顺序测试**
 
 基准输入：
 
 ```text
-B: 0x2000, 0x2020, 0x2040, 0x2060
 A: 0x1000, 0x1020, 0x1040, 0x1060
+B: 0x2000, 0x2020, 0x2040, 0x2060
 ```
 
-测试两次 flow 与两次 instruction 的地址公式：
+测试两次 flow 与两次 instruction 的地址公式。Operand-A 外部 preload 不随 flow
+重复，因为 flow 内的 A 复用发生在 `register_file_in` 内部：
 
 ```text
-base
-+ instruction * instructionStrideBytes
-+ flow * flowStrideBytes
-+ beat * strideBytes
+A: base + instruction * instructionStrideBytes + beat * strideBytes
+B: base + instruction * instructionStrideBytes
+   + flow * flowStrideBytes + beat * strideBytes
 ```
 
 - [ ] **步骤 2：确认测试失败**
@@ -392,6 +412,9 @@ class AddressGenerator
 ```
 
 只保存当前 stream/beat/flow/instruction 游标，不预生成全部 beat vector。
+`front()` 先返回当前 instruction 的 Operand-A preload beat，然后返回每个 flow
+的 Operand-B streaming beat。`last` 标记每次外部 stream occurrence 的最后
+一个 beat。
 
 - [ ] **步骤 4：运行测试**
 
@@ -404,6 +427,92 @@ class AddressGenerator
 ```bash
 git add src/sau
 git commit -m "feat: generate SAU operand beats"
+```
+
+---
+
+## 任务 4.5：建模 Operand-A `register_file_in` 复用边界
+
+**文件：**
+
+- 新建 `src/sau/a_register_file.{hh,cc}`
+- 新建 `src/sau/a_register_file.test.cc`
+- 修改 `src/sau/SConscript`
+
+- [ ] **步骤 1：注册并先写失败测试**
+
+加入：
+
+```python
+Source("a_register_file.cc")
+GTest("a_register_file.test", "a_register_file.test.cc",
+      "a_register_file.cc", "command.cc")
+```
+
+测试覆盖：
+
+```cpp
+TEST(ARegisterFileIn, TracksAReadPreloadPerInstruction);
+TEST(ARegisterFileIn, ReportsArrayReuseMoreThanExternalReads);
+TEST(ARegisterFileIn, ProducesVirtualAArrayInputBeatsAfterPreload);
+TEST(ARegisterFileIn, RejectsNonAExternalLoad);
+```
+
+关键不变量：
+
+```cpp
+EXPECT_EQ(registerFile.totalExternalLoadBeats(), command.operandA.beats);
+EXPECT_EQ(registerFile.totalArrayInputBeats(),
+          command.operandA.beats * command.flowLoops *
+          command.instructionLoops);
+```
+
+- [ ] **步骤 2：确认失败**
+
+```bash
+scons build/ALL/sau/a_register_file.test.opt -j4
+```
+
+预期：因 `ARegisterFileIn` 尚未定义而失败。
+
+- [ ] **步骤 3：实现抽象接口**
+
+```cpp
+class ARegisterFileIn
+{
+  public:
+    explicit ARegisterFileIn(const SauCommand &command);
+
+    void load(const Beat &beat);
+
+    bool instructionReady(uint32_t instruction) const;
+    uint32_t loadedBeats(uint32_t instruction) const;
+
+    uint64_t totalExternalLoadBeats() const;
+    uint64_t totalArrayInputBeats() const;
+
+    Beat arrayInputBeat(uint32_t instruction, uint32_t flow, uint32_t beat,
+                        uint32_t arrayIndex) const;
+};
+```
+
+`load()` 只接受 `StreamKind::OperandA`。`arrayInputBeat()` 返回 address 为 0
+的虚拟 Operand-A beat，因为 array input trace 是 SAU 内部事件，不是外部 SRAM
+访问。
+
+- [ ] **步骤 4：运行测试**
+
+```bash
+scons build/ALL/sau/a_register_file.test.opt -j4
+./build/ALL/sau/a_register_file.test.opt
+```
+
+- [ ] **步骤 5：提交**
+
+```bash
+git add src/sau/a_register_file.hh src/sau/a_register_file.cc \
+        src/sau/a_register_file.test.cc src/sau/SConscript
+git commit -m "feat: model SAU A register file input"
 ```
 
 ---
@@ -1126,7 +1235,7 @@ git commit -m "docs: complete SAU timing model milestone"
 
 首里程碑通过后，按以下顺序分别设计和实施：
 
-1. reuse、transpose、int16；
+1. 额外的软件可配置 reuse 策略、transpose、int16；
 2. PWConv、普通卷积、DWConv、padding；
 3. RISC-V `msetins1..7`、CSR、完成中断；
 4. 可选 Functional Backend。

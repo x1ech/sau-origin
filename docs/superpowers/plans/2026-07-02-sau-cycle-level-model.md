@@ -16,13 +16,19 @@ This plan implements only the first milestone from
 `docs/superpowers/specs/2026-07-02-sau-cycle-level-model-design.md`:
 
 - direct synthetic command injection;
-- int8 GEMM without reuse or transpose;
+- int8 GEMM without software-configurable reuse/transpose modes, while
+  modeling the RTL-observed Operand-A `register_file_in` preload and internal
+  A reuse boundary;
 - real timing reads and writes;
 - fixed-memory RTL calibration;
 - variable-memory retry and backpressure validation.
 
 Do not add custom RISC-V instructions, CSR wiring, interrupts, functional
-arithmetic, int16, convolution, padding, reuse, or transpose in this plan.
+arithmetic, int16, convolution, padding, transpose, or new programmable reuse
+policies in this plan. The one reuse behavior that is in scope is the measured
+matmul datapath behavior where Operand-A is loaded once into the SAU-side
+`register_file_in` abstraction and then virtually reused for array input while
+Operand-B streams from SRAM responses.
 
 The work spans two repositories. Use separate feature branches and separate
 commits:
@@ -55,7 +61,11 @@ unrelated files.
 - Create `src/sau/command.hh`, `src/sau/command.cc`
   - Command construction and admission validation.
 - Create `src/sau/address_generator.hh`, `src/sau/address_generator.cc`
-  - Ordered 256-bit beat generation.
+  - Ordered external 256-bit read-beat generation: Operand-A preload once per
+    instruction, then Operand-B streaming per flow.
+- Create `src/sau/a_register_file.hh`, `src/sau/a_register_file.cc`
+  - Architecture-level `register_file_in` abstraction for resident Operand-A
+    beats and virtual Operand-A array-input reuse.
 - Create `src/sau/token_pipeline.hh`, `src/sau/token_pipeline.cc`
   - Capacity-limited token buffers and array fill/II/drain behavior.
 - Create `src/sau/memory_port.hh`, `src/sau/memory_port.cc`
@@ -150,11 +160,27 @@ struct PipelineToken
 } // namespace gem5::sau
 ```
 
-For the first milestone, the baseline read policy is the RTL's non-reuse GEMM
-order: load all Operand-B beats into the modeled register file, then stream
-Operand-A beats into the array. Repeat the A/B sequence per `flowLoops` and per
-`instructionLoops`. The RTL trace created in Task 1 is the authority for
-one-cycle offsets and phase boundaries.
+For the first milestone, the baseline read and array-input policy follows the
+RTL-observed matmul datapath:
+
+```text
+external SRAM reads:
+  for each instruction:
+    preload all Operand-A beats into register_file_in once
+    for each flow:
+      stream all Operand-B beats from SRAM
+
+array input:
+  when A for the current instruction is resident and one B beat is visible:
+    accept B from the B response queue
+    accept a virtual A beat from resident register_file_in
+```
+
+This is reuse at the architecture/timing boundary: repeated A array-input beats
+do not imply repeated external A SRAM reads. It is not RTL-register-accurate
+modeling of register ports, banks, stored data values, transpose, or any
+software-selectable reuse policy. The RTL trace created in Task 1 is the
+authority for one-cycle offsets and phase boundaries.
 
 ---
 
@@ -477,7 +503,7 @@ git commit -m "feat: define SAU timing command"
 
 ---
 
-### Task 4: Implement deterministic beat generation
+### Task 4: Implement deterministic external beat generation
 
 **Files:**
 - Create: `src/sau/address_generator.hh`
@@ -495,30 +521,34 @@ GTest("address_generator.test", "address_generator.test.cc",
       "address_generator.cc", "command.cc")
 ```
 
-Test this exact sequence:
+Test this exact external read sequence:
 
 ```cpp
-TEST(AddressGenerator, LoadsBThenStreamsA)
+TEST(AddressGenerator, PreloadsAThenStreamsB)
 {
     SauCommand cmd = makeCommand();
     AddressGenerator gen(cmd);
     EXPECT_THAT(collect(gen), ElementsAre(
-        Beat{StreamKind::OperandB, 0x2000, 0, false},
-        Beat{StreamKind::OperandB, 0x2020, 1, false},
-        Beat{StreamKind::OperandB, 0x2040, 2, false},
-        Beat{StreamKind::OperandB, 0x2060, 3, true},
         Beat{StreamKind::OperandA, 0x1000, 0, false},
         Beat{StreamKind::OperandA, 0x1020, 1, false},
         Beat{StreamKind::OperandA, 0x1040, 2, false},
-        Beat{StreamKind::OperandA, 0x1060, 3, true}));
+        Beat{StreamKind::OperandA, 0x1060, 3, true},
+        Beat{StreamKind::OperandB, 0x2000, 0, false},
+        Beat{StreamKind::OperandB, 0x2020, 1, false},
+        Beat{StreamKind::OperandB, 0x2040, 2, false},
+        Beat{StreamKind::OperandB, 0x2060, 3, true}));
 }
 ```
 
-Add a two-flow test that repeats B then A and uses
-`base + flow * flowStrideBytes + beat * strideBytes`. Add a two-instruction
-test using
-`base + instruction * instructionStrideBytes + flow * flowStrideBytes +
-beat * strideBytes`. Neither test may modify the original `SauCommand`.
+Add a two-flow test named `PreloadsAOnceThenStreamsBForEachFlow`: Operand-A is
+loaded once for the instruction, while Operand-B repeats for each flow using
+`base + flow * flowStrideBytes + beat * strideBytes`.
+
+Add a two-instruction test named `AppliesInstructionFlowAndBeatStrides`:
+Operand-A uses `base + instruction * instructionStrideBytes + beat *
+strideBytes` because A flow reuse is internal after preload; Operand-B uses
+`base + instruction * instructionStrideBytes + flow * flowStrideBytes + beat *
+strideBytes`. Neither test may modify the original `SauCommand`.
 
 - [ ] **Step 2: Verify failure**
 
@@ -544,9 +574,10 @@ class AddressGenerator
 };
 ```
 
-Precompute only stream cursors, not a vector of every beat. `front()` returns B
-until its current flow is exhausted, then A. `pop()` advances beat, flow, and
-instruction cursors. `last` is true at the end of each stream occurrence.
+Precompute only stream cursors, not a vector of every beat. `front()` returns
+Operand-A preload beats until the current instruction's A data is loaded, then
+Operand-B beats for each flow. `pop()` advances beat, flow, and instruction
+cursors. `last` is true at the end of each external stream occurrence.
 
 - [ ] **Step 4: Run tests**
 
@@ -563,6 +594,97 @@ Expected: all generator tests PASS.
 git add src/sau/address_generator.hh src/sau/address_generator.cc \
         src/sau/address_generator.test.cc src/sau/SConscript
 git commit -m "feat: generate SAU operand beats"
+```
+
+---
+
+### Task 4.5: Model the Operand-A `register_file_in` reuse boundary
+
+**Files:**
+- Create: `src/sau/a_register_file.hh`
+- Create: `src/sau/a_register_file.cc`
+- Create: `src/sau/a_register_file.test.cc`
+- Modify: `src/sau/SConscript`
+
+- [ ] **Step 1: Register and write failing tests**
+
+Add:
+
+```python
+Source("a_register_file.cc")
+GTest("a_register_file.test", "a_register_file.test.cc",
+      "a_register_file.cc", "command.cc")
+```
+
+Add these tests:
+
+```cpp
+TEST(ARegisterFileIn, TracksAReadPreloadPerInstruction);
+TEST(ARegisterFileIn, ReportsArrayReuseMoreThanExternalReads);
+TEST(ARegisterFileIn, ProducesVirtualAArrayInputBeatsAfterPreload);
+TEST(ARegisterFileIn, RejectsNonAExternalLoad);
+```
+
+The key invariant is:
+
+```cpp
+EXPECT_EQ(registerFile.totalExternalLoadBeats(), command.operandA.beats);
+EXPECT_EQ(registerFile.totalArrayInputBeats(),
+          command.operandA.beats * command.flowLoops *
+          command.instructionLoops);
+```
+
+- [ ] **Step 2: Verify failure**
+
+```bash
+scons build/ALL/sau/a_register_file.test.opt -j4
+```
+
+Expected: FAIL because `ARegisterFileIn` is undefined.
+
+- [ ] **Step 3: Implement the abstraction**
+
+Expose:
+
+```cpp
+class ARegisterFileIn
+{
+  public:
+    explicit ARegisterFileIn(const SauCommand &command);
+
+    void load(const Beat &beat);
+
+    bool instructionReady(uint32_t instruction) const;
+    uint32_t loadedBeats(uint32_t instruction) const;
+
+    uint64_t totalExternalLoadBeats() const;
+    uint64_t totalArrayInputBeats() const;
+
+    Beat arrayInputBeat(uint32_t instruction, uint32_t flow, uint32_t beat,
+                        uint32_t arrayIndex) const;
+};
+```
+
+`load()` accepts only `StreamKind::OperandA` beats and records residency per
+instruction. `arrayInputBeat()` returns a virtual Operand-A beat with address
+zero because array-input trace events are internal SAU events, not external
+SRAM accesses.
+
+- [ ] **Step 4: Run tests**
+
+```bash
+scons build/ALL/sau/a_register_file.test.opt -j4
+./build/ALL/sau/a_register_file.test.opt
+```
+
+Expected: all A-register-file tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sau/a_register_file.hh src/sau/a_register_file.cc \
+        src/sau/a_register_file.test.cc src/sau/SConscript
+git commit -m "feat: model SAU A register file input"
 ```
 
 ---
@@ -1440,7 +1562,8 @@ git commit -m "docs: complete SAU timing model milestone"
 Create separate design/implementation plans, in this order, after the first
 milestone passes:
 
-1. reuse, transpose, and int16 timing policies;
+1. additional programmable reuse policies, transpose, and int16 timing
+   policies;
 2. pointwise, standard, and depthwise convolution plus padding;
 3. RISC-V `msetins1..7`, CSR, and completion-interrupt integration;
 4. optional arithmetic functional backend.
