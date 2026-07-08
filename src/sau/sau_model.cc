@@ -379,8 +379,13 @@ SauModel::produceResults()
 {
     while (activeCommand && resultScheduler &&
            arrayPipeline.hasReady(Cycles(sauCycle))) {
-        const bool resultDue = !resultScheduler->complete() &&
+        const bool scheduledResultDue = !resultScheduler->complete() &&
             resultScheduler->canProduce(Cycles(sauCycle));
+        if (scheduledResultDue && resultsProduced == arrayAdmissions) {
+            return;
+        }
+        const bool resultDue = scheduledResultDue &&
+            resultsProduced < arrayAdmissions;
         if (resultDue && !outputBuffer.canPush()) {
             ++stats.stallOutputBufferFull;
             return;

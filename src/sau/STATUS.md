@@ -19,7 +19,7 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 8.5 complete, with Task 4.5 and Task 8.5
+- Current stage: Tasks 1 through 9 complete, with Task 4.5 and Task 8.5
   calibration patches for RTL-observed A preload/B streaming, skewed/bursty
   A/B array input, reduced result production, delayed writeback, and command
   completion timing.
@@ -36,6 +36,10 @@ Design and implementation references:
   32-result flow bursts after the calibrated fill latency, writes wait until
   the result stream is complete, and command completion waits after the final
   write.
+- Latest simulation milestone: Task 9 adds a standalone
+  `configs/example/sau_timing.py` topology with `SauModel`, `SystemXBar`, and
+  `SimpleMemory`, plus quick tests for fixed and constrained timing-memory
+  configurations.
 - The current direct-command model assumes the target operator uses the RTL
   `register_file_in` path; CSR decode of reuse/control fields is not yet
   modeled.
@@ -57,8 +61,8 @@ Design and implementation references:
 | 7. Implement the timing memory port | Complete | Sends exact 32-byte read/write packets, retains one rejected packet for retry, tracks accepted outstanding traffic, and queues read responses for the next SAU edge. |
 | 8. Integrate scheduling, array timing, writeback, and drain | Complete | `SauModel::tick()` now consumes read responses, feeds `ARegisterFileIn` plus B streaming tokens into the array pipeline, produces output tokens, issues timing writes, advances phases, checks token/request conservation, and drains only after local packet state is clear. |
 | 8.5. Calibrate matmul transpose/reuse timing path | Complete | Adds `ArrayInputScheduler` burst/gap timing, `ResultScheduler`, reduced-output command validation, first-array-input anchoring, delayed writeback, and final completion delay. Defaults match the corrected 64x256x256 trace shape: A start 269, B skew 32, input burst 32, tile gap 1, flow gap 3, fill 343, result flow gap 234, writeback delay 8, completion delay 4. |
-| 9. Add fixed- and constrained-memory simulations | Pending | Covers deterministic latency, retry, and backpressure now that the corrected matmul transpose/reuse timing path is represented. |
-| 10. Calibrate against the RTL reference | Pending Task 9 traces | No cycle-accuracy claim can be made until gem5 traces are generated and compared against the imported RTL reference. |
+| 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
+| 10. Calibrate against the RTL reference | Pending trace-profile alignment | Task 9 now generates gem5 traces, but causal comparison still fails because the standalone synthetic profile emits one command with synthetic addresses while the imported RTL reference has two commands and RTL baseline addresses. |
 | 11. Final regression, statistics audit, and documentation | Pending | Final milestone validation and handoff. |
 
 ## Implemented Components
@@ -152,6 +156,25 @@ Design and implementation references:
 - Read responses are queued by the port and become visible only when
   `SauModel::tick()` runs at the next SAU edge.
 - Accepted requests and visible responses update trace and traffic statistics.
+
+### Standalone simulation
+
+- `configs/example/sau_timing.py` instantiates a timing-mode system with a
+  1GHz default SAU clock, `SystemXBar(width=32)`, `SimpleMemory`, and one
+  synthetic `SauModel` command.
+- The CLI exposes memory latency, latency variance, bandwidth, command stream
+  shape, buffer sizes, array capacity/timing, outstanding limits, and trace
+  path.
+- The default command shape matches the corrected baseline size at the model
+  boundary: 256 A beats, 256 B beats, 8 flow loops, one instruction, and 256
+  output beats.
+- Fixed-memory and constrained-memory runs now both exit via
+  `SAU command complete` and write a seven-column trace.
+- `tests/gem5/sau/test_sau.py` registers RISCV quick tests for the fixed and
+  constrained standalone configurations.
+- The constrained run uses bandwidth/outstanding pressure but keeps
+  `output_buffer_entries` at 256 because the current timing policy delays
+  writeback until the complete result stream has been produced.
 
 ### Task 8 scheduler integration
 
@@ -274,6 +297,11 @@ Design and implementation references:
 Most recent focused verification:
 
 ```bash
+python3 -m py_compile configs/example/sau_timing.py \
+    tests/gem5/sau/test_sau.py
+
+git diff --check
+
 python3 util/style.py --modifications \
     src/sau/SConscript \
     src/sau/memory_port.hh \
@@ -283,6 +311,28 @@ python3 util/style.py --modifications \
     src/sau/sau_model.cc
 
 scons build/RISCV/gem5.opt -j4
+
+./build/RISCV/gem5.opt \
+    --outdir=m5out/sau-fixed \
+    configs/example/sau_timing.py \
+    --memory-latency=3ns \
+    --memory-latency-var=0ns \
+    --memory-bandwidth=256GiB/s \
+    --trace=m5out/sau-fixed/sau.csv
+
+./build/RISCV/gem5.opt \
+    --outdir=m5out/sau-constrained \
+    configs/example/sau_timing.py \
+    --memory-latency=20ns \
+    --memory-latency-var=5ns \
+    --memory-bandwidth=1GiB/s \
+    --trace=m5out/sau-constrained/sau.csv \
+    --max-outstanding-reads=2 \
+    --max-outstanding-writes=2
+
+cd tests
+./main.py run --skip-build gem5/sau
+cd ..
 
 ./build/RISCV/sau/address_generator.test.opt
 ./build/RISCV/sau/a_register_file.test.opt
@@ -300,6 +350,20 @@ python3 util/sau/compare_trace.py --mode strict \
 
 Results:
 
+- `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`
+  `py_compile`: passed.
+- `git diff --check`: passed.
+- `build/RISCV/gem5.opt`: rebuilt successfully after the Task 9 scheduler
+  conservation fix.
+- Fixed standalone run completed with `SAU command complete`, wrote
+  `m5out/sau-fixed/sau.csv`, and completed at SAU cycle 8477.
+- Constrained standalone run completed with `SAU command complete`, wrote
+  `m5out/sau-constrained/sau.csv`, and completed at SAU cycle 76617.
+- Constrained standalone stats showed real pressure:
+  `stallRequestRetry=2559`, `stallOutstandingReadLimit=9125`,
+  `stallOutstandingWriteLimit=127`, and `stallInputStarvation=71833`.
+- `cd tests && ./main.py run --skip-build gem5/sau`: 4/4 checks passed for
+  the RISCV fixed and constrained quick tests.
 - SAU trace comparator tests: 8/8 passed.
 - SAU trace comparator strict and causal self-comparison against the imported
   RTL reference trace passed.
@@ -349,18 +413,29 @@ Results:
 - Task 8 did not add a direct `SauModel` unit test because constructing the
   SimObject plus timing-memory topology in a focused C++ test would duplicate a
   large part of the upcoming standalone gem5 configuration. End-to-end
-  scheduler validation should be covered in Task 9.
+  scheduler validation is now covered by the Task 9 standalone runs.
 - Task 8.5 represents the corrected matmul trace shape with configurable
   timing-policy knobs, but it is still an architectural cycle-level model; it
   does not reproduce RTL internal state encodings, register ports, transpose
   datapath storage, or arithmetic values.
+- Causal comparison of the Task 9 generated traces against
+  `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv` currently fails.
+  The immediate mismatches are expected at this stage: the RTL reference has
+  two commands and RTL baseline addresses, while the standalone gem5 config
+  currently emits one synthetic command with synthetic addresses. Aligning that
+  profile is the first part of Task 10.
+- `system.sau.commandsAccepted` currently dumps as 0 while
+  `commandsCompleted` dumps as 1 in the standalone stats because the synthetic
+  command is accepted during startup before the stats dump window records it.
+  Task 11 should audit and fix or document this statistics boundary.
 - Current tests establish deterministic component behavior, trace comparison
-  behavior, and compile-time integration of the scheduler. They do not yet
-  establish end-to-end calibrated RTL cycle-level timing accuracy because
-  standalone gem5 trace generation is Task 9.
+  behavior, compile-time integration of the scheduler, and standalone
+  completion under fixed/constrained memory. They do not yet establish
+  calibrated RTL cycle-level timing accuracy.
 
 ## Next Steps
 
-1. Add fixed- and constrained-memory simulations in Task 9.
-2. Use `util/sau/compare_trace.py` to compare Task 9 generated gem5 traces
-   with the imported RTL baseline.
+1. Align the standalone synthetic profile with the imported two-command RTL
+   reference shape and addresses.
+2. Use `util/sau/compare_trace.py` in causal mode, then strict mode, as part
+   of Task 10 calibration.
