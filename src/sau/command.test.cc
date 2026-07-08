@@ -98,10 +98,21 @@ TEST(SauCommand, RejectsInconsistentWorkItems)
     EXPECT_THROW(validateCommand(command, 32), std::invalid_argument);
 }
 
-TEST(SauCommand, RejectsInconsistentOutputBeats)
+TEST(SauCommand, AcceptsReducedOutputBeatCount)
 {
     auto command = makeCommand();
-    command.output.beats = 3;
+    command.operandA.beats = 4;
+    command.flowLoops = 2;
+    command.workItems = 8;
+    command.output.beats = 4;
+
+    EXPECT_NO_THROW(validateCommand(command, 32));
+}
+
+TEST(SauCommand, RejectsMoreOutputBeatsThanWorkItems)
+{
+    auto command = makeCommand();
+    command.output.beats = 5;
 
     EXPECT_THROW(validateCommand(command, 32), std::invalid_argument);
 }

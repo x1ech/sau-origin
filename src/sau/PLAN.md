@@ -1,4 +1,4 @@
-# SAU int8 GEMM 周期级模型实施计划（中文版）
+# SAU int8 GEMM 周期级模型实施计划
 
 > **面向执行本计划的 agent：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项实施。所有步骤使用 `- [ ]` 复选框跟踪。
 

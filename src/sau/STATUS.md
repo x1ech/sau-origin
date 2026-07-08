@@ -19,8 +19,10 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 8 complete, with a Task 4.5 calibration patch
-  for RTL-observed A preload/B streaming behavior.
+- Current stage: Tasks 1 through 8.5 complete, with Task 4.5 and Task 8.5
+  calibration patches for RTL-observed A preload/B streaming, skewed/bursty
+  A/B array input, reduced result production, delayed writeback, and command
+  completion timing.
 - Active branch: `feature/sau-command-types`
 - Worktree: `/home/xch/workspace/gem5/.worktrees/sau-command-types`
 - Development remote: `sau-origin`
@@ -28,6 +30,12 @@ Design and implementation references:
   RTL-style `register_file_in` reuse for Operand-A, B streaming, array timing,
   output writeback,
   phase progression, command completion, and drain behavior.
+- Latest calibration: Task 8.5 adds explicit matmul timing-policy components.
+  A can lead B by a configurable 32-token skew, array inputs are emitted in
+  32-beat bursts with tile/flow-boundary gaps, results are produced as
+  32-result flow bursts after the calibrated fill latency, writes wait until
+  the result stream is complete, and command completion waits after the final
+  write.
 - The current direct-command model assumes the target operator uses the RTL
   `register_file_in` path; CSR decode of reuse/control fields is not yet
   modeled.
@@ -48,8 +56,8 @@ Design and implementation references:
 | 6. Add the SimObject, parameters, trace, and stats skeleton | Complete | Registers `SauModel`, its timing-memory port and parameters, a stable seven-column trace writer, synthetic command startup, and statistics placeholders. |
 | 7. Implement the timing memory port | Complete | Sends exact 32-byte read/write packets, retains one rejected packet for retry, tracks accepted outstanding traffic, and queues read responses for the next SAU edge. |
 | 8. Integrate scheduling, array timing, writeback, and drain | Complete | `SauModel::tick()` now consumes read responses, feeds `ARegisterFileIn` plus B streaming tokens into the array pipeline, produces output tokens, issues timing writes, advances phases, checks token/request conservation, and drains only after local packet state is clear. |
-| 8.5. Calibrate matmul transpose/reuse timing path | Pending | Corrected RTL baseline shows high-frequency `TRANSPOSE_LOAD` and `TRANSPOSE_CLIP` states; current scheduler still lacks this timing policy and same-cycle A/B input pairing is too simple. |
-| 9. Add fixed- and constrained-memory simulations | Pending after Task 8.5 | Covers deterministic latency, retry, and backpressure after the corrected matmul transpose/reuse timing path is represented. |
+| 8.5. Calibrate matmul transpose/reuse timing path | Complete | Adds `ArrayInputScheduler` burst/gap timing, `ResultScheduler`, reduced-output command validation, first-array-input anchoring, delayed writeback, and final completion delay. Defaults match the corrected 64x256x256 trace shape: A start 269, B skew 32, input burst 32, tile gap 1, flow gap 3, fill 343, result flow gap 234, writeback delay 8, completion delay 4. |
+| 9. Add fixed- and constrained-memory simulations | Pending | Covers deterministic latency, retry, and backpressure now that the corrected matmul transpose/reuse timing path is represented. |
 | 10. Calibrate against the RTL reference | Pending Task 9 traces | No cycle-accuracy claim can be made until gem5 traces are generated and compared against the imported RTL reference. |
 | 11. Final regression, statistics audit, and documentation | Pending | Final milestone validation and handoff. |
 
@@ -63,7 +71,8 @@ Design and implementation references:
   - int8 GEMM and 32-byte beats;
   - aligned stream bases;
   - nonzero beats, strides, loops, and work items;
-  - consistent work-item and output-beat counts; and
+  - output beats not exceeding work items, allowing GEMM reduction where many
+    array-input work tokens produce fewer result/write beats; and
   - checked multiplication before narrowing.
 
 ### Address generation
@@ -160,15 +169,27 @@ Design and implementation references:
 
 - Operand-A read responses preload `ARegisterFileIn`; Operand-B read responses
   enter the B availability queue.
-- Array input admission requires resident A for the current instruction, one
-  available B beat, array initiation-interval/capacity availability, and output
-  buffer headroom.
-- Array input trace events are currently emitted as paired B then A events.
-  This is now known to be an oversimplification for the corrected RTL baseline:
-  A and B array-input windows are skewed by about 32 cycles due to the
-  matmul transpose/reuse path.
-- Results from `ArrayPipeline` become output tokens; writes use the synthetic
-  output stream address formula.
+- Array input admission uses `ArrayInputScheduler` instead of same-cycle A/B
+  pairing. Resident A array-input beats may run ahead of B by
+  `array_input_skew_cycles` tokens; when both A and B are emitted in the same
+  SAU cycle, trace order remains B then A to match the RTL trace.
+- Task 8.5 extends that scheduler with the corrected matmul burst shape:
+  `array_input_start_delay_cycles=269`,
+  `array_input_burst_beats=32`, `array_input_burst_gap_cycles=1`, and
+  `array_input_flow_gap_cycles=3`.
+- B array-input admission requires one available B beat and drives the
+  work/admission count plus `ArrayDrain` boundary. A array-input admission
+  requires resident `register_file_in` data and feeds the modeled array
+  latency path.
+- `ResultScheduler` models the reduced GEMM output stream: the default
+  64x256x256 shape has 2048 A/B array-input beats per command but only 256
+  result/write beats. Results are emitted as 32-beat flow bursts after
+  `array_fill_cycles=343`, with `result_flow_gap_cycles=234` idle cycles
+  between bursts.
+- Writeback is delayed until all results are produced and then waits
+  `writeback_start_delay_cycles=8`; command completion waits
+  `completion_delay_cycles=4` after the final accepted write.
+- Result write addresses use the synthetic output stream address formula.
 - `SauMemoryPort::trySend()` owns a packet once called. If a send is rejected,
   the port retains the single blocked packet for retry, so the scheduler pops
   the corresponding generator/output token immediately and counts acceptance
@@ -328,18 +349,18 @@ Results:
 - Task 8 did not add a direct `SauModel` unit test because constructing the
   SimObject plus timing-memory topology in a focused C++ test would duplicate a
   large part of the upcoming standalone gem5 configuration. End-to-end
-  scheduler validation should be covered after Task 8.5 and Task 9.
-- The Task 8 scheduler currently admits A/B array inputs as paired events. This
-  is insufficient for the corrected RTL baseline because the matmul
-  `TRANSPOSE_LOAD/CLIP` path creates staggered A/B array-input windows.
+  scheduler validation should be covered in Task 9.
+- Task 8.5 represents the corrected matmul trace shape with configurable
+  timing-policy knobs, but it is still an architectural cycle-level model; it
+  does not reproduce RTL internal state encodings, register ports, transpose
+  datapath storage, or arithmetic values.
 - Current tests establish deterministic component behavior, trace comparison
   behavior, and compile-time integration of the scheduler. They do not yet
-  establish calibrated RTL cycle-level timing accuracy.
+  establish end-to-end calibrated RTL cycle-level timing accuracy because
+  standalone gem5 trace generation is Task 9.
 
 ## Next Steps
 
-1. Complete Task 8.5: calibrate and model the matmul
-   `TRANSPOSE_LOAD/TRANSPOSE_CLIP` timing path.
-2. Add fixed- and constrained-memory simulations in Task 9.
-3. Use `util/sau/compare_trace.py` to compare Task 9 generated gem5 traces
+1. Add fixed- and constrained-memory simulations in Task 9.
+2. Use `util/sau/compare_trace.py` to compare Task 9 generated gem5 traces
    with the imported RTL baseline.

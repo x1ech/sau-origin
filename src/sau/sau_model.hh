@@ -11,7 +11,9 @@
 #include "params/SauModel.hh"
 #include "sau/a_register_file.hh"
 #include "sau/address_generator.hh"
+#include "sau/array_input_scheduler.hh"
 #include "sau/memory_port.hh"
+#include "sau/result_scheduler.hh"
 #include "sau/token_pipeline.hh"
 #include "sau/trace_writer.hh"
 #include "sau/types.hh"
@@ -48,6 +50,14 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     const Cycles arrayFillCycles;     // 阵列填充延迟（fill latency）
     const Cycles arrayIiCycles;       // 阵列启动间隔（initiation interval）
     const unsigned arrayCapacity;     // 阵列最大 in-flight token 数
+    const Cycles arrayInputStartDelayCycles;
+    const unsigned arrayInputBurstBeats;
+    const Cycles arrayInputBurstGapCycles;
+    const Cycles arrayInputFlowGapCycles;
+    const unsigned arrayInputSkewCycles; // B 相对 resident A 的输入滞后
+    const Cycles resultFlowGapCycles;
+    const Cycles writebackStartDelayCycles;
+    const Cycles completionDelayCycles;
     const Cycles commandStartCycles;  // 命令接收后延迟多少拍开始发第一笔读
     const bool exitOnDone;            // 命令完成后是否自动退出仿真
 
@@ -60,14 +70,12 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::vector<Beat> visibleMemoryResponses;
     std::optional<AddressGenerator> readGenerator;
     std::optional<ARegisterFileIn> aRegisterFile;
+    std::optional<ArrayInputScheduler> arrayInputScheduler;
+    std::optional<ResultScheduler> resultScheduler;
     std::deque<Beat> availableB;
     TokenBuffer outputBuffer;
     ArrayPipeline arrayPipeline;
 
-    uint32_t currentInstruction = 0;
-    uint32_t currentFlow = 0;
-    uint32_t currentArrayBeat = 0;
-    uint32_t nextArrayIndex = 0;
     uint32_t nextResultIndex = 0;
     uint32_t nextWriteIndex = 0;
 
@@ -80,6 +88,8 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     uint32_t readAcceptedTraceB = 0;
     uint32_t readResponseTraceA = 0;
     uint32_t readResponseTraceB = 0;
+    std::optional<Cycles> lastResultCycle;
+    std::optional<Cycles> lastWriteCycle;
 
     TraceWriter traceWriter;                  // CSV 事件日志输出
     EventFunctionWrapper tickEvent;           // gem5 事件：每个时钟边沿触发 tick()
@@ -88,6 +98,8 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     void tick();
     void consumeResponses();
     void advanceArray();
+    bool advanceArrayB();
+    bool advanceArrayA();
     void produceResults();
     void issueWrites();
     void issueReads();
@@ -98,6 +110,10 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     bool hasPendingWork() const;
     bool commandLocallyComplete() const;
     uint32_t expectedOutputBeats() const;
+    uint32_t outputBeatsPerFlow() const;
+    uint32_t arrayInputsPerFlow() const;
+    bool instructionReadyForArrayIndex(uint32_t index) const;
+    Beat makeArrayABeat(uint32_t index) const;
     void requestAccepted(const Beat &beat, bool write) override;
     void responseAvailable() override;
 

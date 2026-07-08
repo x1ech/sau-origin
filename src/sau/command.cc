@@ -89,9 +89,9 @@ validateCommand(const SauCommand &command, unsigned beatBytes)
     const auto expectedOutputBeats = checkedProduct(
         command.output.beats, command.instructionLoops,
         "SAU output beat count exceeds its representation");
-    if (expectedOutputBeats != command.workItems) {
+    if (expectedOutputBeats > command.workItems) {
         throw std::invalid_argument(
-            "SAU output beat count does not match work items");
+            "SAU output beat count exceeds work items");
     }
 }
 

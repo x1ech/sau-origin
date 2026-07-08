@@ -1276,18 +1276,30 @@ git commit -m "feat: run SAU GEMM timing pipeline"
 
 ### Task 8.5: Calibrate and model the matmul `TRANSPOSE_LOAD/CLIP` timing path
 
-Task 9 must not start until Task 8.5 has either implemented the calibrated
-matmul transpose/reuse timing policy or explicitly documented why the
-standalone simulation is expected to differ from the corrected RTL baseline.
+Status: implemented in the current worktree. This task converted the corrected
+64x256x256 RTL baseline into configurable cycle-level timing policy. It does
+not model RTL registers or arithmetic datapath internals; it models the public
+architectural trace shape needed before Task 9 standalone simulation.
 
 **Files:**
 - Modify: `src/sau/Sau.py`
 - Modify: `src/sau/sau_model.hh`
 - Modify: `src/sau/sau_model.cc`
+- Modify: `src/sau/SConscript`
+- Modify: `src/sau/command.cc`
+- Modify: `src/sau/command.test.cc`
+- Create: `src/sau/array_input_scheduler.hh`
+- Create: `src/sau/array_input_scheduler.cc`
+- Create: `src/sau/array_input_scheduler.test.cc`
+- Create: `src/sau/result_scheduler.hh`
+- Create: `src/sau/result_scheduler.cc`
+- Create: `src/sau/result_scheduler.test.cc`
 - Modify: `src/sau/STATUS.md`
-- Test: existing SAU C++ tests and Task 9 standalone trace comparison.
+- Test: SAU C++ unit tests, comparator tests, style check, and
+  `build/RISCV/gem5.opt`. Task 9 still owns end-to-end standalone trace
+  generation and comparison.
 
-- [ ] **Step 1: Record the corrected baseline state spans**
+- [x] **Step 1: Record the corrected baseline state spans**
 
 Use the corrected diagnostic trace:
 
@@ -1322,7 +1334,7 @@ These states are not optional for this matmul baseline. In particular,
 `TRANSPOSE_LOAD` appears once per command and `TRANSPOSE_CLIP` appears once per
 flow-loop boundary before the final `FIRST_LOAD/D_OUT` tail.
 
-- [ ] **Step 2: Replace the same-cycle A/B array-input assumption**
+- [x] **Step 2: Replace the same-cycle A/B array-input assumption**
 
 The corrected public trace shows staggered array-input windows:
 
@@ -1335,34 +1347,73 @@ Do not require every A and B array input to be admitted on the same SAU cycle.
 Model the 32-cycle skew introduced by the transpose/reuse path at cycle-level
 granularity. Preserve event order within a cycle when both streams are present.
 
-- [ ] **Step 3: Add explicit timing parameters**
+- [x] **Step 3: Add explicit timing parameters**
 
-Add parameters with defaults matching the corrected baseline:
+Implemented parameters with defaults matching the corrected baseline:
 
 ```python
-register_load_cycles = Param.Cycles(256, "A register_file_in preload span")
-transpose_load_cycles = Param.Cycles(32, "matmul transpose-load span")
-transpose_clip_cycles = Param.Cycles(33, "per-flow transpose-clip span")
-final_first_load_cycles = Param.Cycles(33, "final first-load tail span")
-register_unload_cycles = Param.Cycles(265, "writeback/unload completion span")
+array_input_start_delay_cycles = Param.Cycles(
+    269, "Command acceptance to first A array-input eligibility")
+array_input_skew_cycles = Param.Cycles(
+    32, "Cycles by which B array input lags A array input")
+array_input_burst_beats = Param.Unsigned(
+    32, "Array-input beats issued per burst before inserting a gap")
+array_input_burst_gap_cycles = Param.Cycles(
+    1, "Empty cycles between adjacent array-input bursts")
+array_input_flow_gap_cycles = Param.Cycles(
+    3, "Empty cycles between array-input flow/tile groups")
+array_fill_cycles = Param.Cycles(
+    343, "Cycles from first array input to first result")
+result_flow_gap_cycles = Param.Cycles(
+    234, "Empty cycles between result flow groups")
+writeback_start_delay_cycles = Param.Cycles(
+    8, "Cycles from last result to first writeback eligibility")
+completion_delay_cycles = Param.Cycles(
+    4, "Cycles from last accepted write to command completion")
 ```
 
-Keep these as timing-policy knobs, not RTL register-accurate state replicas.
+These are timing-policy knobs, not RTL register-accurate state replicas. The
+old candidate names `register_load_cycles`, `transpose_load_cycles`,
+`transpose_clip_cycles`, `final_first_load_cycles`, and
+`register_unload_cycles` were intentionally not added because they mixed RTL
+state labels with the gem5 model's architectural scheduling boundaries.
 
-- [ ] **Step 4: Update `SauModel` scheduling**
+- [x] **Step 4: Update `SauModel` scheduling**
 
-The scheduler must be able to reproduce the corrected trace shape:
+The implementation now reproduces the corrected public trace shape through:
 
-- external A reads complete before the first B stream;
-- A array input begins after `REGISTER_LOAD + TRANSPOSE_LOAD` timing;
-- B array input begins 32 cycles after A array input;
-- each flow boundary includes a `TRANSPOSE_CLIP`-like gap;
-- the final tail uses `FIRST_LOAD/D_OUT` timing before register unload/writeback
-  completion.
+- `ArrayInputScheduler`, which supports independent A/B issue, 32-beat bursts,
+  1-cycle burst gaps, 3-cycle flow gaps, and 32-cycle B skew;
+- first A array input anchored at cycle 269 relative to command acceptance for
+  the corrected baseline;
+- `ResultScheduler`, which converts many array-input work tokens into fewer
+  result/write beats with 343-cycle fill latency and 234-cycle result-flow gaps;
+- reduced-output command validation, so `expectedOutputBeats` may be lower than
+  `workItems`;
+- delayed writeback start and delayed local command completion.
 
 Preserve token/request conservation assertions.
 
-- [ ] **Step 5: Verify against the corrected baseline shape**
+- [x] **Step 5: Verify component-level timing behavior**
+
+Run:
+
+```bash
+scons build/RISCV/sau/array_input_scheduler.test.opt \
+      build/RISCV/sau/result_scheduler.test.opt \
+      build/RISCV/sau/command.test.opt -j4
+./build/RISCV/sau/array_input_scheduler.test.opt
+./build/RISCV/sau/result_scheduler.test.opt
+./build/RISCV/sau/command.test.opt
+python3 -m unittest util.sau.compare_trace_test -v
+scons build/RISCV/gem5.opt -j4
+git diff --check
+```
+
+Expected: all tests PASS and `build/RISCV/gem5.opt` builds. Capstone/HDF5
+warnings are acceptable if those optional host libraries are absent.
+
+- [ ] **Step 6: Compare a generated gem5 standalone trace in Task 9**
 
 After Task 9 can generate a gem5 trace, compare against:
 
@@ -1376,7 +1427,7 @@ Expected before full calibration: event order and stream/beat metadata should
 match, while strict cycles may still differ. Do not claim cycle accuracy until
 Task 10.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/sau docs/superpowers/plans src/sau/STATUS.md

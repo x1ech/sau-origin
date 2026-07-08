@@ -93,6 +93,14 @@ SauModel::SauModel(const Params &params)
       arrayFillCycles(params.array_fill_cycles),
       arrayIiCycles(params.array_ii_cycles),
       arrayCapacity(params.array_capacity),
+      arrayInputStartDelayCycles(params.array_input_start_delay_cycles),
+      arrayInputBurstBeats(params.array_input_burst_beats),
+      arrayInputBurstGapCycles(params.array_input_burst_gap_cycles),
+      arrayInputFlowGapCycles(params.array_input_flow_gap_cycles),
+      arrayInputSkewCycles(params.array_input_skew_cycles),
+      resultFlowGapCycles(params.result_flow_gap_cycles),
+      writebackStartDelayCycles(params.writeback_start_delay_cycles),
+      completionDelayCycles(params.completion_delay_cycles),
       commandStartCycles(params.command_start_cycles),
       exitOnDone(params.exit_on_done),
       startupCommand(buildStartupCommand(params)),  // 将 Python 参数转为 SauCommand
@@ -114,6 +122,8 @@ SauModel::SauModel(const Params &params)
     panic_if(arrayFillCycles == Cycles(0) || arrayIiCycles == Cycles(0) ||
                  arrayCapacity == 0,
              "SAU array timing and capacity must be nonzero");
+    panic_if(arrayInputBurstBeats == 0,
+             "SAU array-input burst length must be nonzero");
 }
 
 // ==================== gem5 SimObject 标准接口 ====================
@@ -149,12 +159,15 @@ SauModel::submitCommand(const SauCommand &command)
     activeCommand = command;
     readGenerator.emplace(command);
     aRegisterFile.emplace(command);
+    arrayInputScheduler.emplace(
+        command.workItems, arrayInputSkewCycles, arrayInputBurstBeats,
+        arrayInputsPerFlow(), arrayInputBurstGapCycles,
+        arrayInputFlowGapCycles);
+    resultScheduler.emplace(
+        expectedOutputBeats(), outputBeatsPerFlow(), arrayFillCycles,
+        resultFlowGapCycles);
     availableB.clear();
     visibleMemoryResponses.clear();
-    currentInstruction = 0;
-    currentFlow = 0;
-    currentArrayBeat = 0;
-    nextArrayIndex = 0;
     nextResultIndex = 0;
     nextWriteIndex = 0;
     acceptedReadBeats = 0;
@@ -166,6 +179,8 @@ SauModel::submitCommand(const SauCommand &command)
     readAcceptedTraceB = 0;
     readResponseTraceA = 0;
     readResponseTraceB = 0;
+    lastResultCycle.reset();
+    lastWriteCycle.reset();
     phase = Phase::OperandLoad;
     sauCycle = 0;
 
@@ -247,34 +262,63 @@ SauModel::consumeResponses()
 void
 SauModel::advanceArray()
 {
-    if (!activeCommand || nextArrayIndex >= activeCommand->workItems) {
+    if (!activeCommand || !arrayInputScheduler ||
+        arrayInputScheduler->complete()) {
         return;
     }
-    if (!aRegisterFile ||
-        !aRegisterFile->instructionReady(currentInstruction)) {
-        ++stats.stallInputStarvation;
-        return;
-    }
-    if (availableB.empty()) {
-        ++stats.stallInputStarvation;
-        return;
-    }
-    if (!arrayPipeline.canAccept(Cycles(sauCycle))) {
-        return;
-    }
-    if (!outputBuffer.canPush()) {
-        ++stats.stallOutputBufferFull;
+    if (Cycles(sauCycle) < arrayInputStartDelayCycles) {
         return;
     }
 
+    const bool bWanted = arrayInputScheduler->canIssueB();
+    bool progressed = false;
+
+    // RTL trace order is B before A when both streams enter the array in the
+    // same cycle.  Keep that ordering while allowing A to run ahead by the
+    // configured skew window.
+    if (bWanted) {
+        progressed = advanceArrayB() || progressed;
+    }
+
+    const bool aWanted = arrayInputScheduler->canIssueA();
+    if (aWanted) {
+        progressed = advanceArrayA() || progressed;
+    }
+
+    if (!progressed && (aWanted || bWanted)) {
+        if (bWanted && availableB.empty()) {
+            ++stats.stallInputStarvation;
+        } else if (aWanted && !instructionReadyForArrayIndex(
+                       arrayInputScheduler->issuedA())) {
+            ++stats.stallInputStarvation;
+        }
+    }
+
+    arrayInputScheduler->advanceCycle();
+}
+
+bool
+SauModel::advanceArrayB()
+{
+    assert(activeCommand);
+    assert(arrayInputScheduler);
+
+    if (!arrayInputScheduler->canIssueB()) {
+        return false;
+    }
+    if (availableB.empty()) {
+        return false;
+    }
     const auto bBeat = availableB.front();
+    const uint32_t arrayIndex = arrayInputScheduler->issueB();
     availableB.pop_front();
-    const Beat aBeat = aRegisterFile->arrayInputBeat(
-        currentInstruction, currentFlow, currentArrayBeat, nextArrayIndex);
-    const bool lastWork = nextArrayIndex + 1 == activeCommand->workItems;
+    const bool lastWork = arrayIndex + 1 == activeCommand->workItems;
 
     if (phase == Phase::OperandLoad) {
         transitionTo(Phase::ArrayActive);
+    }
+    if (resultScheduler && !resultScheduler->started()) {
+        resultScheduler->start(Cycles(sauCycle));
     }
     if (lastWork) {
         transitionTo(Phase::ArrayDrain);
@@ -282,47 +326,83 @@ SauModel::advanceArray()
 
     traceWriter.emit(
         sauCycle, EventKind::ArrayInputAccepted, activeCommand->id,
-        streamName(bBeat.stream), 0, nextArrayIndex, phase);
+        streamName(bBeat.stream), 0, arrayIndex, phase);
+
+    arrayPipeline.accept(activeCommand->id, arrayIndex, lastWork,
+                         Cycles(sauCycle));
+
+    ++arrayAdmissions;
+    return true;
+}
+
+bool
+SauModel::advanceArrayA()
+{
+    assert(activeCommand);
+    assert(arrayInputScheduler);
+
+    if (!arrayInputScheduler->canIssueA()) {
+        return false;
+    }
+
+    const uint32_t arrayIndex = arrayInputScheduler->issuedA();
+    if (!instructionReadyForArrayIndex(arrayIndex)) {
+        return false;
+    }
+    if (!arrayPipeline.canAccept(Cycles(sauCycle))) {
+        return false;
+    }
+
+    const Beat aBeat = makeArrayABeat(arrayIndex);
+    const uint32_t issuedIndex = arrayInputScheduler->issueA();
+    assert(issuedIndex == arrayIndex);
+
+    if (phase == Phase::OperandLoad) {
+        transitionTo(Phase::ArrayActive);
+    }
+    if (resultScheduler && !resultScheduler->started()) {
+        resultScheduler->start(Cycles(sauCycle));
+    }
+
     traceWriter.emit(
         sauCycle, EventKind::ArrayInputAccepted, activeCommand->id,
         streamName(aBeat.stream), 0, aBeat.index, phase);
 
-    arrayPipeline.accept(activeCommand->id, nextArrayIndex, lastWork,
+    arrayPipeline.accept(activeCommand->id, aBeat.index, aBeat.last,
                          Cycles(sauCycle));
 
-    ++arrayAdmissions;
-    ++nextArrayIndex;
-    ++currentArrayBeat;
-    if (currentArrayBeat == activeCommand->operandA.beats) {
-        currentArrayBeat = 0;
-        ++currentFlow;
-        if (currentFlow == activeCommand->flowLoops) {
-            currentFlow = 0;
-            ++currentInstruction;
-        }
-    }
+    return true;
 }
 
 void
 SauModel::produceResults()
 {
-    while (activeCommand && resultsProduced < expectedOutputBeats() &&
+    while (activeCommand && resultScheduler &&
            arrayPipeline.hasReady(Cycles(sauCycle))) {
-        if (!outputBuffer.canPush()) {
+        const bool resultDue = !resultScheduler->complete() &&
+            resultScheduler->canProduce(Cycles(sauCycle));
+        if (resultDue && !outputBuffer.canPush()) {
             ++stats.stallOutputBufferFull;
             return;
         }
 
         auto token = arrayPipeline.takeReady(Cycles(sauCycle));
-        token.index = nextResultIndex;
-        token.last = nextResultIndex + 1 == expectedOutputBeats();
+        if (!resultDue) {
+            continue;
+        }
+
+        const uint32_t resultIndex =
+            resultScheduler->produce(Cycles(sauCycle));
+        token.index = resultIndex;
+        token.last = resultIndex + 1 == expectedOutputBeats();
         outputBuffer.push(token);
+        lastResultCycle = Cycles(sauCycle);
 
         traceWriter.emit(sauCycle, EventKind::ResultProduced,
                          activeCommand->id, "output", 0, token.index, phase);
 
         ++resultsProduced;
-        ++nextResultIndex;
+        nextResultIndex = resultScheduler->produced();
         stats.maxOutputBufferOccupancy = std::max(
             static_cast<unsigned>(stats.maxOutputBufferOccupancy.value()),
             static_cast<unsigned>(outputBuffer.size()));
@@ -334,6 +414,12 @@ SauModel::issueWrites()
 {
     if (!activeCommand || outputBuffer.size() == 0 ||
         memoryPort.hasBlockedPacket()) {
+        return;
+    }
+    if (resultsProduced != expectedOutputBeats() || !lastResultCycle ||
+        static_cast<uint64_t>(sauCycle) <
+            static_cast<uint64_t>(*lastResultCycle +
+                                  writebackStartDelayCycles)) {
         return;
     }
     if (memoryPort.outstandingWrites() >= maxOutstandingWrites) {
@@ -418,6 +504,8 @@ SauModel::updatePhase()
         activeCommand.reset();
         readGenerator.reset();
         aRegisterFile.reset();
+        arrayInputScheduler.reset();
+        resultScheduler.reset();
         availableB.clear();
         if (exitOnDone) {
             exitSimLoop("SAU command complete");
@@ -476,6 +564,17 @@ SauModel::checkConservation() const
     if (aRegisterFile) {
         assert(arrayAdmissions <= aRegisterFile->totalArrayInputBeats());
     }
+    if (arrayInputScheduler) {
+        assert(arrayInputScheduler->issuedB() == arrayAdmissions);
+        assert(arrayInputScheduler->issuedB() <=
+               arrayInputScheduler->issuedA());
+        assert(arrayInputScheduler->issuedA() <=
+               arrayInputScheduler->totalInputs());
+    }
+    if (resultScheduler) {
+        assert(resultScheduler->produced() == resultsProduced);
+        assert(resultScheduler->produced() <= resultScheduler->total());
+    }
     assert(availableB.size() <= visibleReadBeats);
 }
 
@@ -495,6 +594,11 @@ SauModel::commandLocallyComplete() const
         writesAccepted == expectedOutputBeats() &&
         outputBuffer.size() == 0 &&
         arrayPipeline.inFlight() == 0 &&
+        arrayInputScheduler && arrayInputScheduler->complete() &&
+        resultScheduler && resultScheduler->complete() &&
+        lastWriteCycle &&
+        static_cast<uint64_t>(sauCycle) >=
+            static_cast<uint64_t>(*lastWriteCycle + completionDelayCycles) &&
         (!readGenerator || readGenerator->empty()) &&
         visibleReadBeats == acceptedReadBeats &&
         visibleMemoryResponses.empty() &&
@@ -510,6 +614,63 @@ SauModel::expectedOutputBeats() const
         return 0;
     }
     return activeCommand->output.beats * activeCommand->instructionLoops;
+}
+
+uint32_t
+SauModel::outputBeatsPerFlow() const
+{
+    assert(activeCommand);
+    const uint32_t totalFlows =
+        activeCommand->flowLoops * activeCommand->instructionLoops;
+    const uint32_t totalOutputs = expectedOutputBeats();
+    if (totalOutputs % totalFlows != 0) {
+        throw std::invalid_argument(
+            "SAU output beats must divide evenly across flows");
+    }
+    return totalOutputs / totalFlows;
+}
+
+uint32_t
+SauModel::arrayInputsPerFlow() const
+{
+    assert(activeCommand);
+    const uint32_t totalFlows =
+        activeCommand->flowLoops * activeCommand->instructionLoops;
+    if (activeCommand->workItems % totalFlows != 0) {
+        throw std::invalid_argument(
+            "SAU work items must divide evenly across flows");
+    }
+    return activeCommand->workItems / totalFlows;
+}
+
+bool
+SauModel::instructionReadyForArrayIndex(uint32_t index) const
+{
+    if (!activeCommand || !aRegisterFile) {
+        return false;
+    }
+
+    const uint32_t perInstruction =
+        activeCommand->operandA.beats * activeCommand->flowLoops;
+    const uint32_t instruction = index / perInstruction;
+    return instruction < activeCommand->instructionLoops &&
+        aRegisterFile->instructionReady(instruction);
+}
+
+Beat
+SauModel::makeArrayABeat(uint32_t index) const
+{
+    assert(activeCommand);
+    assert(aRegisterFile);
+
+    const uint32_t beatsPerFlow = activeCommand->operandA.beats;
+    const uint32_t perInstruction = beatsPerFlow * activeCommand->flowLoops;
+    const uint32_t instruction = index / perInstruction;
+    const uint32_t withinInstruction = index % perInstruction;
+    const uint32_t flow = withinInstruction / beatsPerFlow;
+    const uint32_t beat = withinInstruction % beatsPerFlow;
+
+    return aRegisterFile->arrayInputBeat(instruction, flow, beat, index);
 }
 
 void
@@ -537,6 +698,9 @@ SauModel::requestAccepted(const Beat &beat, bool write)
     uint32_t traceBeat = beat.index;
     if (write) {
         ++writesAccepted;
+        if (writesAccepted == expectedOutputBeats()) {
+            lastWriteCycle = Cycles(sauCycle);
+        }
     } else {
         ++acceptedReadBeats;
         auto &counter = beat.stream == StreamKind::OperandA ?

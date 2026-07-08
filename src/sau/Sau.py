@@ -17,10 +17,34 @@ class SauModel(ClockedObject):
     max_outstanding_reads = Param.Unsigned(4, "Read response slots")
     max_outstanding_writes = Param.Unsigned(4, "Write response slots")
     input_buffer_entries = Param.Unsigned(8, "Returned operand token slots")
-    output_buffer_entries = Param.Unsigned(8, "Result token slots")
-    array_fill_cycles = Param.Cycles(1, "Calibrated fill latency")
+    output_buffer_entries = Param.Unsigned(256, "Result token slots")
+    array_fill_cycles = Param.Cycles(343, "Calibrated fill latency")
     array_ii_cycles = Param.Cycles(1, "Array initiation interval")
-    array_capacity = Param.Unsigned(16, "Maximum in-flight work tokens")
+    array_capacity = Param.Unsigned(4096, "Maximum in-flight work tokens")
+    array_input_start_delay_cycles = Param.Cycles(
+        269, "Command acceptance to first A array-input eligibility"
+    )
+    array_input_burst_beats = Param.Unsigned(
+        32, "Array-input burst length before transpose gap"
+    )
+    array_input_burst_gap_cycles = Param.Cycles(
+        1, "Idle cycles between array-input bursts inside a flow"
+    )
+    array_input_flow_gap_cycles = Param.Cycles(
+        3, "Idle cycles at array-input flow boundaries"
+    )
+    array_input_skew_cycles = Param.Unsigned(
+        32, "B array-input token skew behind resident A"
+    )
+    result_flow_gap_cycles = Param.Cycles(
+        234, "Idle cycles between 32-result flow bursts"
+    )
+    writeback_start_delay_cycles = Param.Cycles(
+        8, "Delay from last result to first writeback beat"
+    )
+    completion_delay_cycles = Param.Cycles(
+        4, "Delay from last writeback beat to command complete"
+    )
     command_start_cycles = Param.Cycles(
         1, "Command acceptance to first issue"
     )
