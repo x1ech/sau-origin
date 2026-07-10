@@ -19,8 +19,9 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 11 implementation and validation complete;
-  final milestone commit is pending local Git author configuration. The standalone model can
+- Current stage: Tasks 1 through 11 implementation and validation complete.
+  Final milestone commit `50d42ef51c` is pushed to
+  `sau-origin/feature/sau-command-types`. The standalone model can
   now emit the imported RTL baseline's two-command shape, addresses, row
   count, event counts, fixed read/write accepted cadence, and causal event
   order before strict cycle calibration.
@@ -85,7 +86,7 @@ Design and implementation references:
 | 8.5. Calibrate matmul transpose/reuse timing path | Complete | Adds `ArrayInputScheduler` burst/gap timing, `ResultScheduler`, reduced-output command validation, first-array-input anchoring, delayed writeback, and final completion delay. Defaults match the corrected 64x256x256 trace shape: A start 269, B skew 32, input burst 32, tile gap 1, flow gap 3, fill 343, result flow gap 234, writeback delay 8, completion delay 4. |
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
-| 11. Final regression, statistics audit, and documentation | Complete / commit pending | Statistics, README, strict/causal regression, and DSE monotonicity passed. The commit remains pending because this worktree has no configured Git author. |
+| 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
 
 ## Implemented Components
 
@@ -579,7 +580,5 @@ Results:
 
 ## Next Steps
 
-1. Configure `user.name` and `user.email` for this worktree or repository,
-   then commit the staged Task 10 documentation plus the Task 11 milestone.
-2. Begin the next independently scoped plan: CSR decode and mode-derived
+1. Begin the next independently scoped plan: CSR decode and mode-derived
    command generation.
