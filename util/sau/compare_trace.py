@@ -10,9 +10,8 @@ normalizes all cycles so the first `command_accepted` row is cycle 0.
 `compare_rows()` supports:
 
 * strict: every normalized field must match exactly;
-* causal: event/stream/address/beat/phase sequence must match, while absolute
-  cycle differences are ignored as long as the actual trace remains
-  nondecreasing.
+* causal: command-local dataflow lanes and their dependencies must match,
+  while independent memory request and response events may interleave.
 """
 
 import argparse
@@ -43,7 +42,7 @@ VALID_PHASES = {
     "complete",
 }
 VALID_MODES = {"strict", "causal"}
-CAUSAL_FIELDS = ("event", "stream", "address", "beat", "phase")
+CAUSAL_SEQUENCE_FIELDS = ("address", "beat", "phase")
 
 
 class TraceFormatError(ValueError):
@@ -163,14 +162,44 @@ def _compare_strict(expected_rows, actual_rows, errors):
 
 
 def _compare_causal(expected_rows, actual_rows, errors):
+    _check_nondecreasing_cycles(actual_rows, errors)
+
+    expected_lanes = _group_causal_lanes(expected_rows)
+    actual_lanes = _group_causal_lanes(actual_rows)
+    expected_keys = set(expected_lanes)
+    actual_keys = set(actual_lanes)
+    for key in sorted(expected_keys - actual_keys):
+        errors.append(f"causal lane missing from actual trace: {key}")
+    for key in sorted(actual_keys - expected_keys):
+        errors.append(f"unexpected causal lane in actual trace: {key}")
+
+    for key in sorted(expected_keys & actual_keys):
+        expected_lane = expected_lanes[key]
+        actual_lane = actual_lanes[key]
+        if len(expected_lane) != len(actual_lane):
+            errors.append(
+                f"causal lane {key} count mismatch: expected "
+                f"{len(expected_lane)}, actual {len(actual_lane)}"
+            )
+        for index, (expected, actual) in enumerate(
+                zip(expected_lane, actual_lane)):
+            for field in CAUSAL_SEQUENCE_FIELDS:
+                if expected[field] != actual[field]:
+                    errors.append(
+                        f"causal lane {key} item {index}: {field} mismatch: "
+                        f"expected {expected[field]!r}, actual "
+                        f"{actual[field]!r}"
+                    )
+
+    _check_command_boundaries(actual_rows, errors)
+    _check_read_dependencies(actual_rows, errors)
+    _check_b_input_dependencies(actual_rows, errors)
+    _check_result_write_dependency(actual_rows, errors)
+
+
+def _check_nondecreasing_cycles(rows, errors):
     previous_actual_cycle = None
-    for index, (expected, actual) in enumerate(zip(expected_rows, actual_rows)):
-        for field in CAUSAL_FIELDS:
-            if expected[field] != actual[field]:
-                errors.append(
-                    f"row {index}: {field} mismatch: expected "
-                    f"{expected[field]!r}, actual {actual[field]!r}"
-                )
+    for index, actual in enumerate(rows):
         if previous_actual_cycle is not None:
             if actual["cycle"] < previous_actual_cycle:
                 errors.append(
@@ -178,6 +207,102 @@ def _compare_causal(expected_rows, actual_rows, errors):
                     f"nondecreasing order after {previous_actual_cycle}"
                 )
         previous_actual_cycle = actual["cycle"]
+
+
+def _group_causal_lanes(rows):
+    lanes = {}
+    for row in rows:
+        key = (row["command_id"], row["event"], row["stream"])
+        lanes.setdefault(key, []).append(row)
+    return lanes
+
+
+def _positions(rows, event, stream, command_id):
+    return [
+        index for index, row in enumerate(rows)
+        if row["command_id"] == command_id and row["event"] == event and
+        row["stream"] == stream
+    ]
+
+
+def _check_command_boundaries(rows, errors):
+    command_ids = sorted({row["command_id"] for row in rows})
+    for command_id in command_ids:
+        command_positions = [
+            index for index, row in enumerate(rows)
+            if row["command_id"] == command_id
+        ]
+        accepted = _positions(rows, "command_accepted", "none", command_id)
+        complete = _positions(rows, "command_complete", "none", command_id)
+        if len(accepted) != 1:
+            errors.append(
+                f"command {command_id}: expected one command_accepted, "
+                f"got {len(accepted)}"
+            )
+        if len(complete) != 1:
+            errors.append(
+                f"command {command_id}: expected one command_complete, "
+                f"got {len(complete)}"
+            )
+        if accepted and complete:
+            data_positions = [
+                index for index in command_positions
+                if rows[index]["event"] not in
+                {"phase_changed", "command_accepted", "command_complete"}
+            ]
+            if data_positions and accepted[0] > min(data_positions):
+                errors.append(
+                    f"command {command_id}: data event precedes acceptance"
+                )
+            if complete[0] != max(command_positions):
+                errors.append(
+                    f"command {command_id}: completion is not the final event"
+                )
+
+
+def _check_read_dependencies(rows, errors):
+    command_ids = {row["command_id"] for row in rows}
+    for command_id in command_ids:
+        for stream in ("operand_a", "operand_b"):
+            accepted = _positions(rows, "read_accepted", stream, command_id)
+            responses = _positions(
+                rows, "read_response_visible", stream, command_id
+            )
+            for index, (request, response) in enumerate(zip(accepted, responses)):
+                if response <= request:
+                    errors.append(
+                        f"command {command_id} {stream} beat {index}: "
+                        "response precedes request acceptance"
+                    )
+
+
+def _check_b_input_dependencies(rows, errors):
+    command_ids = {row["command_id"] for row in rows}
+    for command_id in command_ids:
+        responses = _positions(
+            rows, "read_response_visible", "operand_b", command_id
+        )
+        inputs = _positions(
+            rows, "array_input_accepted", "operand_b", command_id
+        )
+        for index, (response, array_input) in enumerate(zip(responses, inputs)):
+            if array_input <= response:
+                errors.append(
+                    f"command {command_id} operand_b beat {index}: "
+                    "array input precedes response visibility"
+                )
+
+
+def _check_result_write_dependency(rows, errors):
+    command_ids = {row["command_id"] for row in rows}
+    for command_id in command_ids:
+        results = _positions(rows, "result_produced", "output", command_id)
+        writes = _positions(rows, "write_accepted", "output", command_id)
+        if results and writes and min(writes) <= max(results):
+            errors.append(
+                f"command {command_id}: writeback begins before result "
+                "production completes"
+            )
 
 
 def main(argv=None):
@@ -189,7 +314,7 @@ def main(argv=None):
         choices=sorted(VALID_MODES),
         default="strict",
         help="comparison mode: strict compares normalized cycles; causal "
-             "ignores absolute cycle differences",
+             "checks dataflow dependencies while allowing memory interleaving",
     )
     parser.add_argument("expected", help="expected/reference CSV trace")
     parser.add_argument("actual", help="actual CSV trace")

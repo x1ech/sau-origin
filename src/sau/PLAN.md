@@ -13,7 +13,7 @@
 ## 1. 范围与执行规则
 
 本计划只实现设计文档
-`docs/superpowers/specs/2026-07-02-sau-cycle-level-model-design.md`
+`gem5/.worktrees/sau-command-types/src/sau/PLAN.md`
 定义的首个里程碑：
 
 - 由测试配置直接注入已解码的 SAU 命令；
@@ -1252,6 +1252,12 @@ git commit -m "test: run SAU timing model with memory backpressure"
 
 ## 任务 10：与 RTL 基线逐周期标定
 
+状态：先执行前半段 profile 对齐。Task 9 已能生成 standalone gem5 trace，但它
+仍只发一个 synthetic command，且地址是 synthetic 地址；corrected RTL baseline
+包含两个 command 和 RTL 实际地址。因此本任务先把 gem5 standalone 的命令数量、
+地址和流形状对齐到 `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv`，
+再进入 strict 周期标定。不要在 profile 尚未对齐时调 cycle 参数。
+
 **文件：**
 
 - 修改 `configs/example/sau_timing.py`
@@ -1259,25 +1265,171 @@ git commit -m "test: run SAU timing model with memory backpressure"
 - 修改 `src/sau/sau_model.cc`
 - 修改设计文档
 
-- [ ] **步骤 1：生成未标定 gem5 trace**
+- [x] **步骤 0：提取并记录 RTL profile**
+
+从 imported RTL reference 提取：
+
+- command 数量；
+- 每个 command 的 A/B/output base 地址；
+- A/B/output beat 数；
+- flow/instruction 形状；
+- read、array input、result、write、complete 的事件数量。
+
+如果 reference 和当前 direct-command 参数不能一一表达，先增加通用命名参数，
+不要写 command-ID 特判。
+
+- [x] **步骤 1：生成 profile 对齐但未标定的 gem5 trace**
 
 ```bash
-./build/ALL/gem5.opt \
+./build/RISCV/gem5.opt \
     --outdir=m5out/sau-rtl-match \
     configs/example/sau_timing.py \
     --rtl-profile \
     --trace=m5out/sau-rtl-match/sau.csv
 ```
 
-- [ ] **步骤 2：确认 strict 首次失败**
+- [ ] **步骤 2：记录当前 causal profile 差异**
 
 ```bash
-python3 util/sau/compare_trace.py --mode strict \
-    tests/gem5/sau/ref/int8_gemm.csv \
+python3 util/sau/compare_trace.py --mode causal \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
     m5out/sau-rtl-match/sau.csv
 ```
 
-- [ ] **步骤 3：只校准有物理含义的命名参数**
+预期：profile 对齐后，事件/stream/address/beat/phase 序列应匹配；cycle 可不同。
+如果仍失败，优先修 command 数量、地址、beat 编号和 phase/event 顺序。
+
+当前状态：2026-07-08 的 `--rtl-profile` trace 已匹配 RTL 的 command 数量、
+行数、事件计数和 A/B/output 地址范围；causal compare 仍在事件顺序上失败，
+首个 mismatch 为第 6 行，RTL 期待 Operand-A beat 4 的 `read_accepted`，
+gem5 当前提前出现 Operand-A beat 0 的 `read_response_visible`。后半段从这里继续。
+
+已定位的 mismatch 原因不是矩阵计算或尺寸错误，而是事件序列仍未对齐：
+
+1. 同一拍或相邻拍内的 read issue/response 可见顺序不同。RTL trace 在发出
+   Operand-A beat 4 的 `read_accepted` 后，才记录 Operand-A beat 0 的
+   `read_response_visible`；旧的 gem5 `tick()` 先 emit visible responses，
+   后 `issueReads()`，因此同一调度窗口里 response 会排到后续 read 前面。
+   2026-07-09 已通过把 `issueReads()` 移到 visible response 处理前修正这
+   一层顺序；新的首个 causal mismatch 推进到 row 510。
+2. 固定 profile 下的 timing memory 节奏仍不是 RTL SRAM profile。RTL command 1
+   的 A read 基本是 cycle 3 起每拍一个，response 从 cycle 7 起每拍一个；
+   当前 gem5 经 `SystemXBar + SimpleMemory` 后首批 read/response 为
+   0,2,2,4,14.../14,16,18...，会把后续 B 输入窗口拖长。
+3. writeback 与 array input 的相对边界仍不符合 RTL。RTL command 1 的最后
+   array input 在 cycle 2425，first write 在 cycle 2513；当前 gem5 first write
+   在 cycle 3170，但最后 B array input 到 cycle 8134 才结束，说明模型仍允许
+   writeback 与未完成的 B array input 长时间交叠。
+
+后续步骤先处理最早可见的序列问题：让固定 RTL profile 下同一 SAU tick 内的
+`read_accepted` trace 顺序与 RTL 一致，再决定是用更贴近 RTL 的固定 timing
+memory profile，还是继续通过现有 timing port 参数逼近。
+
+2026-07-09 更新：read accepted/response 的局部顺序已对齐，row 6 mismatch
+消失。新的 row 510 mismatch 是 gem5 在最后几个 Operand-A response visible
+之前已经开始发 Operand-B read；RTL 则先完成 Operand-A response visible，
+进入 `array_active`，发出约 24 个 Operand-A array-input token 后才开始
+Operand-B external read。下一步应增加 A preload 完成到 B streaming 启动之间的
+RTL-observed barrier/offset，而不是继续改 command/profile 形状。
+
+2026-07-09 追加更新：已增加 `b_read_start_ahead_beats`，`--rtl-profile`
+设置为 24，使 Operand-B external read 等到 A preload response 全部可见并且
+A array-input 领先 24 个 token 后才启动；row 510 mismatch 消失。同时增加
+`b_stride_bytes`，`--rtl-profile` 设置 `b_stride_bytes=0x100` 和
+`b_flow_stride=0x20`，使 Operand-B read 地址序列匹配 RTL：
+`0x29124000, 0x29124100, ...`。新的首个 causal mismatch 为 row 541：
+RTL 每拍接受一个 B read，当前 gem5 仍受 `SystemXBar + SimpleMemory` timing
+节奏影响，B read accepted cadence 会跳拍或同拍接受多笔。下一步应处理 RTL
+calibration run 的固定 memory cadence，而不是继续调整地址/profile。
+
+- [x] **步骤 3：拆分 calibration-only 与 system/backpressure 模式**
+
+Task 10 的 RTL 逐周期标定应先使用 calibration-only 固定内存节奏：
+
+- read accepted 固定为每个 SAU cycle 最多 1 beat；
+- read response 使用固定可见延迟，并按 RTL profile 每拍最多可见 1 beat；
+- write accepted 固定为每个 SAU cycle 最多 1 beat；
+- 不经过 `SystemXBar + SimpleMemory` 的 retry、带宽仲裁、同拍聚合或额外排队。
+
+`SystemXBar + SimpleMemory` 路径继续保留给 Task 9 和后续 system/backpressure
+实验。它用于观察真实 gem5 memory hierarchy 对 SAU 的反压影响，不作为 strict
+RTL 对齐的依据。row 541 mismatch 正是当前两类目标混在一起后的表现：profile
+形状和地址已经对齐，但 memory accepted cadence 仍是系统仿真节奏，不是 RTL
+SRAM profile。
+
+- [x] **步骤 4：实现 calibration-only fixed memory cadence**
+
+新增显式开关，例如 `--calibration-memory` 或 `--rtl-memory-cadence`，只在
+RTL 标定运行中启用。实现时仍复用现有命令、beat、scheduler 和 trace 结构，
+只替换外部 memory accepted/response 的节奏来源；不要加入 command-ID 特判，
+也不要为 row 541 写事件专用补丁。
+
+建议最小实现目标：
+
+- fixed read accept：若 SAU 本地有待发 read，则每拍接受 1 个；
+- fixed read response：accepted read 经过固定延迟后，每拍可见 1 个 response；
+- fixed write accept：若 writeback 有待发 write，则每拍接受 1 个；
+- trace 仍输出同一套 `read_accepted`、`read_response_visible`、
+  `write_accepted` 和 phase 事件，便于继续用 comparator。
+
+2026-07-09 更新：已实现 `--calibration-memory` 和
+`--calibration-read-latency-cycles`。该模式绕过 timing port 的 request/retry
+路径，只在 `SauModel` 内部按固定节奏记录 accepted 和 visible response；
+默认关闭，因此 Task 9 的 `SystemXBar + SimpleMemory` system/backpressure
+路径保持不变。
+
+- [x] **步骤 5：在 calibration-only 模式下重新要求 causal 对齐**
+
+```bash
+./build/RISCV/gem5.opt \
+    --outdir=m5out/sau-rtl-match \
+    configs/example/sau_timing.py \
+    --rtl-profile \
+    --calibration-memory \
+    --trace=m5out/sau-rtl-match/sau.csv
+
+python3 util/sau/compare_trace.py --mode causal \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
+    m5out/sau-rtl-match/sau.csv
+```
+
+预期：row 541 这类由 `SystemXBar + SimpleMemory` cadence 引入的 mismatch
+应消失。若 causal 仍失败，下一处 mismatch 才更可能是 SAU 内部 scheduler、
+array/writeback overlap 或 phase 边界问题。
+
+2026-07-09 结果：row 541 的 B read accepted cadence mismatch 已消失，B read
+accepted 在 calibration-only trace 中变为 293、294、295... 每拍一笔，且 trace
+行数仍与 RTL 相同。新的首个 causal mismatch 推进到 row 562：RTL 在 cycle 301
+同一拍内记录 Operand-B array-input beat 0 后继续记录 Operand-A array-input
+beat 32；当前 gem5 把 Operand-A beat 32 推迟到 cycle 302。下一步应检查 array
+input scheduler 与 array pipeline 的同拍 A/B admission 规则。
+
+2026-07-09 追加结果：已修复 row 562 及后续 B-read burst gap/result ordering
+问题。`--rtl-profile --calibration-memory` 生成的 trace 与 RTL reference 在
+causal mode 下完全一致；行数保持 18447。关键修正包括：
+
+- 同拍 B/A array input 中，B 作为 work admission 消耗 array pipeline II，
+  A 作为同拍 additional input 进入 pipeline 但不推进 II；
+- calibration B read issue 复用 32-beat tile gap 和 flow gap；
+- calibration result trace 由 `ResultScheduler` 直接驱动，避免 trace-only
+  pipeline token 排列影响已标定的 result schedule。
+
+- [x] **步骤 6：确认 strict 首次失败**
+
+```bash
+python3 util/sau/compare_trace.py --mode strict \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
+    m5out/sau-rtl-match/sau.csv
+```
+
+2026-07-09 当前 strict 首次失败：事件序列和元数据已经一致，但 cycle 字段仍
+不一致。command 1 的 `command_accepted` / `command_complete` 已与 RTL 同为
+cycle 0 / 2772，但首个 `read_accepted` 比 RTL 早 3 拍；command 2 的
+`command_accepted` 已与 RTL 同为 cycle 3125，但后半段周期仍被拉长。下一步
+应校准 command-local start offset，并检查跨 command 的 scheduler/pipeline
+状态复位或 command-local timing 边界。
+
+- [x] **步骤 7：只校准有物理含义的命名参数**
 
 允许调整：
 
@@ -1290,19 +1442,29 @@ python3 util/sau/compare_trace.py --mode strict \
 
 禁止加入 command-ID 特判或某个事件专用的临时补拍。
 
-- [ ] **步骤 4：要求 strict 完全一致**
+- [x] **步骤 8：要求 strict 完全一致**
 
 行数、cycle、event、stream、address、beat、phase 必须完全相等。
 
-- [ ] **步骤 5：受限内存使用 causal 比较**
+2026-07-10 结果：以 `scons --ignore-style` 重建后，
+`--rtl-profile --calibration-memory` 生成的 trace 通过 strict comparison。
+两份 trace 都有 18446 条数据行；command 1 的首读/完成周期为 3/2772，
+command 2 为 3128/5897。修复使用命名的 `command_start_cycles=3` feeder
+启动边界，以及每命令重置的 `ArrayPipeline` timing epoch，没有 command-ID
+特判或事件专用补拍。
+
+- [ ] **步骤 9：受限内存使用 causal/system 比较**
 
 ```bash
 python3 util/sau/compare_trace.py --mode causal \
-    tests/gem5/sau/ref/int8_gemm.csv \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
     m5out/sau-constrained/sau.csv
 ```
 
-- [ ] **步骤 6：提交标定结果**
+该步骤不要求 constrained/system trace 与 RTL strict 对齐；它只检查在带反压的
+系统路径中，事件 profile、地址、beat 编号和 phase progression 没有退化。
+
+- [ ] **步骤 10：提交标定结果**
 
 ```bash
 git add src/sau/Sau.py src/sau/sau_model.cc \
@@ -1400,9 +1562,88 @@ git commit -m "docs: complete SAU timing model milestone"
 
 首里程碑通过后，按以下顺序分别设计和实施：
 
-1. CSR decode 后的 `register_file_in`/reuse 控制、transpose、int16；
-2. PWConv、普通卷积、DWConv、padding；
-3. RISC-V `msetins1..7`、CSR、完成中断；
-4. 可选 Functional Backend。
+1. CSR decode 和 mode-derived command generation；
+2. CSR decode 后的 `register_file_in`/reuse 控制、transpose、int16；
+3. PWConv、普通卷积、DWConv、padding；
+4. RISC-V `msetins1..7`、CSR、完成中断；
+5. 可选 Functional Backend。
 
 每个扩展阶段都必须增加对应 RTL reference trace，并保留 int8 GEMM 作为回归。
+
+### 任务 12：SAU CSR decode 和 mode-derived command generation
+
+**定位：** 这是首里程碑之后的独立任务，不阻塞 Task 10 的 profile alignment、
+calibration-only memory cadence 或 strict cycle calibration。当前 direct-command
+路径仍然是合法的抽象命令入口；后续 CSR decode 的目标是把 RTL/软件侧寄存器配置
+稳定翻译成同一个 `SauCommand` 和 timing policy 边界。
+
+**目标：**
+
+- 保留当前 `SauCommand` 作为已解码的架构意图；
+- 新增一层显式的 CSR/register 配置输入，记录 RTL 侧 `work_mode`、
+  `register_ystep_i`、x/y step、reuse、transpose、precision、输出形状等字段；
+- 实现 `CSR/register config -> SauCommand + TimingPolicy` 的 decode；
+- 对当前 int8 GEMM baseline，CSR decode 后生成的 command/profile 必须等价于
+  现有 `--rtl-profile` direct-command baseline；
+- unsupported mode 必须明确失败，不能静默走错 timing path。
+
+**文件：**
+
+- 可能修改 `src/sau/types.hh`
+- 可能新增或修改 `src/sau/command.{hh,cc}` / CSR decode helper
+- 可能修改 `src/sau/sau_model.{hh,cc}`
+- 可能修改 `configs/example/sau_timing.py`
+- 增加对应 `src/sau/*.test.cc`
+- 更新 `src/sau/README.md` 和 `src/sau/STATUS.md`
+
+- [ ] **步骤 1：整理 RTL/软件侧 CSR 字段定义**
+
+从 RTL 和软件启动流程中记录当前 baseline 真实依赖的寄存器字段，至少包括：
+
+- `work_mode`；
+- `register_ystep_i`；
+- x/y step 和 stride 类字段；
+- `register_file_in` / reuse 控制；
+- transpose 或输入重排相关控制；
+- precision、输出 shape、loop/work item 相关字段。
+
+字段语义必须来自 RTL/软件上下文，不能只根据 gem5 当前 command 反推。
+
+- [ ] **步骤 2：定义 CSR config 与 command 的边界**
+
+新增独立结构表达原始或已规整的 SAU CSR 配置，例如 `SauCsrConfig` 或同等命名。
+它应与 `SauCommand` 分离：
+
+- CSR config 表示“软件/RTL 写了什么寄存器”；
+- `SauCommand` 表示“gem5 SAU 已解码后要执行什么抽象工作”；
+- timing policy 表示“该工作在当前 RTL profile 下如何排拍”。
+
+direct-command 注入路径继续保留，用于 Task 10 标定、单元测试和未来回归。
+
+- [ ] **步骤 3：实现 baseline decode**
+
+先只支持当前 int8 GEMM baseline。decode 后必须生成与现有 `--rtl-profile`
+一致的：
+
+- command 数量；
+- A/B/output base、stride、loop 和 beat 数；
+- `register_file_in` reuse 路径选择；
+- calibrated timing policy 参数；
+- unsupported CSR/mode 的显式错误。
+
+不在本步骤实现数值计算，也不把 transpose 做成完整功能模型；只把它作为
+mode-derived timing/dataflow 选择的一部分。
+
+- [ ] **步骤 4：增加 decode 单元测试**
+
+至少覆盖：
+
+- 当前 baseline CSR 配置 decode 后等价于现有两条 direct command；
+- unsupported `work_mode` 或未建模 transpose/reuse 组合会失败；
+- decode 不改变 Task 10 现有 `--rtl-profile --calibration-memory` trace 形状。
+
+- [ ] **步骤 5：再接入软件/CSR 写入路径**
+
+只有在 decode 边界和 baseline 测试稳定后，再设计 RISC-V `msetins1..7`、
+CSR 写入、完成中断和真实软件驱动路径。该步骤应作为后续独立任务继续展开，
+不要混入 Task 10 的 strict cycle calibration。

@@ -17,6 +17,9 @@ class ResultScheduler
 
     void start(Cycles firstArrayCycle);
     bool started() const;
+    // Delay the current and all later result slots until an input dependency
+    // becomes available, preserving result spacing and flow gaps.
+    void deferUntil(Cycles now);
     bool canProduce(Cycles now) const;
     uint32_t produce(Cycles now);
     uint32_t produced() const;

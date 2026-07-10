@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-07
+Last updated: 2026-07-09
 
 ## Goal
 
@@ -19,10 +19,13 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 9 complete, with Task 4.5 and Task 8.5
-  calibration patches for RTL-observed A preload/B streaming, skewed/bursty
-  A/B array input, reduced result production, delayed writeback, and command
-  completion timing.
+- Current stage: Tasks 1 through 9 complete, with Task 10 strict calibration
+  aligned for the imported baseline. The remaining Task 10 work is
+  constrained-memory causal validation and committing the calibration result.
+  The standalone model can
+  now emit the imported RTL baseline's two-command shape, addresses, row
+  count, event counts, fixed read/write accepted cadence, and causal event
+  order before strict cycle calibration.
 - Active branch: `feature/sau-command-types`
 - Worktree: `/home/xch/workspace/gem5/.worktrees/sau-command-types`
 - Development remote: `sau-origin`
@@ -36,10 +39,23 @@ Design and implementation references:
   32-result flow bursts after the calibrated fill latency, writes wait until
   the result stream is complete, and command completion waits after the final
   write.
-- Latest simulation milestone: Task 9 adds a standalone
-  `configs/example/sau_timing.py` topology with `SauModel`, `SystemXBar`, and
-  `SimpleMemory`, plus quick tests for fixed and constrained timing-memory
-  configurations.
+- Latest simulation milestone: Task 10 front-half work adds a reusable
+  `--rtl-profile` standalone configuration and command-level address strides
+  so gem5 can generate the same two-command profile as
+  `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv`.
+- Latest calibration milestone: Task 10 now adds `--calibration-memory`, a
+  local fixed-cadence memory path for RTL comparison. It bypasses the generic
+  `SystemXBar + SimpleMemory` request/retry cadence only when explicitly
+  enabled; system/backpressure runs keep using the timing-memory port. The
+  calibration trace now passes causal comparison against the imported RTL
+  reference.
+- Latest strict-calibration implementation: `command_start_cycles` now gates
+  command-local feeder issue rather than only delaying the gem5 event, and
+  `ArrayPipeline` resets its command-local II epoch between synthetic
+  commands. This addresses the observed command-1 three-cycle early preload
+  and command-2 inherited-pipeline timing boundary. On 2026-07-10,
+  `--rtl-profile --calibration-memory` passed strict comparison against the
+  imported RTL reference.
 - The current direct-command model assumes the target operator uses the RTL
   `register_file_in` path; CSR decode of reuse/control fields is not yet
   modeled.
@@ -62,7 +78,7 @@ Design and implementation references:
 | 8. Integrate scheduling, array timing, writeback, and drain | Complete | `SauModel::tick()` now consumes read responses, feeds `ARegisterFileIn` plus B streaming tokens into the array pipeline, produces output tokens, issues timing writes, advances phases, checks token/request conservation, and drains only after local packet state is clear. |
 | 8.5. Calibrate matmul transpose/reuse timing path | Complete | Adds `ArrayInputScheduler` burst/gap timing, `ResultScheduler`, reduced-output command validation, first-array-input anchoring, delayed writeback, and final completion delay. Defaults match the corrected 64x256x256 trace shape: A start 269, B skew 32, input burst 32, tile gap 1, flow gap 3, fill 343, result flow gap 234, writeback delay 8, completion delay 4. |
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
-| 10. Calibrate against the RTL reference | Pending trace-profile alignment | Task 9 now generates gem5 traces, but causal comparison still fails because the standalone synthetic profile emits one command with synthetic addresses while the imported RTL reference has two commands and RTL baseline addresses. |
+| 10. Calibrate against the RTL reference | In progress / strict aligned | `--rtl-profile --calibration-memory` now strictly matches the imported RTL trace: all 18,446 rows and all seven CSV fields match for both commands. The remaining Task 10 work is constrained-memory causal validation and committing the calibration result. |
 | 11. Final regression, statistics audit, and documentation | Pending | Final milestone validation and handoff. |
 
 ## Implemented Components
@@ -160,8 +176,8 @@ Design and implementation references:
 ### Standalone simulation
 
 - `configs/example/sau_timing.py` instantiates a timing-mode system with a
-  1GHz default SAU clock, `SystemXBar(width=32)`, `SimpleMemory`, and one
-  synthetic `SauModel` command.
+  1GHz default SAU clock, `SystemXBar(width=32)`, `SimpleMemory`, and one or
+  more synthetic `SauModel` commands.
 - The CLI exposes memory latency, latency variance, bandwidth, command stream
   shape, buffer sizes, array capacity/timing, outstanding limits, and trace
   path.
@@ -175,6 +191,17 @@ Design and implementation references:
 - The constrained run uses bandwidth/outstanding pressure but keeps
   `output_buffer_entries` at 256 because the current timing policy delays
   writeback until the complete result stream has been produced.
+- Task 10 front-half profile controls add command count, inter-command gap,
+  and per-command A/B/output address strides. `--rtl-profile` sets these to
+  the imported 64x256x256 RTL baseline:
+  two commands, A stride `0x2000`, B stride `0x0`, output stride `0x2000`,
+  command gap 353 cycles, RTL base addresses, and 1GiB memory size.
+- Task 10 calibration controls add `--calibration-memory` plus
+  `--calibration-read-latency-cycles`. In calibration mode, SAU read and write
+  accepted events are generated locally at one beat per SAU cycle, and read
+  responses become visible after the fixed calibration latency. This mode is
+  for RTL profile comparison only; the default standalone path still sends
+  real timing packets through `SystemXBar + SimpleMemory`.
 
 ### Task 8 scheduler integration
 
@@ -313,6 +340,23 @@ python3 util/style.py --modifications \
 scons build/RISCV/gem5.opt -j4
 
 ./build/RISCV/gem5.opt \
+    --outdir=m5out/sau-rtl-match \
+    configs/example/sau_timing.py \
+    --rtl-profile \
+    --trace=m5out/sau-rtl-match/sau.csv
+
+./build/RISCV/gem5.opt \
+    --outdir=m5out/sau-rtl-calibration \
+    configs/example/sau_timing.py \
+    --rtl-profile \
+    --calibration-memory \
+    --trace=m5out/sau-rtl-calibration/sau.csv
+
+python3 util/sau/compare_trace.py --mode causal \
+    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
+    m5out/sau-rtl-calibration/sau.csv
+
+./build/RISCV/gem5.opt \
     --outdir=m5out/sau-fixed \
     configs/example/sau_timing.py \
     --memory-latency=3ns \
@@ -351,10 +395,41 @@ python3 util/sau/compare_trace.py --mode strict \
 Results:
 
 - `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`
-  `py_compile`: passed.
+  `py_compile`: passed after the Task 10 profile controls were added.
 - `git diff --check`: passed.
-- `build/RISCV/gem5.opt`: rebuilt successfully after the Task 9 scheduler
-  conservation fix.
+- `build/RISCV/gem5.opt`: rebuilt successfully after the Task 10 profile
+  controls, multi-command scheduling changes, and calibration-memory mode.
+- `--rtl-profile` standalone run completed with `SAU command complete`, wrote
+  `m5out/sau-rtl-match/sau.csv`, and generated 18446 data rows plus header,
+  matching the imported RTL architecture trace row count.
+- `m5out/sau-rtl-match/sau.csv` now matches the RTL profile structurally:
+  commands 1 and 2 are both present, each command has 9223 rows, per-command
+  event counts match, and A/B/output read/write address ranges match the RTL
+  baseline.
+- Causal comparison against
+  `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv` now passes for
+  `m5out/sau-rtl-calibration/sau.csv`. The original row 6 mismatch between
+  `read_accepted` and `read_response_visible` ordering was fixed on
+  2026-07-09 by issuing reads before taking visible responses in
+  `SauModel::tick()`. A later row 510 mismatch was fixed by adding
+  `b_read_start_ahead_beats=24` to `--rtl-profile`, so Operand-B external
+  reads now wait for all Operand-A preload responses and the initial A
+  array-input lead window. `b_stride_bytes=0x100` plus
+  `b_flow_stride=0x20` now matches the RTL Operand-B read address order.
+  `--calibration-memory` fixes the row 541 B read accepted cadence mismatch:
+  B reads are accepted at cycles 293, 294, 295... in the calibration trace.
+  The row 562 same-cycle B/A array-input mismatch was fixed by letting
+  Operand-A enter the array pipeline as an additional same-cycle input that
+  does not consume the pipeline initiation interval. Later B-read burst-gap
+  and result-ordering mismatches were fixed by applying the 32-beat
+  tile/flow gaps to calibration B reads and letting calibration result trace
+  emission follow `ResultScheduler` directly.
+- On 2026-07-10, after rebuilding with `scons --ignore-style`, the RTL
+  calibration run completed with `SAU command complete`. Both strict and
+  causal comparison against `architecture.csv` passed. The reference and
+  generated traces each contain 18,446 data rows; command 1 first read and
+  completion are 3 and 2772, while command 2 first read and completion are
+  3128 and 5897.
 - Fixed standalone run completed with `SAU command complete`, wrote
   `m5out/sau-fixed/sau.csv`, and completed at SAU cycle 8477.
 - Constrained standalone run completed with `SAU command complete`, wrote
@@ -364,6 +439,26 @@ Results:
   `stallOutstandingWriteLimit=127`, and `stallInputStarvation=71833`.
 - `cd tests && ./main.py run --skip-build gem5/sau`: 4/4 checks passed for
   the RISCV fixed and constrained quick tests.
+- After the 2026-07-09 read-ordering change, `scons build/RISCV/gem5.opt -j4`
+  rebuilt successfully, `--rtl-profile` completed with
+  `SAU command complete`, and `cd tests && ./main.py run --skip-build
+  gem5/sau` still passed 4/4.
+- After the 2026-07-09 B-start and B-address-order changes,
+  `scons build/RISCV/gem5.opt -j4` rebuilt successfully, `--rtl-profile`
+  completed with `SAU command complete`, the first 12 Operand-B read addresses
+  matched the RTL sequence, and `cd tests && ./main.py run --skip-build
+  gem5/sau` passed 4/4.
+- After the 2026-07-09 calibration-memory change,
+  `scons build/RISCV/gem5.opt -j4` rebuilt successfully,
+  `--rtl-profile --calibration-memory` completed with `SAU command complete`,
+  the generated trace kept the same 18447 total lines as the RTL reference,
+  and causal comparison progressed from row 541 to row 562.
+- After the 2026-07-09 same-cycle A/B input, B-read burst-gap, and
+  calibration result-schedule changes, `scons build/RISCV/gem5.opt -j4`
+  rebuilt successfully, `--rtl-profile --calibration-memory` completed with
+  `SAU command complete`, causal comparison passed, strict comparison failed
+  only on cycles, `./build/RISCV/sau/token_pipeline.test.opt` passed 6/6, and
+  `cd tests && ./main.py run --skip-build gem5/sau` passed 4/4.
 - SAU trace comparator tests: 8/8 passed.
 - SAU trace comparator strict and causal self-comparison against the imported
   RTL reference trace passed.
@@ -392,6 +487,12 @@ Results:
   zero-filled writes.
 - All focused SAU tests: 27/27 passed.
 - `build/RISCV/gem5.opt`: built successfully.
+- After the strict-calibration boundary fix, `scons
+  build/RISCV/sau/sau_model.o build/RISCV/sau/token_pipeline.test.opt -j4`
+  compiled the affected model object and test target; the token-pipeline
+  suite passed 7/7, including the new command-local epoch reset test. A full
+  gem5 relink was not run because this worktree's build requests interactive
+  installation of Git hooks, which was not authorized.
 - `build/RISCV/params/SauModel.hh` was generated in this worktree, confirming
   SimObject parameter registration.
 - Build warnings about unavailable Capstone and HDF5 are unrelated to the SAU
@@ -418,24 +519,49 @@ Results:
   timing-policy knobs, but it is still an architectural cycle-level model; it
   does not reproduce RTL internal state encodings, register ports, transpose
   datapath storage, or arithmetic values.
-- Causal comparison of the Task 9 generated traces against
-  `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv` currently fails.
-  The immediate mismatches are expected at this stage: the RTL reference has
-  two commands and RTL baseline addresses, while the standalone gem5 config
-  currently emits one synthetic command with synthetic addresses. Aligning that
-  profile is the first part of Task 10.
+- Causal and strict comparison of the Task 10
+  `--rtl-profile --calibration-memory` trace against
+  `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv` now passes. The
+  imported two-command 64x256x256 baseline is cycle-aligned.
+- The first observed Task 10 mismatch was a sequence mismatch after profile
+  alignment, not a matrix-size or arithmetic mismatch. RTL records Operand-A
+  beat 4 `read_accepted` before Operand-A beat 0 `read_response_visible`;
+  old gem5 emitted visible read responses before issuing new reads in
+  `SauModel::tick()`, so the same logical events appeared in a different CSV
+  order. This local ordering issue is now fixed.
+- The current first mismatch is the next timing boundary: gem5 starts
+  Operand-B external reads before the final Operand-A preload responses have
+  become visible. RTL drains the Operand-A visible responses first, enters
+  `array_active`, and only starts Operand-B external reads after the
+  Operand-A array-input lead window has begun. This boundary has now been
+  encoded for `--rtl-profile` with `b_read_start_ahead_beats=24`.
+- The row 541 B read cadence mismatch is fixed only in calibration mode.
+  `--rtl-profile --calibration-memory` bypasses `SystemXBar + SimpleMemory`
+  so RTL comparison can use the imported fixed SRAM cadence. The generic
+  timing-memory path intentionally remains different and should be used for
+  system/backpressure experiments, not strict RTL alignment.
+- Same-cycle A/B array-input ordering now matches RTL in calibration mode.
+  Operand-B consumes the modeled work-admission initiation slot; Operand-A can
+  enter as an additional same-cycle pipeline input without advancing the next
+  initiation slot. This is covered by the new token-pipeline unit test.
+- Strict RTL alignment is now verified for the imported two-command
+  64x256x256 baseline. The calibrated `command_start_cycles=3` and
+  command-local `ArrayPipeline` reset are baseline-specific timing-policy
+  values and must be revalidated with additional RTL traces before being
+  generalized to other matrix shapes.
 - `system.sau.commandsAccepted` currently dumps as 0 while
   `commandsCompleted` dumps as 1 in the standalone stats because the synthetic
   command is accepted during startup before the stats dump window records it.
   Task 11 should audit and fix or document this statistics boundary.
 - Current tests establish deterministic component behavior, trace comparison
-  behavior, compile-time integration of the scheduler, and standalone
-  completion under fixed/constrained memory. They do not yet establish
-  calibrated RTL cycle-level timing accuracy.
+  behavior, compile-time integration of the scheduler, standalone completion
+  under fixed/constrained memory, and strict RTL cycle alignment for the
+  imported baseline. They do not generalize the calibrated timing values to
+  other matrix shapes without additional RTL traces.
 
 ## Next Steps
 
-1. Align the standalone synthetic profile with the imported two-command RTL
-   reference shape and addresses.
-2. Use `util/sau/compare_trace.py` in causal mode, then strict mode, as part
-   of Task 10 calibration.
+1. Run Task 10's constrained-memory causal comparison to confirm that the
+   system/backpressure path preserves the calibrated event profile.
+2. Commit the Task 10 calibration result, then proceed to Task 11 statistics,
+   DSE monotonicity tests, README, and final regression.

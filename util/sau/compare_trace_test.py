@@ -121,13 +121,58 @@ class TraceComparatorTest(unittest.TestCase):
         self.assertIn("cycle", errors[0])
         self.assertIn("row 2", errors[0])
 
-    def test_causal_allows_latency_but_not_reordering(self):
+    def test_causal_allows_latency_but_not_dependency_reordering(self):
         delayed = [dict(row, cycle=row["cycle"] + 7) for row in ROWS]
 
         self.assertEqual([], compare_rows(ROWS, delayed, mode="causal"))
         self.assertNotEqual(
             [], compare_rows(ROWS, list(reversed(delayed)), mode="causal")
         )
+
+    def test_causal_allows_independent_read_response_interleaving(self):
+        expected = [
+            dict(ROWS[0]),
+            dict(ROWS[1]),
+            dict(ROWS[2]),
+            {
+                "cycle": 4,
+                "event": "read_accepted",
+                "command_id": 1,
+                "stream": "operand_a",
+                "address": "0x29120020",
+                "beat": 1,
+                "phase": "operand_load",
+            },
+            dict(ROWS[3]),
+            {
+                "cycle": 8,
+                "event": "read_response_visible",
+                "command_id": 1,
+                "stream": "operand_a",
+                "address": "0x00000000",
+                "beat": 1,
+                "phase": "operand_load",
+            },
+        ] + [dict(row) for row in ROWS[4:]]
+        actual = [
+            dict(expected[0]),
+            dict(expected[1]),
+            dict(expected[2]),
+            dict(expected[4], cycle=6),
+            dict(expected[3], cycle=7),
+            dict(expected[5], cycle=8),
+        ] + [dict(row) for row in expected[6:]]
+
+        self.assertEqual([], compare_rows(expected, actual, mode="causal"))
+
+    def test_causal_rejects_response_before_its_request(self):
+        actual = [dict(row) for row in ROWS]
+        actual[2], actual[3] = actual[3], actual[2]
+
+        errors = compare_rows(ROWS, actual, mode="causal")
+
+        self.assertTrue(any("response precedes request" in error
+                            for error in errors))
 
     def test_causal_rejects_actual_cycle_regression(self):
         actual = [dict(row) for row in ROWS]

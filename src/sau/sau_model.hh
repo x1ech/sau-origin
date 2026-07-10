@@ -55,10 +55,18 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     const Cycles arrayInputBurstGapCycles;
     const Cycles arrayInputFlowGapCycles;
     const unsigned arrayInputSkewCycles; // B 相对 resident A 的输入滞后
+    const unsigned bReadStartAheadBeats;
     const Cycles resultFlowGapCycles;
     const Cycles writebackStartDelayCycles;
     const Cycles completionDelayCycles;
     const Cycles commandStartCycles;  // 命令接收后延迟多少拍开始发第一笔读
+    const bool calibrationMemory;
+    const Cycles calibrationReadLatencyCycles;
+    const unsigned commandCount;
+    const Cycles interCommandGapCycles;
+    const Addr aCommandStride;
+    const Addr bCommandStride;
+    const Addr outputCommandStride;
     const bool exitOnDone;            // 命令完成后是否自动退出仿真
 
     // ========== 运行时状态 ==========
@@ -66,7 +74,16 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::optional<SauCommand> activeCommand;  // 当前正在执行的命令（空 = idle）
     // 当前命令所处的 SAU 执行阶段
     Phase phase = Phase::Idle;
-    uint64_t sauCycle = 0;                    // SAU 内部周期计数（相对命令开始时刻）
+    uint64_t sauCycle = 0;                    // SAU 全局 trace 周期
+    uint64_t commandStartCycle = 0;           // 当前命令的起始 trace 周期
+    uint32_t nextCommandIndex = 0;
+    std::optional<Cycles> nextCommandStartCycle;
+    struct ScheduledReadResponse
+    {
+        Cycles visibleCycle;
+        Beat beat;
+    };
+    std::deque<ScheduledReadResponse> calibrationReadResponses;
     std::vector<Beat> visibleMemoryResponses;
     std::optional<AddressGenerator> readGenerator;
     std::optional<ARegisterFileIn> aRegisterFile;
@@ -84,6 +101,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     uint64_t arrayAdmissions = 0;
     uint64_t resultsProduced = 0;
     uint64_t writesAccepted = 0;
+    Cycles bReadCooldownCycles = Cycles(0);
     uint32_t readAcceptedTraceA = 0;
     uint32_t readAcceptedTraceB = 0;
     uint32_t readResponseTraceA = 0;
@@ -99,19 +117,31 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     void consumeResponses();
     void advanceArray();
     bool advanceArrayB();
-    bool advanceArrayA();
+    bool advanceArrayA(bool allowPipelineBypass);
     void produceResults();
     void issueWrites();
     void issueReads();
+    bool bReadInCooldown();
+    void applyBReadCooldown();
+    std::vector<Beat> takeVisibleReadResponses();
+    bool memoryBlocked() const;
+    bool memoryCanIssue() const;
+    unsigned outstandingReads() const;
+    unsigned outstandingWrites() const;
+    bool canIssueReadBeat(const Beat &beat) const;
     void updatePhase();
     void accountCycle();
     void transitionTo(Phase newPhase);
     void checkConservation() const;
     bool hasPendingWork() const;
     bool commandLocallyComplete() const;
+    Cycles commandCycle() const;
+    SauCommand buildCommandForIndex(uint32_t index) const;
+    void submitNextCommand();
     uint32_t expectedOutputBeats() const;
     uint32_t outputBeatsPerFlow() const;
     uint32_t arrayInputsPerFlow() const;
+    bool resultFlowReady() const;
     bool instructionReadyForArrayIndex(uint32_t index) const;
     Beat makeArrayABeat(uint32_t index) const;
     void requestAccepted(const Beat &beat, bool write) override;

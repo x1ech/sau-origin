@@ -39,8 +39,13 @@ class ArrayPipeline
     ArrayPipeline(Cycles fillLatency, Cycles initiationInterval,
                   size_t maxInFlight);
 
+    // Start a command-local timing epoch after the previous command drains.
+    void reset();
     bool canAccept(Cycles now) const;                                  // mit-in-flight 未满 && II 已过
     void accept(uint64_t commandId, uint32_t index, bool last, Cycles now);// 入队，记录 readyCycle = now + fillLatency
+    bool canAcceptAdditional() const;                                  // 同拍附加输入，不消耗 II
+    void acceptAdditional(uint64_t commandId, uint32_t index, bool last,
+                          Cycles now);
     bool hasReady(Cycles now) const;                                   // 队首 token 是否已到就绪时间
     PipelineToken takeReady(Cycles now);                               // 取出就绪 token
     size_t inFlight() const;                                           // 阵列内剩余未出 token 数

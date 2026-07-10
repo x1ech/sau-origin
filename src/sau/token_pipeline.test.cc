@@ -53,6 +53,36 @@ TEST(ArrayPipeline, EnforcesInitiationInterval)
     EXPECT_TRUE(pipeline.canAccept(Cycles(2)));
 }
 
+TEST(ArrayPipeline, AdditionalAcceptDoesNotConsumeInitiationInterval)
+{
+    ArrayPipeline pipeline(Cycles(3), Cycles(2), 4);
+
+    pipeline.accept(1, 0, false, Cycles(0));
+    ASSERT_TRUE(pipeline.canAcceptAdditional());
+    pipeline.acceptAdditional(1, 1, false, Cycles(0));
+
+    EXPECT_FALSE(pipeline.canAccept(Cycles(1)));
+    EXPECT_TRUE(pipeline.canAccept(Cycles(2)));
+    ASSERT_TRUE(pipeline.hasReady(Cycles(3)));
+    EXPECT_EQ(pipeline.takeReady(Cycles(3)).index, 0);
+    ASSERT_TRUE(pipeline.hasReady(Cycles(3)));
+    EXPECT_EQ(pipeline.takeReady(Cycles(3)).index, 1);
+}
+
+TEST(ArrayPipeline, ResetStartsANewCommandLocalTimingEpoch)
+{
+    ArrayPipeline pipeline(Cycles(3), Cycles(2), 4);
+    pipeline.accept(1, 0, false, Cycles(10));
+    ASSERT_TRUE(pipeline.hasReady(Cycles(13)));
+    pipeline.takeReady(Cycles(13));
+
+    pipeline.reset();
+
+    EXPECT_TRUE(pipeline.canAccept(Cycles(0)));
+    pipeline.accept(2, 0, false, Cycles(0));
+    EXPECT_TRUE(pipeline.hasReady(Cycles(3)));
+}
+
 TEST(ArrayPipeline, StopsAtMaximumInFlight)
 {
     ArrayPipeline pipeline(Cycles(0), Cycles(0), 1);

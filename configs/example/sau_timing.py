@@ -37,6 +37,11 @@ parser.add_argument("--memory-latency-var", default="0ns")
 parser.add_argument("--memory-bandwidth", default="256GiB/s")
 parser.add_argument("--max-tick", type=positive_int, default=20000000000)
 parser.add_argument("--trace", default="")
+parser.add_argument(
+    "--rtl-profile",
+    action="store_true",
+    help="Use the imported 64x256x256 RTL baseline command shape",
+)
 
 parser.add_argument("--beat-bytes", type=positive_int, default=32)
 parser.add_argument("--a-beats", type=positive_int, default=256)
@@ -44,12 +49,20 @@ parser.add_argument("--b-beats", type=positive_int, default=256)
 parser.add_argument("--output-beats", type=positive_int, default=256)
 parser.add_argument("--flow-loops", type=positive_int, default=8)
 parser.add_argument("--instruction-loops", type=positive_int, default=1)
+parser.add_argument("--command-count", type=positive_int, default=1)
+parser.add_argument("--inter-command-gap-cycles", type=nonnegative_int,
+                    default=0)
 
 parser.add_argument("--a-base", type=nonnegative_int, default=0x1000)
 parser.add_argument("--b-base", type=nonnegative_int, default=0x100000)
 parser.add_argument("--output-base", type=nonnegative_int, default=0x200000)
+parser.add_argument("--a-command-stride", type=nonnegative_int, default=0)
+parser.add_argument("--b-command-stride", type=nonnegative_int, default=0)
+parser.add_argument("--output-command-stride", type=nonnegative_int,
+                    default=0)
 parser.add_argument("--a-flow-stride", type=nonnegative_int, default=0)
 parser.add_argument("--b-flow-stride", type=nonnegative_int, default=0x10000)
+parser.add_argument("--b-stride-bytes", type=positive_int, default=32)
 parser.add_argument(
     "--output-instruction-stride", type=nonnegative_int, default=0x10000
 )
@@ -69,6 +82,8 @@ parser.add_argument(
 )
 parser.add_argument("--array-input-skew-cycles", type=nonnegative_int,
                     default=32)
+parser.add_argument("--b-read-start-ahead-beats", type=nonnegative_int,
+                    default=0)
 parser.add_argument("--array-input-burst-beats", type=positive_int,
                     default=32)
 parser.add_argument("--array-input-burst-gap-cycles", type=nonnegative_int,
@@ -81,9 +96,42 @@ parser.add_argument("--writeback-start-delay-cycles", type=nonnegative_int,
                     default=8)
 parser.add_argument("--completion-delay-cycles", type=nonnegative_int,
                     default=4)
-parser.add_argument("--command-start-cycles", type=positive_int, default=1)
+parser.add_argument(
+    "--command-start-cycles",
+    type=positive_int,
+    default=1,
+    help="Command acceptance to first feeder issue",
+)
+parser.add_argument(
+    "--calibration-memory",
+    action="store_true",
+    help="Use a local fixed-cadence memory model for RTL calibration",
+)
+parser.add_argument(
+    "--calibration-read-latency-cycles",
+    type=positive_int,
+    default=4,
+    help="Read accepted-to-visible latency for --calibration-memory",
+)
 
 args = parser.parse_args()
+
+if args.rtl_profile:
+    args.memory_size = "1GiB"
+    args.command_count = 2
+    args.inter_command_gap_cycles = 353
+    args.a_base = 0x29120000
+    args.b_base = 0x29124000
+    args.output_base = 0x29138000
+    args.a_command_stride = 0x2000
+    args.b_command_stride = 0
+    args.output_command_stride = 0x2000
+    args.a_flow_stride = 0
+    args.b_flow_stride = 0x20
+    args.b_stride_bytes = 0x100
+    args.output_instruction_stride = 0x2000
+    args.b_read_start_ahead_beats = 24
+    args.command_start_cycles = 3
 
 trace = trace_path(args.trace)
 trace_dir = os.path.dirname(trace)
@@ -125,6 +173,7 @@ system.sau = SauModel(
     array_ii_cycles=args.array_ii_cycles,
     array_input_start_delay_cycles=args.array_input_start_delay_cycles,
     array_input_skew_cycles=args.array_input_skew_cycles,
+    b_read_start_ahead_beats=args.b_read_start_ahead_beats,
     array_input_burst_beats=args.array_input_burst_beats,
     array_input_burst_gap_cycles=args.array_input_burst_gap_cycles,
     array_input_flow_gap_cycles=args.array_input_flow_gap_cycles,
@@ -132,13 +181,21 @@ system.sau = SauModel(
     writeback_start_delay_cycles=args.writeback_start_delay_cycles,
     completion_delay_cycles=args.completion_delay_cycles,
     command_start_cycles=args.command_start_cycles,
+    calibration_memory=args.calibration_memory,
+    calibration_read_latency_cycles=args.calibration_read_latency_cycles,
     trace_file=trace,
+    command_count=args.command_count,
+    inter_command_gap_cycles=args.inter_command_gap_cycles,
     a_base=args.a_base,
     b_base=args.b_base,
     output_base=args.output_base,
+    a_command_stride=args.a_command_stride,
+    b_command_stride=args.b_command_stride,
+    output_command_stride=args.output_command_stride,
     a_beats=args.a_beats,
     b_beats=args.b_beats,
     output_beats=args.output_beats,
+    b_stride_bytes=args.b_stride_bytes,
     flow_loops=args.flow_loops,
     instruction_loops=args.instruction_loops,
     a_flow_stride=args.a_flow_stride,

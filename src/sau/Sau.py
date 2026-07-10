@@ -36,6 +36,9 @@ class SauModel(ClockedObject):
     array_input_skew_cycles = Param.Unsigned(
         32, "B array-input token skew behind resident A"
     )
+    b_read_start_ahead_beats = Param.Unsigned(
+        0, "Resident A array-input lead before external B reads may start"
+    )
     result_flow_gap_cycles = Param.Cycles(
         234, "Idle cycles between 32-result flow bursts"
     )
@@ -46,7 +49,13 @@ class SauModel(ClockedObject):
         4, "Delay from last writeback beat to command complete"
     )
     command_start_cycles = Param.Cycles(
-        1, "Command acceptance to first issue"
+        1, "Command acceptance to first feeder issue"
+    )
+    calibration_memory = Param.Bool(
+        False, "Use local fixed-cadence memory for RTL timing calibration"
+    )
+    calibration_read_latency_cycles = Param.Cycles(
+        4, "Fixed read accepted-to-visible latency in calibration-memory mode"
     )
     trace_file = Param.String("", "CSV timing trace path")
     exit_on_done = Param.Bool(
@@ -54,12 +63,22 @@ class SauModel(ClockedObject):
     )
 
     command_id = Param.UInt64(1, "Synthetic command ID")
+    command_count = Param.Unsigned(1, "Number of synthetic commands")
+    inter_command_gap_cycles = Param.Cycles(
+        0, "Delay from one command_complete to the next command_accepted"
+    )
     a_base = Param.Addr(0x1000, "Operand A base")
     b_base = Param.Addr(0x2000, "Operand B base")
     output_base = Param.Addr(0x3000, "Output base")
+    a_command_stride = Param.Unsigned(0, "A base stride between commands")
+    b_command_stride = Param.Unsigned(0, "B base stride between commands")
+    output_command_stride = Param.Unsigned(
+        0, "Output base stride between commands"
+    )
     a_beats = Param.Unsigned(4, "Operand A beats per flow")
     b_beats = Param.Unsigned(4, "Operand B beats per flow")
     output_beats = Param.Unsigned(4, "Output beats per instruction")
+    b_stride_bytes = Param.Unsigned(32, "Operand B bytes between beat indices")
     flow_loops = Param.Unsigned(1, "Flow repetitions")
     instruction_loops = Param.Unsigned(1, "Instruction repetitions")
     a_flow_stride = Param.Unsigned(0x100, "A bytes between flows")

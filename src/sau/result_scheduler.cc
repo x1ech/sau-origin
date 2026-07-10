@@ -33,6 +33,20 @@ ResultScheduler::started() const
     return firstArrayInputCycle.has_value();
 }
 
+void
+ResultScheduler::deferUntil(Cycles now)
+{
+    assert(started());
+    if (complete()) {
+        return;
+    }
+
+    const Cycles scheduled = scheduledCycle(nextOutput);
+    if (now > scheduled) {
+        *firstArrayInputCycle += now - scheduled;
+    }
+}
+
 bool
 ResultScheduler::canProduce(Cycles now) const
 {

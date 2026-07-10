@@ -47,5 +47,24 @@ TEST(ResultScheduler, ProducesResultBurstsFromFirstArrayInput)
     EXPECT_TRUE(scheduler.complete());
 }
 
+TEST(ResultScheduler, DefersAFlowWithoutCollapsingLaterSpacing)
+{
+    ResultScheduler scheduler(64, 32, Cycles(343), Cycles(234));
+    scheduler.start(Cycles(269));
+
+    scheduler.deferUntil(Cycles(1000));
+
+    EXPECT_TRUE(scheduler.canProduce(Cycles(1000)));
+    EXPECT_EQ(scheduler.produce(Cycles(1000)), 0U);
+    EXPECT_FALSE(scheduler.canProduce(Cycles(1000)));
+    EXPECT_TRUE(scheduler.canProduce(Cycles(1001)));
+
+    for (uint32_t index = 1; index < 32; ++index) {
+        EXPECT_EQ(scheduler.produce(Cycles(1000 + index)), index);
+    }
+    EXPECT_FALSE(scheduler.canProduce(Cycles(1265)));
+    EXPECT_TRUE(scheduler.canProduce(Cycles(1266)));
+}
+
 } // anonymous namespace
 } // namespace gem5::sau

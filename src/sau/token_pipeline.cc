@@ -52,6 +52,14 @@ ArrayPipeline::ArrayPipeline(
 {
 }
 
+void
+ArrayPipeline::reset()
+{
+    assert(tokens.empty());
+    hasAccepted = false;
+    nextAcceptCycle = Cycles(0);
+}
+
 bool
 ArrayPipeline::canAccept(Cycles now) const
 {
@@ -75,6 +83,25 @@ ArrayPipeline::accept(
     });
     hasAccepted = true;
     nextAcceptCycle = now + initiationInterval;
+}
+
+bool
+ArrayPipeline::canAcceptAdditional() const
+{
+    return tokens.size() < maxInFlight;
+}
+
+void
+ArrayPipeline::acceptAdditional(
+    uint64_t commandId, uint32_t index, bool last, Cycles now)
+{
+    assert(canAcceptAdditional());
+    tokens.push_back({
+        commandId,
+        index,
+        now + fillLatency,
+        last,
+    });
 }
 
 bool
