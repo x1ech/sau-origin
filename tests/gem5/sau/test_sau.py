@@ -45,3 +45,50 @@ verify_sau_config(
         "--max-outstanding-writes=2",
     ],
 )
+
+
+def dse_args(*resource_args):
+    return [
+        "--a-beats=1",
+        "--b-beats=1",
+        "--output-beats=16",
+        "--flow-loops=16",
+        "--array-fill-cycles=2",
+        "--array-input-start-delay-cycles=0",
+        "--array-input-burst-beats=1",
+        "--array-input-burst-gap-cycles=0",
+        "--array-input-flow-gap-cycles=0",
+        "--result-flow-gap-cycles=0",
+        "--writeback-start-delay-cycles=0",
+    ] + list(resource_args)
+
+
+verify_sau_config(
+    "sau-dse-array-capacity-1",
+    dse_args("--array-capacity=1", "--output-buffer-entries=16"),
+)
+
+verify_sau_config(
+    "sau-dse-array-capacity-16",
+    dse_args("--array-capacity=16", "--output-buffer-entries=16"),
+)
+
+verify_sau_config(
+    "sau-dse-output-buffer-1",
+    dse_args(
+        "--array-capacity=16",
+        "--output-buffer-entries=1",
+        "--memory-latency=20ns",
+        "--max-outstanding-writes=1",
+    ),
+)
+
+verify_sau_config(
+    "sau-dse-output-buffer-8",
+    dse_args(
+        "--array-capacity=16",
+        "--output-buffer-entries=8",
+        "--memory-latency=20ns",
+        "--max-outstanding-writes=1",
+    ),
+)

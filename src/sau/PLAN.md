@@ -1453,18 +1453,36 @@ command 2 为 3128/5897。修复使用命名的 `command_start_cycles=3` feeder
 启动边界，以及每命令重置的 `ArrayPipeline` timing epoch，没有 command-ID
 特判或事件专用补拍。
 
-- [ ] **步骤 9：受限内存使用 causal/system 比较**
+- [x] **步骤 9：受限内存使用 causal/system 比较**
 
 ```bash
+./build/RISCV/gem5.opt \
+    --outdir=m5out/sau-constrained-task10 \
+    configs/example/sau_timing.py \
+    --rtl-profile \
+    --memory-latency=20ns \
+    --memory-latency-var=5ns \
+    --memory-bandwidth=1GiB/s \
+    --trace=m5out/sau-constrained-task10/sau.csv \
+    --max-outstanding-reads=2 \
+    --max-outstanding-writes=2
+
 python3 util/sau/compare_trace.py --mode causal \
     tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
-    m5out/sau-constrained/sau.csv
+    m5out/sau-constrained-task10/sau.csv
 ```
 
 该步骤不要求 constrained/system trace 与 RTL strict 对齐；它只检查在带反压的
 系统路径中，事件 profile、地址、beat 编号和 phase progression 没有退化。
 
-- [ ] **步骤 10：提交标定结果**
+2026-07-10 结果：真实 timing-memory profile 正常完成。更新后的 `causal`
+比较按 command-local dataflow lane 验证 event/address/beat/phase 序列及
+request→response、B response→array input、result→writeback 依赖，并允许
+独立 memory request/response 的全局 CSV 行交错。该比较通过，且两份 trace
+均有 18446 条数据行。受限运行实际记录了 retry、read/write outstanding-limit
+和 input-starvation stall。
+
+- [x] **步骤 10：提交标定结果**
 
 ```bash
 git add src/sau/Sau.py src/sau/sau_model.cc \
@@ -1483,7 +1501,7 @@ git commit -m "test: calibrate SAU GEMM timing to RTL"
 - 修改系统测试和配置
 - 新建 `src/sau/README.md`
 
-- [ ] **步骤 1：审计统计项**
+- [x] **步骤 1：审计统计项**
 
 至少包含：
 
@@ -1496,7 +1514,12 @@ git commit -m "test: calibrate SAU GEMM timing to RTL"
 - input starvation 与 output-full stall；
 - first read/input/result、last result/write、complete offset。
 
-- [ ] **步骤 2：增加 DSE 单调性测试**
+实现结果：首条 synthetic command 改在 gem5 统计 reset 后的第一个 SAU
+时钟边沿接收，`commandsAccepted` 不再遗漏首条命令。`SauStats` 现包含
+outstanding/input/output 的 time-average 与 max、`stallArrayCapacity`，以及按
+synthetic command 下标记录的六个关键 offset vector。
+
+- [x] **步骤 2：增加 DSE 单调性测试**
 
 比较：
 
@@ -1505,13 +1528,26 @@ git commit -m "test: calibrate SAU GEMM timing to RTL"
 
 资源增加不得无解释地增加 `commandCycles`；较慢配置必须出现对应 stall。
 
-- [ ] **步骤 3：编写 README**
+实现 `util/sau/verify_dse.py`，并在 2026-07-10 的小型 16-token profile 上验证：
+
+- `array_capacity=1`：174 commandCycles、62 `stallArrayCapacity`；
+  `array_capacity=16`：137 commandCycles、0 capacity stall。
+- `output_buffer_entries=1`：560 commandCycles、434
+  `stallOutputBufferFull`；`output_buffer_entries=8`：同为 560 commandCycles、
+  157 output-full stall。两者受单 outstanding write 限制，故容量增加没有缩短
+  总写回尾部，但没有反向增加周期且显著减少 FIFO 反压。
+
+当 output FIFO 小于该命令总结果数时，模型会在 FIFO 有 token 后流式写回，避免
+旧的“所有结果后写回”策略永久占满 FIFO；默认 256 槽的 RTL profile 仍保持原有
+严格标定语义。
+
+- [x] **步骤 3：编写 README**
 
 说明构建、固定/受限内存命令、RTL strict 比较、参数、统计以及：
 
 > 首阶段写回数据固定为 0，输出内容不具备功能正确性。
 
-- [ ] **步骤 4：运行全部聚焦验证**
+- [x] **步骤 4：运行全部聚焦验证**
 
 ```bash
 scons build/ALL/sau/command.test.opt \
@@ -1526,7 +1562,15 @@ cd tests
 ./main.py run --skip-build gem5/sau
 ```
 
-- [ ] **步骤 5：运行格式和 whitespace 检查**
+2026-07-10 验证：手动编译后的 `build/RISCV/gem5.opt` 通过最终 strict RTL
+比较和 constrained timing-memory causal 比较；四组 DSE 均正常完成，
+`verify_dse.py` 通过。`python3 -m unittest util.sau.compare_trace_test
+util.sau.verify_dse_test` 共 12 项通过，且相关 Python 文件通过 `py_compile`。
+未单独运行 `build/ALL` 的 C++ unit binary 或 `tests/main.py`，因为本工作树规则
+禁止 agent 主动触发 gem5 编译；修改后的源码已由开发者手动增量编译并在上述
+端到端运行中加载。
+
+- [x] **步骤 5：运行格式和 whitespace 检查**
 
 ```bash
 git diff --check
@@ -1536,7 +1580,10 @@ pre-commit run --files src/sau configs/example/sau_timing.py \
 
 若环境没有 `pre-commit`，明确记录，不能擅自安装依赖。
 
-- [ ] **步骤 6：提交首里程碑**
+`git diff --check` 通过。当前环境未安装 `pre-commit` 或 `clang-format`，未擅自
+安装依赖。
+
+- [ ] **步骤 6：提交首里程碑（等待 Git 作者信息）**
 
 ```bash
 git add src/sau configs/example/sau_timing.py tests/gem5/sau \

@@ -115,8 +115,9 @@ SauModel::SauModel(const Params &params)
       outputBuffer(outputBufferEntries),
       arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
       traceWriter(params.trace_file),               // 打开 trace CSV 文件
+      startupEvent([this] { submitNextCommand(); }, name() + ".startup"),
       tickEvent([this] { tick(); }, name() + ".tick"),
-      stats(this)                                   // 统计组挂靠在 SauModel 下
+      stats(this, commandCount)                     // 统计组挂靠在 SauModel 下
 {
     // 参数合法性检查（构造时一次性验证）
     panic_if(beatBytes != 32,
@@ -153,8 +154,9 @@ SauModel::getPort(const std::string &ifName, PortID idx)
 void
 SauModel::startup()
 {
-    // 仿真启动时自动注入 synthetic 命令
-    submitNextCommand();
+    // startup() 发生在 gem5 重置统计项之前。把首条命令排到第一个
+    // 时钟边沿，使 commandsAccepted 与后续命令使用同一个统计窗口。
+    schedule(startupEvent, nextCycle());
 }
 
 void
@@ -194,6 +196,9 @@ SauModel::submitCommand(const SauCommand &command)
     readResponseTraceB = 0;
     lastResultCycle.reset();
     lastWriteCycle.reset();
+    firstReadCycle.reset();
+    firstArrayInputCycle.reset();
+    firstResultCycle.reset();
     calibrationReadResponses.clear();
     phase = Phase::OperandLoad;
     commandStartCycle = sauCycle;
@@ -324,7 +329,9 @@ SauModel::advanceArray()
     }
 
     if (!progressed && (aWanted || bWanted)) {
-        if (bWanted && availableB.empty()) {
+        if (arrayPipeline.full()) {
+            ++stats.stallArrayCapacity;
+        } else if (bWanted && availableB.empty()) {
             ++stats.stallInputStarvation;
         } else if (aWanted && !instructionReadyForArrayIndex(
                        arrayInputScheduler->issuedA())) {
@@ -347,6 +354,9 @@ SauModel::advanceArrayB()
     if (availableB.empty()) {
         return false;
     }
+    if (!arrayPipeline.canAccept(commandCycle())) {
+        return false;
+    }
     const auto bBeat = availableB.front();
     const uint32_t arrayIndex = arrayInputScheduler->issueB();
     availableB.pop_front();
@@ -365,6 +375,12 @@ SauModel::advanceArrayB()
     traceWriter.emit(
         sauCycle, EventKind::ArrayInputAccepted, activeCommand->id,
         streamName(bBeat.stream), 0, arrayIndex, phase);
+
+    if (!firstArrayInputCycle) {
+        firstArrayInputCycle = commandCycle();
+        stats.firstArrayInputOffset[activeCommandIndex] =
+            static_cast<uint64_t>(*firstArrayInputCycle);
+    }
 
     arrayPipeline.accept(activeCommand->id, arrayIndex, lastWork,
                          commandCycle());
@@ -409,6 +425,12 @@ SauModel::advanceArrayA(bool allowPipelineBypass)
         sauCycle, EventKind::ArrayInputAccepted, activeCommand->id,
         streamName(aBeat.stream), 0, aBeat.index, phase);
 
+    if (!firstArrayInputCycle) {
+        firstArrayInputCycle = commandCycle();
+        stats.firstArrayInputOffset[activeCommandIndex] =
+            static_cast<uint64_t>(*firstArrayInputCycle);
+    }
+
     if (pipelineCanAccept) {
         arrayPipeline.accept(activeCommand->id, aBeat.index, aBeat.last,
                              commandCycle());
@@ -444,6 +466,13 @@ SauModel::produceResults()
     const bool last = resultIndex + 1 == expectedOutputBeats();
     outputBuffer.push({activeCommand->id, resultIndex, commandCycle(), last});
     lastResultCycle = commandCycle();
+    if (!firstResultCycle) {
+        firstResultCycle = commandCycle();
+        stats.firstResultOffset[activeCommandIndex] =
+            static_cast<uint64_t>(*firstResultCycle);
+    }
+    stats.lastResultOffset[activeCommandIndex] =
+        static_cast<uint64_t>(*lastResultCycle);
 
     traceWriter.emit(sauCycle, EventKind::ResultProduced,
                      activeCommand->id, "output", 0, resultIndex, phase);
@@ -462,7 +491,14 @@ SauModel::issueWrites()
         memoryBlocked()) {
         return;
     }
-    if (resultsProduced != expectedOutputBeats() || !lastResultCycle ||
+    // RTL calibration keeps all output tokens until the result stream is
+    // complete. A smaller FIFO cannot satisfy that policy, so in that DSE
+    // regime it begins draining once tokens are available. The calibrated
+    // default (256 slots for 256 outputs) keeps the RTL path unchanged.
+    const bool waitForFullResultStream =
+        outputBufferEntries >= expectedOutputBeats();
+    if ((waitForFullResultStream &&
+         resultsProduced != expectedOutputBeats()) || !lastResultCycle ||
         static_cast<uint64_t>(commandCycle()) <
             static_cast<uint64_t>(*lastResultCycle +
                                   writebackStartDelayCycles)) {
@@ -666,6 +702,8 @@ SauModel::updatePhase()
         transitionTo(Phase::Complete);
         traceWriter.emit(sauCycle, EventKind::CommandComplete,
                          activeCommand->id, "none", 0, 0, phase);
+        stats.completeOffset[activeCommandIndex] =
+            static_cast<uint64_t>(commandCycle());
         ++stats.commandsCompleted;
         const bool moreCommands = nextCommandIndex < commandCount;
         activeCommand.reset();
@@ -694,6 +732,10 @@ SauModel::accountCycle()
     }
 
     ++stats.commandCycles;
+    stats.averageOutstandingReadCount = outstandingReads();
+    stats.averageOutstandingWriteCount = outstandingWrites();
+    stats.averageInputBufferOccupancy = availableB.size();
+    stats.averageOutputBufferOccupancy = outputBuffer.size();
     switch (phase) {
       case Phase::OperandLoad:
         ++stats.operandLoadCycles;
@@ -753,7 +795,7 @@ SauModel::checkConservation() const
 bool
 SauModel::hasPendingWork() const
 {
-    return activeCommand || memoryBlocked() ||
+    return startupEvent.scheduled() || activeCommand || memoryBlocked() ||
         outstandingReads() != 0 ||
         outstandingWrites() != 0 ||
         !visibleMemoryResponses.empty() ||
@@ -803,6 +845,7 @@ SauModel::submitNextCommand()
 {
     panic_if(nextCommandIndex >= commandCount,
              "SAU synthetic command index exceeds command count");
+    activeCommandIndex = nextCommandIndex;
     submitCommand(buildCommandForIndex(nextCommandIndex++));
 }
 
@@ -913,8 +956,15 @@ SauModel::requestAccepted(const Beat &beat, bool write)
         if (writesAccepted == expectedOutputBeats()) {
             lastWriteCycle = commandCycle();
         }
+        stats.lastWriteOffset[activeCommandIndex] =
+            static_cast<uint64_t>(commandCycle());
     } else {
         ++acceptedReadBeats;
+        if (!firstReadCycle) {
+            firstReadCycle = commandCycle();
+            stats.firstReadOffset[activeCommandIndex] =
+                static_cast<uint64_t>(*firstReadCycle);
+        }
         auto &counter = beat.stream == StreamKind::OperandA ?
             readAcceptedTraceA : readAcceptedTraceB;
         traceBeat = counter++;
@@ -966,7 +1016,7 @@ SauModel::drainResume()
 
 // ==================== 统计注册 ====================
 
-SauModel::SauStats::SauStats(statistics::Group *parent)
+SauModel::SauStats::SauStats(statistics::Group *parent, unsigned commandCount)
     : statistics::Group(parent),
       ADD_STAT(commandsAccepted, statistics::units::Count::get(),
                "Commands accepted"),
@@ -996,6 +1046,14 @@ SauModel::SauStats::SauStats(statistics::Group *parent)
                "Maximum input-buffer occupancy"),
       ADD_STAT(maxOutputBufferOccupancy, statistics::units::Count::get(),
                "Maximum output-buffer occupancy"),
+      ADD_STAT(averageOutstandingReadCount, statistics::units::Count::get(),
+               "Time-average outstanding reads"),
+      ADD_STAT(averageOutstandingWriteCount, statistics::units::Count::get(),
+               "Time-average outstanding writes"),
+      ADD_STAT(averageInputBufferOccupancy, statistics::units::Count::get(),
+               "Time-average input-buffer occupancy"),
+      ADD_STAT(averageOutputBufferOccupancy, statistics::units::Count::get(),
+               "Time-average output-buffer occupancy"),
       ADD_STAT(stallRequestRetry, statistics::units::Cycle::get(),
                "Cycles stalled by memory request retry"),
       ADD_STAT(stallOutstandingReadLimit, statistics::units::Cycle::get(),
@@ -1008,10 +1066,30 @@ SauModel::SauStats::SauStats(statistics::Group *parent)
                "Cycles stalled by a full output buffer"),
       ADD_STAT(stallWritebackBlocked, statistics::units::Cycle::get(),
                "Cycles stalled by blocked writeback"),
+      ADD_STAT(stallArrayCapacity, statistics::units::Cycle::get(),
+               "Cycles stalled by full array in-flight capacity"),
+      ADD_STAT(firstReadOffset, statistics::units::Cycle::get(),
+               "Command acceptance to first read, indexed by command"),
+      ADD_STAT(firstArrayInputOffset, statistics::units::Cycle::get(),
+               "Command acceptance to first array input, indexed by command"),
+      ADD_STAT(firstResultOffset, statistics::units::Cycle::get(),
+               "Command acceptance to first result, indexed by command"),
+      ADD_STAT(lastResultOffset, statistics::units::Cycle::get(),
+               "Command acceptance to last result, indexed by command"),
+      ADD_STAT(lastWriteOffset, statistics::units::Cycle::get(),
+               "Command acceptance to last write, indexed by command"),
+      ADD_STAT(completeOffset, statistics::units::Cycle::get(),
+               "Command acceptance to completion, indexed by command"),
       ADD_STAT(arrayUtilization, statistics::units::Ratio::get(),
                "Fraction of active command cycles with array activity",
                arrayActiveCycles / commandCycles)
 {
+    firstReadOffset.init(commandCount);
+    firstArrayInputOffset.init(commandCount);
+    firstResultOffset.init(commandCount);
+    lastResultOffset.init(commandCount);
+    lastWriteOffset.init(commandCount);
+    completeOffset.init(commandCount);
 }
 
 } // namespace gem5::sau

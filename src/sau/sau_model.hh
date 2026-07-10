@@ -77,6 +77,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     uint64_t sauCycle = 0;                    // SAU 全局 trace 周期
     uint64_t commandStartCycle = 0;           // 当前命令的起始 trace 周期
     uint32_t nextCommandIndex = 0;
+    uint32_t activeCommandIndex = 0;
     std::optional<Cycles> nextCommandStartCycle;
     struct ScheduledReadResponse
     {
@@ -108,8 +109,12 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     uint32_t readResponseTraceB = 0;
     std::optional<Cycles> lastResultCycle;
     std::optional<Cycles> lastWriteCycle;
+    std::optional<Cycles> firstReadCycle;
+    std::optional<Cycles> firstArrayInputCycle;
+    std::optional<Cycles> firstResultCycle;
 
     TraceWriter traceWriter;                  // CSV 事件日志输出
+    EventFunctionWrapper startupEvent;        // 在统计窗口开始后接收首条命令
     EventFunctionWrapper tickEvent;           // gem5 事件：每个时钟边沿触发 tick()
 
     // ========== 核心调度（每个时钟边沿执行一次） ==========
@@ -150,7 +155,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     // ========== 统计组 ==========
     struct SauStats : public statistics::Group
     {
-        explicit SauStats(statistics::Group *parent);
+        SauStats(statistics::Group *parent, unsigned commandCount);
 
         statistics::Scalar commandsAccepted;       // 已接受的命令数
         statistics::Scalar commandsCompleted;      // 已完成的命令数
@@ -167,12 +172,23 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
         statistics::Scalar maxOutstandingWriteCount;
         statistics::Scalar maxInputBufferOccupancy; // 输入 buffer 最大占用
         statistics::Scalar maxOutputBufferOccupancy;
+        statistics::Average averageOutstandingReadCount;
+        statistics::Average averageOutstandingWriteCount;
+        statistics::Average averageInputBufferOccupancy;
+        statistics::Average averageOutputBufferOccupancy;
         statistics::Scalar stallRequestRetry;      // 因 port retry 等待的周期
         statistics::Scalar stallOutstandingReadLimit;
         statistics::Scalar stallOutstandingWriteLimit;
         statistics::Scalar stallInputStarvation;   // 因缺少输入 token 的等待周期
         statistics::Scalar stallOutputBufferFull;  // 因输出 buffer 满的等待周期
         statistics::Scalar stallWritebackBlocked;  // 因写回被反压的等待周期
+        statistics::Scalar stallArrayCapacity;     // 阵列 in-flight 容量满
+        statistics::Vector firstReadOffset;
+        statistics::Vector firstArrayInputOffset;
+        statistics::Vector firstResultOffset;
+        statistics::Vector lastResultOffset;
+        statistics::Vector lastWriteOffset;
+        statistics::Vector completeOffset;
         // arrayActiveCycles / commandCycles
         statistics::Formula arrayUtilization;
     } stats;

@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ## Goal
 
@@ -19,10 +19,8 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 9 complete, with Task 10 strict calibration
-  aligned for the imported baseline. The remaining Task 10 work is
-  constrained-memory causal validation and committing the calibration result.
-  The standalone model can
+- Current stage: Tasks 1 through 11 implementation and validation complete;
+  final milestone commit is pending local Git author configuration. The standalone model can
   now emit the imported RTL baseline's two-command shape, addresses, row
   count, event counts, fixed read/write accepted cadence, and causal event
   order before strict cycle calibration.
@@ -56,6 +54,14 @@ Design and implementation references:
   and command-2 inherited-pipeline timing boundary. On 2026-07-10,
   `--rtl-profile --calibration-memory` passed strict comparison against the
   imported RTL reference.
+- Latest system-memory validation: the constrained `--rtl-profile` run now
+  passes causal comparison. Causal comparison preserves command-local
+  dataflow and dependency order while allowing independent timing-memory
+  request/response events to interleave in the CSV trace.
+- Latest finalization milestone: Task 11 adds complete latency statistics,
+  a statistics-window fix for the first synthetic command, DSE monotonicity
+  checks for array/FIFO capacity, and `src/sau/README.md`. The final strict,
+  constrained causal, and four DSE simulations passed on 2026-07-10.
 - The current direct-command model assumes the target operator uses the RTL
   `register_file_in` path; CSR decode of reuse/control fields is not yet
   modeled.
@@ -78,8 +84,8 @@ Design and implementation references:
 | 8. Integrate scheduling, array timing, writeback, and drain | Complete | `SauModel::tick()` now consumes read responses, feeds `ARegisterFileIn` plus B streaming tokens into the array pipeline, produces output tokens, issues timing writes, advances phases, checks token/request conservation, and drains only after local packet state is clear. |
 | 8.5. Calibrate matmul transpose/reuse timing path | Complete | Adds `ArrayInputScheduler` burst/gap timing, `ResultScheduler`, reduced-output command validation, first-array-input anchoring, delayed writeback, and final completion delay. Defaults match the corrected 64x256x256 trace shape: A start 269, B skew 32, input burst 32, tile gap 1, flow gap 3, fill 343, result flow gap 234, writeback delay 8, completion delay 4. |
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
-| 10. Calibrate against the RTL reference | In progress / strict aligned | `--rtl-profile --calibration-memory` now strictly matches the imported RTL trace: all 18,446 rows and all seven CSV fields match for both commands. The remaining Task 10 work is constrained-memory causal validation and committing the calibration result. |
-| 11. Final regression, statistics audit, and documentation | Pending | Final milestone validation and handoff. |
+| 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
+| 11. Final regression, statistics audit, and documentation | Complete / commit pending | Statistics, README, strict/causal regression, and DSE monotonicity passed. The commit remains pending because this worktree has no configured Git author. |
 
 ## Implemented Components
 
@@ -430,6 +436,11 @@ Results:
   generated traces each contain 18,446 data rows; command 1 first read and
   completion are 3 and 2772, while command 2 first read and completion are
   3128 and 5897.
+- On 2026-07-10, the constrained real timing-memory RTL profile completed
+  with `SAU command complete` and passed the updated causal comparator. It
+  retained all 18,446 event rows and recorded `stallRequestRetry=5114`,
+  `stallOutstandingReadLimit=19199`, `stallOutstandingWriteLimit=2652`, and
+  `stallInputStarvation=132505`.
 - Fixed standalone run completed with `SAU command complete`, wrote
   `m5out/sau-fixed/sau.csv`, and completed at SAU cycle 8477.
 - Constrained standalone run completed with `SAU command complete`, wrote
@@ -523,6 +534,10 @@ Results:
   `--rtl-profile --calibration-memory` trace against
   `tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv` now passes. The
   imported two-command 64x256x256 baseline is cycle-aligned.
+- The causal comparator now validates command-local event lanes and explicit
+  dataflow dependencies rather than requiring one fixed global CSV event
+  interleaving. This keeps the fixed-memory strict contract unchanged while
+  making constrained timing-memory validation meaningful.
 - The first observed Task 10 mismatch was a sequence mismatch after profile
   alignment, not a matrix-size or arithmetic mismatch. RTL records Operand-A
   beat 4 `read_accepted` before Operand-A beat 0 `read_response_visible`;
@@ -549,10 +564,13 @@ Results:
   command-local `ArrayPipeline` reset are baseline-specific timing-policy
   values and must be revalidated with additional RTL traces before being
   generalized to other matrix shapes.
-- `system.sau.commandsAccepted` currently dumps as 0 while
-  `commandsCompleted` dumps as 1 in the standalone stats because the synthetic
-  command is accepted during startup before the stats dump window records it.
-  Task 11 should audit and fix or document this statistics boundary.
+- DSE configurations with an output FIFO smaller than a command's complete
+  result stream use streaming writeback so the FIFO can drain. This behavior
+  is deliberately outside the calibrated strict profile and outside the
+  current causal comparator's all-results-before-writeback dependency.
+- `pre-commit` and `clang-format` are not installed in the current
+  environment. `git diff --check` passed; no formatting dependency was
+  installed.
 - Current tests establish deterministic component behavior, trace comparison
   behavior, compile-time integration of the scheduler, standalone completion
   under fixed/constrained memory, and strict RTL cycle alignment for the
@@ -561,7 +579,7 @@ Results:
 
 ## Next Steps
 
-1. Run Task 10's constrained-memory causal comparison to confirm that the
-   system/backpressure path preserves the calibrated event profile.
-2. Commit the Task 10 calibration result, then proceed to Task 11 statistics,
-   DSE monotonicity tests, README, and final regression.
+1. Configure `user.name` and `user.email` for this worktree or repository,
+   then commit the staged Task 10 documentation plus the Task 11 milestone.
+2. Begin the next independently scoped plan: CSR decode and mode-derived
+   command generation.

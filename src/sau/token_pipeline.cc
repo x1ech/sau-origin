@@ -105,6 +105,12 @@ ArrayPipeline::acceptAdditional(
 }
 
 bool
+ArrayPipeline::full() const
+{
+    return tokens.size() >= maxInFlight;
+}
+
+bool
 ArrayPipeline::hasReady(Cycles now) const
 {
     return !tokens.empty() &&
