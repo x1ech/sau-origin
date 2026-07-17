@@ -1,0 +1,42 @@
+Import("*")
+
+SimObject("Im2Col.py", sim_objects=["Im2ColTiming"])
+
+Source("im2col_types.cc")
+Source("im2col_address.cc")
+Source("banked_scratchpad.cc")
+Source("im2col_model.cc")
+Source("im2col_trace.cc")
+Source("im2col_timing.cc")
+
+GTest("im2col_types.test", "im2col_types.test.cc", "im2col_types.cc")
+GTest(
+    "im2col_address.test",
+    "im2col_address.test.cc",
+    "im2col_address.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "banked_scratchpad.test",
+    "banked_scratchpad.test.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "im2col_model.test",
+    "im2col_model.test.cc",
+    "im2col_model.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "im2col_trace.test",
+    "im2col_trace.test.cc",
+    "im2col_trace.cc",
+    "im2col_model.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
+    "im2col_types.cc",
+)
