@@ -85,7 +85,7 @@ TEST(SauPipelineContract, FreezesStatesReadyAndPackedOrdering)
     EXPECT_EQ(static_cast<uint8_t>(PipelineState::DrainOutput), uint8_t{5});
     EXPECT_EQ(static_cast<uint8_t>(PipelineState::Done), uint8_t{6});
     EXPECT_EQ(pipelineStateName(PipelineState::LaunchSa), "LAUNCH_SA");
-    EXPECT_TRUE(SauCycleAnchorsProvisional);
+    EXPECT_FALSE(SauCycleAnchorsProvisional);
 
     const OutputReadyConfig ready{5, 2};
     EXPECT_TRUE(outputReady(0, ready));

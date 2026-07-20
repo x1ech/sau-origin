@@ -15,7 +15,7 @@ from util.conv_pipeline.rtl_pipeline_runner import (
     RTL_SOURCES,
     validate_rtl_result,
 )
-from util.conv_pipeline.step0.verify_step0_trace import validate_trace
+from util.conv_pipeline.array.verify_sau_array_trace import validate
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -54,11 +54,13 @@ def collect(outdir):
         "vcs_version.txt": sha256_file(root / "vcs_version.txt"),
     }
     standalone = []
-    for case_name in ("sat_pos_k567", "sat_neg_k567"):
+    for case_name in (
+            "tail_r1_c1_k9", "tail_r15_c15_k9", "full_r16_c16_k9",
+            "backpressure_r3_c3_k9", "sat_pos_r1_c1_k567",
+            "sat_neg_r1_c1_k567"):
         trace = root / "standalone" / f"{case_name}.csv"
         log = root / "standalone" / f"{case_name}.log"
-        cycles, output_rows = validate_trace(
-            trace, case_name, "integration")
+        cycles, output_rows = validate(trace, case_name)
         for path in (trace, log):
             artifacts[path.relative_to(root).as_posix()] = sha256_file(path)
         standalone.append({
@@ -139,7 +141,7 @@ def collect(outdir):
             "local RTL/oracle validation; gem5 strict comparison pending"
         ),
         "golden_object": (
-            "2ca8252 with documented FINISH_ROW/FINISH_COL width patch"
+            "validated Im2Col plus project-owned sau_array_16x16 fusion"
         ),
         "sources": sources,
         "simulator": {

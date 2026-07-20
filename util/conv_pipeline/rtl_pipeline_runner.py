@@ -29,20 +29,15 @@ from util.conv_pipeline.pipeline_fixture import FixtureError, load_fixture
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RTL_SOURCES = (
-    "src/sau_n/rtl/mikui/provenance.json",
-    "src/sau_n/rtl/mikui/patches/0001-fix-finish-dimension-width.patch",
     "src/sau_n/rtl/mikui/filelists/pipeline.f",
     "src/sau_n/rtl/gemmini_im2col_chw_gather_readable.sv",
+    "src/sau_n/rtl/sau_array_16x16.sv",
+    "src/sau_n/rtl/sau_array_16x16.f",
+    "src/sau_n/rtl/sau_array_provenance.json",
+    "src/sau_n/rtl/tb_sau_array_16x16.sv",
     "src/sau_n/rtl/im2col_mikui_sau_pipeline.sv",
     "src/sau_n/rtl/tb_im2col_mikui_sau_pipeline.sv",
-    "src/sau_n/rtl/mikui/integration/SA_ENGINE.sv",
-    "src/sau_n/rtl/mikui/original/SA_pkg.sv",
-    "src/sau_n/rtl/mikui/original/SA_PE.sv",
-    "src/sau_n/rtl/mikui/original/SA_ROW.sv",
-    "src/sau_n/rtl/mikui/original/DW02_mult_2_stage.v",
-    "src/sau_n/rtl/mikui/original/active_delay.v",
-    "src/sau_n/rtl/mikui/original/weight_delay.v",
-    "src/sau_n/rtl/mikui/original/registers.svh",
+    "util/conv_pipeline/array/verify_sau_array_trace.py",
 )
 WEIGHT_GENERATOR_CODES = {
     "tb_weight_value_v1": 0,
@@ -162,11 +157,92 @@ def validate_output_file(loaded, output_path):
     return len(oracle.outputs)
 
 
+def validate_commit_contract(loaded, trace):
+    """Check every fused tile has exactly K MACs per valid physical PE."""
+    indices = {field: index for index, field in enumerate(TRACE_FIELDS)}
+    active = None
+    completed_tiles = 0
+    observed_mac_commits = 0
+    for cycle, record in enumerate(trace.rows):
+        row = {field: record[index] for field, index in indices.items()}
+        if row["pe_valid_mask"] != row["pe_mac_commit_mask"]:
+            raise RtlPipelineError(
+                f"cycle {cycle}: pe_valid_mask differs from MAC commits")
+        if row["sa_ins_valid"] == "1":
+            if active is not None:
+                raise RtlPipelineError(
+                    f"cycle {cycle}: SA launch overlaps an active tile")
+            active = {
+                "k": int(row["sa_calc_cycles"]),
+                "rows": int(row["sa_valid_rows"]),
+                "cols": int(row["sa_valid_columns"]),
+                "inputs": 0,
+                "outputs": 0,
+                "macs": [0] * 256,
+                "adds": [0] * 256,
+            }
+        mac_mask = int(row["pe_mac_commit_mask"], 16)
+        add_mask = int(row["pe_add_commit_mask"], 16)
+        if (mac_mask or add_mask or row["sa_input_valid"] == "1" or
+                row["output_collected"] == "1") and active is None:
+            raise RtlPipelineError(
+                f"cycle {cycle}: array activity occurs outside a tile")
+        if active is not None:
+            active["inputs"] += int(row["sa_input_valid"])
+            active["outputs"] += int(row["output_collected"])
+            for pe in range(256):
+                active["macs"][pe] += (mac_mask >> pe) & 1
+                active["adds"][pe] += (add_mask >> pe) & 1
+        if row["cal_finish"] == "1":
+            if active is None:
+                raise RtlPipelineError(
+                    f"cycle {cycle}: cal_finish occurs without an active tile")
+            if active["inputs"] != active["k"]:
+                raise RtlPipelineError(
+                    f"tile {completed_tiles}: expected {active['k']} input "
+                    f"cycles, got {active['inputs']}")
+            if active["outputs"] != active["rows"]:
+                raise RtlPipelineError(
+                    f"tile {completed_tiles}: expected {active['rows']} "
+                    f"output rows, got {active['outputs']}")
+            for pe in range(256):
+                pe_row, pe_col = divmod(pe, 16)
+                valid = pe_row < active["rows"] and pe_col < active["cols"]
+                expected_macs = active["k"] if valid else 0
+                expected_adds = 1 if valid else 0
+                if active["macs"][pe] != expected_macs:
+                    raise RtlPipelineError(
+                        f"tile {completed_tiles} PE[{pe_row}][{pe_col}] "
+                        f"MAC commits: expected {expected_macs}, got "
+                        f"{active['macs'][pe]}")
+                if active["adds"][pe] != expected_adds:
+                    raise RtlPipelineError(
+                        f"tile {completed_tiles} PE[{pe_row}][{pe_col}] "
+                        f"bias commits: expected {expected_adds}, got "
+                        f"{active['adds'][pe]}")
+                observed_mac_commits += active["macs"][pe]
+            completed_tiles += 1
+            active = None
+    if active is not None:
+        raise RtlPipelineError("final fused tile never completed")
+    if completed_tiles != loaded.derived.expected_tiles:
+        raise RtlPipelineError(
+            f"completed tiles: expected {loaded.derived.expected_tiles}, "
+            f"got {completed_tiles}")
+    if observed_mac_commits != loaded.derived.expected_macs:
+        raise RtlPipelineError(
+            f"MAC commits: expected {loaded.derived.expected_macs}, got "
+            f"{observed_mac_commits}")
+    return completed_tiles, observed_mac_commits
+
+
 def validate_rtl_result(loaded, trace_path, output_path, simulator_output):
     pass_line = f"PASS pipeline fixture {loaded.config.name} outputs="
     if pass_line not in simulator_output:
         raise RtlPipelineError(f"RTL output is missing: {pass_line}")
     trace = load_trace(trace_path)
+    completed_tiles, observed_mac_commits = validate_commit_contract(
+        loaded, trace)
     indices = {field: index for index, field in enumerate(TRACE_FIELDS)}
     for cycle, row in enumerate(trace.rows):
         if row[indices["resolved_config_sha256"]] != (
@@ -195,6 +271,8 @@ def validate_rtl_result(loaded, trace_path, output_path, simulator_output):
         "pipeline_drained_cycle": drained,
         "post_im2col_drain_cycles": drained - im2col_done,
         "output_elements": output_elements,
+        "completed_tiles": completed_tiles,
+        "observed_mac_commits": observed_mac_commits,
         "trace_cycles": len(trace.rows),
     }
 

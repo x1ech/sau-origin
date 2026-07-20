@@ -82,13 +82,9 @@ class SauNumericCore
     uint64_t completedMacSteps = 0;
 };
 
-/**
- * Source-derived cycle anchors for the frozen RTL. They intentionally remain
- * named provisional until the Step 0 VCS trace calibrates the edge numbering.
- */
-inline constexpr uint64_t ProvisionalMacCommitDelay = 4;
-inline constexpr uint64_t ProvisionalBiasCommitDelay = 5;
-inline constexpr uint64_t ProvisionalRowResultDelay = 6;
+/** Cycle anchors measured against the frozen fused RTL VCS traces. */
+inline constexpr uint64_t ArrayMacCommitDelay = 2;
+inline constexpr uint64_t ArrayDrainToBiasDelay = 33;
 
 enum class SauEngineState : uint8_t
 {
@@ -155,7 +151,7 @@ struct SauCycleObservation
 };
 
 /**
- * Candidate SA_ENGINE cycle model. tick() observes the current stable cycle,
+ * Frozen fused-array cycle model. tick() observes the current stable cycle,
  * applies all events due at its closing edge, and returns the newly committed
  * register view. Step 4 keeps the fixed CONV/CNORMAL/INT8 protocol only.
  */
@@ -167,7 +163,7 @@ class SauCycleModel
 
     uint64_t cycle() const { return currentCycle; }
     SauEngineState state() const { return engineState; }
-    bool cycleAnchorsProvisional() const { return true; }
+    bool cycleAnchorsProvisional() const { return false; }
 
   private:
     struct ScheduledMac
@@ -185,12 +181,6 @@ class SauCycleModel
         int16_t bias = 0;
     };
 
-    struct RegisteredOutput
-    {
-        uint64_t row = 0;
-        std::array<uint16_t, SauColumns> slots{};
-    };
-
     void validateConfig(const SauCycleConfig &candidate) const;
     void scheduleInput(const SauCycleInputs &inputs);
     void scheduleCompletion();
@@ -201,10 +191,8 @@ class SauCycleModel
     SauCycleConfig activeConfig{};
     bool configLoaded = false;
     uint64_t acceptedInputs = 0;
-    bool osValidRowZero = false;
-    bool calFinishRegistered = false;
     bool storageReady = false;
-    bool outputSequenceActive = false;
+    bool clearRowReadyNext = false;
     uint64_t outputRow = 0;
     std::array<bool, SauRows> rowReady{};
     std::array<std::array<uint16_t, SauColumns>, SauRows> rowOutputs{};
@@ -212,10 +200,7 @@ class SauCycleModel
     std::map<uint64_t, std::vector<ScheduledMac>> scheduledMacs;
     std::map<uint64_t, std::vector<ScheduledBias>> scheduledBiases;
     std::map<uint64_t, std::vector<uint64_t>> scheduledRowsReady;
-    std::map<uint64_t, std::vector<uint64_t>> scheduledRowsClear;
-    std::map<uint64_t, RegisteredOutput> registeredOutputs;
     uint64_t storageReadyCycle = UINT64_MAX;
-    uint64_t peFinishCycle = UINT64_MAX;
     uint64_t calFinishCycle = UINT64_MAX;
 };
 

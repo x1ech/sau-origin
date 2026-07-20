@@ -1,17 +1,15 @@
 # Gem5 Im2Col Reference RTL 独立周期模型状态
 
-最后更新：2026-07-19
+最后更新：2026-07-20
 
 ## 当前阶段
 
-Im2Col 独立模型已完成计划冻结、Step 0 至 Step 8、VCS RTL/gem5 逐拍验收和最终
-文档交付。新的 Im2Col -> Mikui SAU 下游工作已完成需求收束、风险修订和Step 1
-pipeline contract/fixture/generator、Step 2独立oracle/tile mapping和Step 3纯C++
-SA数值核心、Step 4源码推导的SA周期状态和256 PE阵列以及Step 5单tile buffer和
-纯C++端到端pipeline、Step 6 gem5 SimObject/stats/运行入口以及Step 7 canonical
-trace和比较器。由于RTL golden尚未返回，下一步等待或准备Step 8 RTL golden导入，
-当前已完成Step 8 wrapper/testbench、工作站runner、来源与回传校验器以及工作站包；
-VCS运行、golden导入和严格逐拍验收仍等待工作站结果，周期锚点继续保持provisional。
+Im2Col 独立模型的原 Step 0 至 Step 8 验收保持有效。下游融合对象已从历史计划中的
+Mikui `SA_ENGINE` 修订为项目自有 `sau_array_16x16.sv`。融合 RTL 已在 VCS
+T-2022.06_Full64 完成六项独立阵列和七项端到端功能验收；本地已导入 RTL、工具、
+来源记录和 VCS 结果摘要，并依据实际 trace 更新纯 C++ SA 周期模型。用户已成功
+构建新 gem5 binary；七项 gem5/RTL strict trace comparison 已全部通过，融合迁移
+和逐拍验收完成。
 
 ```text
 PLAN revised
@@ -31,23 +29,57 @@ SAU downstream requirements frozen
 SAU_PLAN revised after RTL risk review
 SAU Pre-Step 0 src/sau baseline captured
 SAU Step 0 local baseline package complete
-SAU Step 0 VCS compile/run pending
+SAU historical Mikui Step 0 retained as evidence, no longer active golden
 SAU Step 1-7 development unblocked
 SAU Step 1 pipeline contract/fixture/generators complete
 SAU Step 2 independent oracle/tile mapping complete
 SAU Step 3 C++ numeric core complete
-SAU Step 4 source-derived cycle model complete, VCS calibration pending
+SAU Step 4 fused-array cycle model calibrated from VCS traces
 SAU Step 5 single-tile end-to-end C++ pipeline complete
 SAU Step 6 gem5 SimObject, stats, output, and run entry complete
 SAU Step 7 canonical trace and synthetic comparator validation complete
-SAU Step 8 local integration and workstation package complete
-SAU RTL validation pending
+SAU fused RTL functional validation passed
+SAU gem5 model migrated and build passed
+SAU seven-profile gem5/RTL strict comparison passed
+SAU fused pipeline migration and validation complete
 ```
 
-当前可以正式声明 `RTL per-cycle validation passed`。PLAN 定义的 Step 0 至 Step 8
-均已完成，计划范围内没有未完成的实现或验收项。
+对于原独立 Im2Col 模型，可以正式声明 `RTL per-cycle validation passed`；其
+`PLAN.md` 定义的 Step 0 至 Step 8 已完成。该结论不自动覆盖新的融合 pipeline。
 
-## SAU 下游新阶段（规划）
+对新的融合 Im2Col + 16x16 SA pipeline，当前也可以声明：
+
+```text
+Im2Col-to-project-owned-16x16-SA gem5/RTL per-cycle validation passed.
+```
+
+### 2026-07-20 新 gem5 分支迁移
+
+- 目标仓库：`sau_origin_feature_sau_command_types_b9fbc18_20260720`；
+- 目标分支：`feature/sau-command-types`，迁移基线 commit `b9fbc18c20f3`；
+- pipeline filelist 已改为 Im2Col DUT、项目自有 16x16 阵列、融合 wrapper 和
+  testbench，不再编译 Mikui `SA_ENGINE/SA_ROW`；
+- VCS 观测到的阵列状态冻结为 `IDLE/STREAM/DRAIN/BIAS/OUTPUT = 0/1/2/3/4`；
+- 输入到 PE MAC commit 延迟为 `2 + row + column` 拍；末输入到全阵列 bias/首输出
+  为 33 拍；输出按 `valid && grant` 同拍交付，末行握手后一拍 `cal_finish`；
+- `pe_finish` 在第 0 输出行有效期间保持，`row_ready_mask` 对 `os_valid_mask` 晚一拍；
+- 七份经 provenance 校验的融合 RTL trace/output/manifest 已导入
+  `tests/gem5/conv_pipeline/ref/`，并新增七项 gem5 strict quick test；
+- Python 42 项回归、Step 8 来源/结果校验、golden hash 核对和 `git diff --check`
+  已通过；
+- 用户报告 `build/RISCV/gem5.opt` 构建成功；
+- 官方 gem5 testlib 的七项 suite 全部通过：7 个 gem5 运行、7 个退出原因检查和
+  7 个融合 RTL trace/output verifier，共 21 项；
+- 七份 53 字段 trace 合计严格比较 7,772 个 cycle，无字段差异；每项 NCHW output
+  均与融合 RTL golden 逐字节一致；
+- profile 的 drained cycle 分别为 85、276、574、1754、1551、3061 和 464，均与
+  VCS manifest 一致；
+- 已生成最终源码覆盖包
+  `/home/xch/work/sau_n_gem5/sau_origin_feature_sau_command_types_fused_migration_20260720_r1.tar.gz`，
+  包内 161 个条目，不包含 `.git`、`build/`、`testing-results`、`__pycache__` 或
+  `.pyc`；最终压缩包 SHA256 随交付信息单独提供。
+
+## SAU 下游新阶段（历史规划记录）
 
 新增并修订 `src/sau_n/SAU_PLAN.md`，目标是在现有 Im2Col 后建立 Mikui 16x16 SAU
 INT8 3x3标准卷积周期模型。当前已与用户确认：
@@ -914,10 +946,7 @@ RTL per-cycle validation passed
 版本控制；相关 `util/im2col/`、`tests/gem5/im2col/` 和
 `configs/example/im2col_timing.py` 当前仍未纳入版本控制，后续交付前需要单独审核。
 
-SAU Step 8本地wrapper/testbench、runner、来源/回传校验和工作站包已经完成。下一步在
-VCS工作站运行Step 8包并返回完整结果；在RTL golden返回前不执行或伪造最终逐拍验收。
-gem5构建和quick test仍由用户按本目录约束手动执行。Step 4周期锚点在VCS返回前继续
-保持provisional；取得VCS结果后先校准
-Step 0/Step 4契约，再进入Step 8 golden导入和最终严格逐拍验收。未来若修改原Im2Col DUT、
-testbench、周期模型、fixture解析或trace schema，仍必须重新生成provenance并运行
-7项RTL strict回归。
+融合 RTL 的 VCS 验收、gem5 模型迁移、构建、七项 strict comparison 和最终源码
+交付包均已完成，当前没有必需的剩余步骤。未来若修改 Im2Col DUT、项目自有阵列、
+testbench、周期模型、fixture 解析或 trace schema，必须重新生成 provenance 并运行
+七项 RTL strict 回归。

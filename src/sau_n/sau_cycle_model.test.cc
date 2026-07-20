@@ -32,20 +32,22 @@ streamInputs(int8_t activation, int8_t weight)
     return inputs;
 }
 
-TEST(SauCycleContract, FreezesStateEncodingAndProvisionalAnchors)
+TEST(SauCycleContract, FreezesProjectArrayStateEncodingAndAnchors)
 {
     EXPECT_EQ(static_cast<uint8_t>(SauEngineState::Idle), uint8_t{0});
     EXPECT_EQ(static_cast<uint8_t>(SauEngineState::Start), uint8_t{1});
     EXPECT_EQ(static_cast<uint8_t>(SauEngineState::Work), uint8_t{2});
     EXPECT_EQ(static_cast<uint8_t>(SauEngineState::Storage), uint8_t{3});
     EXPECT_EQ(static_cast<uint8_t>(SauEngineState::Done), uint8_t{4});
-    EXPECT_EQ(sauEngineStateName(SauEngineState::Storage), "STORAGE");
-    EXPECT_EQ(ProvisionalMacCommitDelay, uint64_t{4});
-    EXPECT_EQ(ProvisionalBiasCommitDelay, uint64_t{5});
-    EXPECT_EQ(ProvisionalRowResultDelay, uint64_t{6});
+    EXPECT_EQ(sauEngineStateName(SauEngineState::Start), "STREAM");
+    EXPECT_EQ(sauEngineStateName(SauEngineState::Work), "DRAIN");
+    EXPECT_EQ(sauEngineStateName(SauEngineState::Storage), "BIAS");
+    EXPECT_EQ(sauEngineStateName(SauEngineState::Done), "OUTPUT");
+    EXPECT_EQ(ArrayMacCommitDelay, uint64_t{2});
+    EXPECT_EQ(ArrayDrainToBiasDelay, uint64_t{33});
 
     SauCycleModel model;
-    EXPECT_TRUE(model.cycleAnchorsProvisional());
+    EXPECT_FALSE(model.cycleAnchorsProvisional());
 }
 
 TEST(SauCycleModel, K9OneByOneFollowsCandidatePipeline)
@@ -58,52 +60,46 @@ TEST(SauCycleModel, K9OneByOneFollowsCandidatePipeline)
 
     for (uint64_t input = 1; input <= 9; ++input) {
         observation = model.tick(streamInputs(1, 1));
-        if (observation.cycle == 5) {
+        if (observation.cycle == 3) {
             EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
             EXPECT_EQ(observation.peStates[peIndex(0, 0)].accumulator, 1);
         }
     }
     EXPECT_EQ(observation.cycle, uint64_t{9});
-    EXPECT_EQ(observation.state, SauEngineState::Work);
+    EXPECT_EQ(observation.state, SauEngineState::Start);
     EXPECT_EQ(observation.dataInCount, uint64_t{8});
 
-    for (uint64_t cycle = 10; cycle <= 15; ++cycle) {
+    for (uint64_t cycle = 10; cycle <= 42; ++cycle) {
         observation = model.tick();
-        if (cycle == 13) {
+        if (cycle == 11) {
             EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
             EXPECT_EQ(observation.peStates[peIndex(0, 0)].accumulator, 9);
         }
-        if (cycle == 14) {
+        if (cycle == 42) {
             EXPECT_TRUE(peMaskBit(observation.addCommitMask, 0, 0));
         }
     }
-    EXPECT_EQ(observation.cycle, uint64_t{15});
+    EXPECT_EQ(observation.cycle, uint64_t{42});
     EXPECT_TRUE(observation.peFinish);
     EXPECT_EQ(observation.osValidMask, uint16_t{0x0001});
-    EXPECT_EQ(observation.state, SauEngineState::Work);
-    EXPECT_FALSE(observation.storageReady);
-
-    SauCycleInputs request;
-    request.outputRequest = true;
-    observation = model.tick(request);
-    EXPECT_EQ(observation.cycle, uint64_t{16});
+    EXPECT_EQ(observation.state, SauEngineState::Done);
     EXPECT_TRUE(observation.storageReady);
     EXPECT_TRUE(observation.internalOutputValid);
     EXPECT_TRUE(observation.engineOutputFire);
-
-    observation = model.tick();
-    EXPECT_EQ(observation.cycle, uint64_t{17});
     EXPECT_TRUE(observation.rowScoreValid);
     EXPECT_EQ(observation.rowSequence, uint64_t{0});
     EXPECT_EQ(observation.outputSlots[0], uint16_t{0x0009});
-    EXPECT_TRUE(observation.calFinish);
-    EXPECT_EQ(observation.state, SauEngineState::Storage);
-
-    observation = model.tick();
-    EXPECT_EQ(observation.cycle, uint64_t{18});
     EXPECT_FALSE(observation.calFinish);
+    observation = model.tick();
+    EXPECT_EQ(observation.cycle, uint64_t{43});
+    EXPECT_TRUE(observation.calFinish);
     EXPECT_FALSE(observation.storageReady);
     EXPECT_EQ(observation.state, SauEngineState::Idle);
+    EXPECT_EQ(observation.dataInCount, uint64_t{9});
+
+    observation = model.tick();
+    EXPECT_EQ(observation.cycle, uint64_t{44});
+    EXPECT_EQ(observation.dataInCount, uint64_t{0});
 }
 
 TEST(SauCycleModel, SkewsPeCommitMaskInCanonicalRowMajorOrder)
@@ -112,7 +108,7 @@ TEST(SauCycleModel, SkewsPeCommitMaskInCanonicalRowMajorOrder)
     model.tick(launchInputs(9, 2, 3));
     for (uint64_t input = 1; input <= 5; ++input) {
         const auto observation = model.tick(streamInputs(2, -4));
-        if (observation.cycle == 5) {
+        if (observation.cycle == 3) {
             EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
             EXPECT_FALSE(peMaskBit(observation.macCommitMask, 0, 1));
             EXPECT_FALSE(peMaskBit(observation.macCommitMask, 1, 0));
@@ -123,18 +119,18 @@ TEST(SauCycleModel, SkewsPeCommitMaskInCanonicalRowMajorOrder)
                 observation.peStates[peIndex(0, 0)].weight,
                 int8_t{-4});
         }
+        if (observation.cycle == 4) {
+            EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
+            EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 1));
+            EXPECT_TRUE(peMaskBit(observation.macCommitMask, 1, 0));
+            EXPECT_FALSE(peMaskBit(observation.macCommitMask, 1, 1));
+        }
+        if (observation.cycle == 5) {
+            EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 2));
+            EXPECT_TRUE(peMaskBit(observation.macCommitMask, 1, 1));
+            EXPECT_FALSE(peMaskBit(observation.macCommitMask, 1, 2));
+        }
     }
-
-    auto observation = model.tick(streamInputs(2, -4));
-    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
-    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 1));
-    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 1, 0));
-    EXPECT_FALSE(peMaskBit(observation.macCommitMask, 1, 1));
-
-    observation = model.tick(streamInputs(2, -4));
-    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 2));
-    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 1, 1));
-    EXPECT_FALSE(peMaskBit(observation.macCommitMask, 1, 2));
 }
 
 TEST(SauCycleModel, RowColumnTailAndBackpressurePreserveOutputs)
@@ -158,19 +154,19 @@ TEST(SauCycleModel, RowColumnTailAndBackpressurePreserveOutputs)
     }
 
     SauCycleObservation observation;
-    for (uint64_t cycle = 10; cycle <= 17; ++cycle) {
+    for (uint64_t cycle = 10; cycle <= 41; ++cycle) {
         observation = model.tick();
     }
-    EXPECT_EQ(observation.cycle, uint64_t{17});
-    EXPECT_EQ(observation.osValidMask, uint16_t{0x0001});
+    EXPECT_EQ(observation.cycle, uint64_t{41});
+    EXPECT_EQ(observation.state, SauEngineState::Storage);
 
     SauCycleInputs blocked;
-    blocked.outputRequest = true;
     blocked.outputGrant = false;
     observation = model.tick(blocked);
-    EXPECT_EQ(observation.cycle, uint64_t{18});
-    EXPECT_EQ(observation.osValidMask, uint16_t{0x0002});
+    EXPECT_EQ(observation.cycle, uint64_t{42});
+    EXPECT_EQ(observation.osValidMask, uint16_t{0x0001});
     EXPECT_TRUE(observation.storageReady);
+    EXPECT_TRUE(observation.peFinish);
     EXPECT_FALSE(observation.engineOutputFire);
     EXPECT_EQ(
         observation.peStates[peIndex(0, 3)].accumulator,
@@ -180,41 +176,61 @@ TEST(SauCycleModel, RowColumnTailAndBackpressurePreserveOutputs)
         int32_t{0});
 
     observation = model.tick(blocked);
+    EXPECT_EQ(observation.cycle, uint64_t{43});
+    EXPECT_EQ(observation.osValidMask, uint16_t{0x0001});
+    EXPECT_TRUE(observation.peFinish);
     EXPECT_FALSE(observation.engineOutputFire);
 
     SauCycleInputs granted;
-    granted.outputRequest = true;
     granted.outputGrant = true;
     observation = model.tick(granted);
-    EXPECT_EQ(observation.cycle, uint64_t{20});
+    EXPECT_EQ(observation.cycle, uint64_t{44});
     EXPECT_TRUE(observation.engineOutputFire);
-    EXPECT_EQ(observation.outputCounter, uint64_t{0});
-
-    SauCycleInputs registeredButBlocked;
-    registeredButBlocked.outputGrant = false;
-    observation = model.tick(registeredButBlocked);
-    EXPECT_EQ(observation.cycle, uint64_t{21});
     EXPECT_TRUE(observation.rowScoreValid);
+    EXPECT_EQ(observation.outputCounter, uint64_t{0});
     EXPECT_EQ(observation.rowSequence, uint64_t{0});
     EXPECT_EQ(observation.outputSlots[0], uint16_t{0xffb9});
     EXPECT_EQ(observation.outputSlots[1], uint16_t{0x0058});
     EXPECT_EQ(observation.outputSlots[2], uint16_t{0x006f});
+
+    observation = model.tick(blocked);
+    EXPECT_EQ(observation.cycle, uint64_t{45});
+    EXPECT_EQ(observation.osValidMask, uint16_t{0x0002});
+    EXPECT_FALSE(observation.peFinish);
+    EXPECT_FALSE(observation.rowScoreValid);
     EXPECT_FALSE(observation.engineOutputFire);
 
-    observation = model.tick();
-    EXPECT_EQ(observation.cycle, uint64_t{22});
-    EXPECT_FALSE(observation.rowScoreValid);
+    observation = model.tick(granted);
+    EXPECT_EQ(observation.cycle, uint64_t{46});
     EXPECT_TRUE(observation.engineOutputFire);
     EXPECT_EQ(observation.outputCounter, uint64_t{1});
-
-    observation = model.tick();
-    EXPECT_EQ(observation.cycle, uint64_t{23});
     EXPECT_TRUE(observation.rowScoreValid);
     EXPECT_EQ(observation.rowSequence, uint64_t{1});
     EXPECT_EQ(observation.outputSlots[0], uint16_t{0x006d});
     EXPECT_EQ(observation.outputSlots[1], uint16_t{0xff80});
     EXPECT_EQ(observation.outputSlots[2], uint16_t{0xff80});
+    EXPECT_FALSE(observation.calFinish);
+
+    observation = model.tick();
+    EXPECT_EQ(observation.cycle, uint64_t{47});
     EXPECT_TRUE(observation.calFinish);
+    EXPECT_EQ(observation.state, SauEngineState::Idle);
+    EXPECT_FALSE(observation.storageReady);
+    EXPECT_EQ(observation.rowReadyMask, uint16_t{0x0003});
+    EXPECT_EQ(observation.dataInCount, uint64_t{9});
+
+    observation = model.tick();
+    EXPECT_EQ(observation.cycle, uint64_t{48});
+    EXPECT_EQ(observation.rowReadyMask, uint16_t{0});
+    EXPECT_EQ(observation.dataInCount, uint64_t{0});
+
+    observation = model.tick(launchInputs(9, 2, 3));
+    EXPECT_EQ(observation.cycle, uint64_t{49});
+    EXPECT_EQ(observation.outputCounter, uint64_t{1});
+
+    observation = model.tick(streamInputs(1, 1));
+    EXPECT_EQ(observation.cycle, uint64_t{50});
+    EXPECT_EQ(observation.outputCounter, uint64_t{0});
 }
 
 TEST(SauCycleModel, FullArrayTouchesAll256PesAndOutputs16Rows)
@@ -225,13 +241,10 @@ TEST(SauCycleModel, FullArrayTouchesAll256PesAndOutputs16Rows)
     SauPeMask seenAdd{};
     uint64_t outputRows = 0;
     SauCycleObservation observation;
-    for (uint64_t cycle = 1; cycle <= 47; ++cycle) {
+    for (uint64_t cycle = 1; cycle <= 58; ++cycle) {
         SauCycleInputs inputs;
         if (cycle <= 9) {
             inputs = streamInputs(1, 1);
-        }
-        if (cycle == 31) {
-            inputs.outputRequest = true;
         }
         observation = model.tick(inputs);
         for (uint64_t word = 0; word < seenMac.size(); ++word) {
@@ -260,14 +273,10 @@ TEST(SauCycleModel, FullArrayTouchesAll256PesAndOutputs16Rows)
     EXPECT_TRUE(peMaskBit(seenMac, 15, 15));
     EXPECT_EQ(outputRows, uint64_t{16});
     EXPECT_TRUE(observation.calFinish);
-    EXPECT_EQ(observation.state, SauEngineState::Storage);
-
-    observation = model.tick();
-    EXPECT_FALSE(observation.calFinish);
     EXPECT_EQ(observation.state, SauEngineState::Idle);
 }
 
-TEST(SauCycleModel, K567SaturationCommitCyclesRemainProvisional)
+TEST(SauCycleModel, K567SaturationUsesValidatedCommitCycles)
 {
     for (const auto weight : {int8_t{-128}, int8_t{127}}) {
         SCOPED_TRACE(static_cast<int>(weight));
@@ -276,22 +285,22 @@ TEST(SauCycleModel, K567SaturationCommitCyclesRemainProvisional)
         SauCycleObservation observation;
         for (uint64_t input = 1; input <= 567; ++input) {
             observation = model.tick(streamInputs(-128, weight));
-            if (weight == -128 && observation.cycle == 515) {
+            if (weight == -128 && observation.cycle == 513) {
                 EXPECT_EQ(
                     observation.peStates[0].accumulator,
                     int32_t{8372224});
             }
-            if (weight == -128 && observation.cycle == 516) {
+            if (weight == -128 && observation.cycle == 514) {
                 EXPECT_EQ(
                     observation.peStates[0].accumulator,
                     Accumulator24Max);
             }
-            if (weight == 127 && observation.cycle == 520) {
+            if (weight == 127 && observation.cycle == 518) {
                 EXPECT_EQ(
                     observation.peStates[0].accumulator,
                     int32_t{-8388096});
             }
-            if (weight == 127 && observation.cycle == 521) {
+            if (weight == 127 && observation.cycle == 519) {
                 EXPECT_EQ(
                     observation.peStates[0].accumulator,
                     Accumulator24Min);

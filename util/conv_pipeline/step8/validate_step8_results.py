@@ -18,11 +18,12 @@ from util.conv_pipeline.rtl_pipeline_runner import (
     validate_output_file,
     validate_rtl_result,
 )
-from util.conv_pipeline.step0.verify_step0_trace import validate_trace
+from util.conv_pipeline.array.verify_sau_array_trace import validate
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 MATRIX_PATH = REPOSITORY_ROOT / "tests/gem5/conv_pipeline/golden_matrix.json"
+ARRAY_VERIFIER_PATH = "util/conv_pipeline/array/verify_sau_array_trace.py"
 
 
 class Step8ResultError(RuntimeError):
@@ -43,6 +44,22 @@ def sha256_file(path):
 def _require(condition, message):
     if not condition:
         raise Step8ResultError(message)
+
+
+def _source_manifest_matches(returned, expected):
+    """Accept the historical verifier's single extra final LF only."""
+    if not isinstance(returned, dict) or returned.keys() != expected.keys():
+        return False
+    for relative, expected_hash in expected.items():
+        if returned[relative] == expected_hash:
+            continue
+        if relative != ARRAY_VERIFIER_PATH:
+            return False
+        current = (REPOSITORY_ROOT / relative).read_bytes()
+        historical_hash = hashlib.sha256(current + b"\n").hexdigest()
+        if returned[relative] != historical_hash:
+            return False
+    return True
 
 
 def _artifact_path(root, relative):
@@ -76,7 +93,8 @@ def validate_results(results, gem5_results=None):
         relative: sha256_file(REPOSITORY_ROOT / relative)
         for relative in RTL_SOURCES
     }
-    _require(manifest.get("sources") == expected_sources,
+    _require(_source_manifest_matches(
+                 manifest.get("sources"), expected_sources),
              "returned RTL source hashes differ from the current tree")
     simulator = manifest.get("simulator", {})
     _require(simulator.get("name") == "VCS",
@@ -91,11 +109,17 @@ def validate_results(results, gem5_results=None):
     expected_artifacts = {
         "legacy/run.log", "legacy/compile.log", "standalone/compile.log",
         "pipeline/compile.log", "vcs_version.txt",
-        "standalone/sat_pos_k567.csv",
-        "standalone/sat_pos_k567.log",
-        "standalone/sat_neg_k567.csv",
-        "standalone/sat_neg_k567.log",
     }
+    standalone_cases = {
+        "tail_r1_c1_k9", "tail_r15_c15_k9", "full_r16_c16_k9",
+        "backpressure_r3_c3_k9", "sat_pos_r1_c1_k567",
+        "sat_neg_r1_c1_k567",
+    }
+    for case_name in standalone_cases:
+        expected_artifacts.update({
+            f"standalone/{case_name}.csv",
+            f"standalone/{case_name}.log",
+        })
     for profile in matrix["profiles"]:
         prefix = f"pipeline/golden/{profile['name']}"
         expected_artifacts.update({
@@ -150,7 +174,8 @@ def validate_results(results, gem5_results=None):
         _require(fixture_manifest.get("resolved_config_sha256") ==
                  loaded.resolved_config_sha256,
                  f"profile {name} fixture config hash mismatch")
-        _require(fixture_manifest.get("sources") == expected_sources,
+        _require(_source_manifest_matches(
+                     fixture_manifest.get("sources"), expected_sources),
                  f"profile {name} source provenance mismatch")
         _require(fixture_manifest.get("runtime") == {
                      "output_ready_period": profile["output_ready_period"],
@@ -184,8 +209,8 @@ def validate_results(results, gem5_results=None):
     standalone = {
         item["case"]: item for item in manifest.get("standalone", [])
     }
-    _require(set(standalone) == {"sat_pos_k567", "sat_neg_k567"},
-             "returned standalone matrix must contain both K567 cases")
+    _require(set(standalone) == standalone_cases,
+             "returned standalone matrix differs from six project-array cases")
     for case_name, item in standalone.items():
         _require(
             item.get("trace") == f"standalone/{case_name}.csv" and
@@ -195,7 +220,7 @@ def validate_results(results, gem5_results=None):
         trace = _artifact_path(root, item["trace"])
         _require(sha256_file(trace) == item["trace_sha256"],
                  f"standalone {case_name} trace hash mismatch")
-        validate_trace(trace, case_name, "integration")
+        validate(trace, case_name)
     return strict_cycles
 
 

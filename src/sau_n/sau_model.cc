@@ -174,13 +174,13 @@ sauEngineStateName(SauEngineState state)
       case SauEngineState::Idle:
         return "IDLE";
       case SauEngineState::Start:
-        return "START";
+        return "STREAM";
       case SauEngineState::Work:
-        return "WORK";
+        return "DRAIN";
       case SauEngineState::Storage:
-        return "STORAGE";
+        return "BIAS";
       case SauEngineState::Done:
-        return "DONE";
+        return "OUTPUT";
     }
     throw std::invalid_argument("invalid SA engine state value");
 }
@@ -225,7 +225,7 @@ SauCycleModel::scheduleInput(const SauCycleInputs &inputs)
         for (uint64_t column = 0;
              column < activeConfig.validColumns; ++column) {
             uint64_t due = checkedAdd(
-                currentCycle, ProvisionalMacCommitDelay,
+                currentCycle, ArrayMacCommitDelay,
                 "scheduled MAC cycle");
             due = checkedAdd(due, row, "scheduled MAC cycle");
             due = checkedAdd(due, column, "scheduled MAC cycle");
@@ -245,33 +245,21 @@ SauCycleModel::scheduleCompletion()
     for (uint64_t row = 0; row < activeConfig.validRows; ++row) {
         for (uint64_t column = 0;
              column < activeConfig.validColumns; ++column) {
-            uint64_t due = checkedAdd(
-                currentCycle, ProvisionalBiasCommitDelay,
+            const uint64_t due = checkedAdd(
+                currentCycle, ArrayDrainToBiasDelay,
                 "scheduled bias cycle");
-            due = checkedAdd(due, row, "scheduled bias cycle");
-            due = checkedAdd(due, column, "scheduled bias cycle");
             scheduledBiases[due].push_back(
                 {row, column, activeConfig.biases[column]});
         }
 
-        uint64_t rowDue = checkedAdd(
-            currentCycle, ProvisionalRowResultDelay,
-            "scheduled row result cycle");
-        rowDue = checkedAdd(rowDue, row, "scheduled row result cycle");
-        rowDue = checkedAdd(
-            rowDue, activeConfig.validColumns - 1,
+        const uint64_t rowDue = checkedAdd(
+            currentCycle, ArrayDrainToBiasDelay,
             "scheduled row result cycle");
         scheduledRowsReady[rowDue].push_back(row);
-        scheduledRowsClear[checkedAdd(
-            rowDue, 1, "scheduled row clear cycle")].push_back(row);
         if (row == 0) {
-            storageReadyCycle = checkedAdd(
-                rowDue, 1, "scheduled storage-ready cycle");
+            storageReadyCycle = rowDue;
         }
     }
-    peFinishCycle = checkedAdd(
-        currentCycle, ProvisionalRowResultDelay,
-        "scheduled PE-finish cycle");
 }
 
 SauCycleObservation
@@ -281,14 +269,11 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
     observation.cycle = currentCycle;
 
     const SauEngineState oldState = engineState;
-    const bool oldOsValidRowZero = osValidRowZero;
-    const bool oldCalFinish = calFinishRegistered;
-
-    if (oldCalFinish) {
-        storageReady = false;
-        outputSequenceActive = false;
+    const uint64_t oldOutputRow = outputRow;
+    if (clearRowReadyNext) {
+        rowReady = {};
+        clearRowReadyNext = false;
     }
-
     const auto macs = scheduledMacs.find(currentCycle);
     if (macs != scheduledMacs.end()) {
         for (const auto &event : macs->second) {
@@ -322,8 +307,6 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
     const auto readyRows = scheduledRowsReady.find(currentCycle);
     if (readyRows != scheduledRowsReady.end()) {
         for (const auto row : readyRows->second) {
-            rowReady[row] = true;
-            observation.osValidMask |= uint16_t{1} << row;
             for (uint64_t column = 0;
                  column < activeConfig.validColumns; ++column) {
                 const auto value = quantizeSignedInt8(
@@ -335,29 +318,6 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
         scheduledRowsReady.erase(readyRows);
     }
 
-    const auto output = registeredOutputs.find(currentCycle);
-    if (output != registeredOutputs.end()) {
-        observation.rowScoreValid = true;
-        observation.rowSequence = output->second.row;
-        observation.outputSlots = output->second.slots;
-        registeredOutputs.erase(output);
-    }
-
-    const auto clearRows = scheduledRowsClear.find(currentCycle);
-    if (clearRows != scheduledRowsClear.end()) {
-        for (const auto row : clearRows->second) {
-            for (uint64_t column = 0;
-                 column < activeConfig.validColumns; ++column) {
-                cyclePeStates[peIndex(row, column)] = {};
-            }
-        }
-        scheduledRowsClear.erase(clearRows);
-    }
-
-    if (currentCycle == peFinishCycle) {
-        observation.peFinish = true;
-        peFinishCycle = std::numeric_limits<uint64_t>::max();
-    }
     if (currentCycle == storageReadyCycle) {
         storageReady = true;
         storageReadyCycle = std::numeric_limits<uint64_t>::max();
@@ -365,6 +325,8 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
     if (currentCycle == calFinishCycle) {
         observation.calFinish = true;
         calFinishCycle = std::numeric_limits<uint64_t>::max();
+        storageReady = false;
+        clearRowReadyNext = true;
     }
 
     bool launched = false;
@@ -381,7 +343,6 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
         configLoaded = true;
         acceptedInputs = 0;
         storageReady = false;
-        outputSequenceActive = false;
         outputRow = 0;
         rowReady = {};
         rowOutputs = {};
@@ -396,11 +357,9 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
             SauEngineState::Start : SauEngineState::Idle;
         break;
       case SauEngineState::Start:
-        if (inputs.inputValid && configLoaded &&
-            acceptedInputs == activeConfig.calcCycles - 1) {
+        if (!inputs.inputValid && configLoaded &&
+            acceptedInputs == activeConfig.calcCycles) {
             nextState = SauEngineState::Work;
-        } else if (oldCalFinish) {
-            nextState = SauEngineState::Storage;
         } else if (!inputs.inputValid && acceptedInputs == 0) {
             nextState = SauEngineState::Idle;
         } else {
@@ -408,20 +367,15 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
         }
         break;
       case SauEngineState::Work:
-        nextState = oldOsValidRowZero && !inputs.inputValid ?
+        nextState = currentCycle + 1 == storageReadyCycle ?
             SauEngineState::Storage : SauEngineState::Work;
         break;
       case SauEngineState::Storage:
-        if (oldCalFinish) {
-            nextState = SauEngineState::Idle;
-        } else if (inputs.inputValid) {
-            nextState = SauEngineState::Start;
-        } else {
-            nextState = SauEngineState::Storage;
-        }
+        nextState = storageReady ?
+            SauEngineState::Done : SauEngineState::Storage;
         break;
       case SauEngineState::Done:
-        nextState = inputs.outputRequest ?
+        nextState = observation.calFinish ?
             SauEngineState::Idle : SauEngineState::Done;
         break;
     }
@@ -445,23 +399,29 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
         throw std::logic_error("SA input stream cannot contain bubbles");
     }
 
-    const bool outputDesired = inputs.outputRequest || outputSequenceActive;
+    const bool outputDesired = storageReady;
+    bool presentedRow = false;
+    uint64_t presentedRowIndex = 0;
+    if (storageReady && outputRow < activeConfig.validRows) {
+        presentedRow = true;
+        presentedRowIndex = outputRow;
+        observation.osValidMask = uint16_t{1} << outputRow;
+    }
+    observation.peFinish = storageReady && outputRow == 0;
     observation.internalOutputValid =
         outputDesired && inputs.outputGrant && storageReady &&
-        outputRow < activeConfig.validRows && rowReady[outputRow];
+        outputRow < activeConfig.validRows;
     observation.engineOutputFire = observation.internalOutputValid;
-    observation.outputCounter = outputRow;
+    observation.outputCounter = launched ? oldOutputRow : outputRow;
     if (observation.engineOutputFire) {
         const bool last = outputRow + 1 == activeConfig.validRows;
-        registeredOutputs.emplace(
-            checkedAdd(currentCycle, 1, "registered output cycle"),
-            RegisteredOutput{outputRow, rowOutputs[outputRow]});
+        observation.rowScoreValid = true;
+        observation.rowSequence = outputRow;
+        observation.outputSlots = rowOutputs[outputRow];
         if (last) {
-            outputSequenceActive = false;
             calFinishCycle = checkedAdd(
                 currentCycle, 1, "registered cal-finish cycle");
         } else {
-            outputSequenceActive = true;
             ++outputRow;
         }
     }
@@ -474,11 +434,15 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
             observation.rowReadyMask |= uint16_t{1} << row;
         }
     }
-    observation.dataInCount = activeConfig.calcCycles == 0 ? 0 :
-        std::min(acceptedInputs, activeConfig.calcCycles - 1);
+    if (presentedRow) {
+        rowReady[presentedRowIndex] = true;
+    }
+    observation.dataInCount = inputs.inputValid && acceptedInputs != 0 ?
+        acceptedInputs - 1 : acceptedInputs;
+    if (observation.calFinish) {
+        acceptedInputs = 0;
+    }
     observation.peStates = cyclePeStates;
-    osValidRowZero = observation.osValidMask & uint16_t{1};
-    calFinishRegistered = observation.calFinish;
     ++currentCycle;
     return observation;
 }
@@ -491,10 +455,8 @@ SauCycleModel::reset()
     activeConfig = {};
     configLoaded = false;
     acceptedInputs = 0;
-    osValidRowZero = false;
-    calFinishRegistered = false;
     storageReady = false;
-    outputSequenceActive = false;
+    clearRowReadyNext = false;
     outputRow = 0;
     rowReady = {};
     rowOutputs = {};
@@ -502,10 +464,7 @@ SauCycleModel::reset()
     scheduledMacs.clear();
     scheduledBiases.clear();
     scheduledRowsReady.clear();
-    scheduledRowsClear.clear();
-    registeredOutputs.clear();
     storageReadyCycle = std::numeric_limits<uint64_t>::max();
-    peFinishCycle = std::numeric_limits<uint64_t>::max();
     calFinishCycle = std::numeric_limits<uint64_t>::max();
 }
 

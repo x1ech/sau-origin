@@ -28,7 +28,7 @@ def positive_int(value):
 
 
 parser = argparse.ArgumentParser(
-    description="Run the Im2Col-to-Mikui-SAU convolution pipeline model"
+    description="Run the Im2Col-to-project-owned-SA convolution pipeline model"
 )
 parser.add_argument("--fixture", required=True, type=Path)
 parser.add_argument(

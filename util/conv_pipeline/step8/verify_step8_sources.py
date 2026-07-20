@@ -2,6 +2,7 @@
 """Verify Step 8 RTL integration sources and frozen matrix wiring."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -17,15 +18,8 @@ from util.conv_pipeline.step0.verify_step0_sources import verify as verify_step0
 
 
 EXPECTED_PIPELINE_FILELIST = (
-    "+incdir+src/sau_n/rtl/mikui/original",
-    "src/sau_n/rtl/mikui/original/SA_pkg.sv",
-    "src/sau_n/rtl/mikui/original/DW02_mult_2_stage.v",
-    "src/sau_n/rtl/mikui/original/active_delay.v",
-    "src/sau_n/rtl/mikui/original/weight_delay.v",
-    "src/sau_n/rtl/mikui/original/SA_PE.sv",
-    "src/sau_n/rtl/mikui/original/SA_ROW.sv",
-    "src/sau_n/rtl/mikui/integration/SA_ENGINE.sv",
     "src/sau_n/rtl/gemmini_im2col_chw_gather_readable.sv",
+    "src/sau_n/rtl/sau_array_16x16.sv",
     "src/sau_n/rtl/im2col_mikui_sau_pipeline.sv",
     "src/sau_n/rtl/tb_im2col_mikui_sau_pipeline.sv",
 )
@@ -34,6 +28,14 @@ EXPECTED_PIPELINE_FILELIST = (
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _trace_header(testbench):
@@ -66,6 +68,21 @@ def verify(root):
                 (root / entry).is_file(),
                 f"missing filelist entry: {entry}",
             )
+
+    array_provenance = json.loads(
+        (root / "src/sau_n/rtl/sau_array_provenance.json").read_text(
+            encoding="utf-8"))
+    array_path = root / array_provenance["local_path"]
+    require(
+        sha256_file(array_path) == array_provenance["local_sha256"],
+        "project-owned array hash differs from provenance",
+    )
+    wrapper = (root / "src/sau_n/rtl/im2col_mikui_sau_pipeline.sv").read_text(
+        encoding="utf-8")
+    require("sau_array_16x16" in wrapper,
+            "fusion wrapper does not instantiate project-owned array")
+    require("SA_ENGINE" not in wrapper,
+            "fusion wrapper still references Mikui SA_ENGINE")
 
     testbench = (
         root / "src/sau_n/rtl/tb_im2col_mikui_sau_pipeline.sv"

@@ -52,7 +52,8 @@ class SpatialTileMappingTest(unittest.TestCase):
                 tiles = spatial_tiles(config)
                 self.assertEqual(tile_count, len(tiles))
                 self.assertEqual(final_mask, tiles[-1].valid_mask)
-                self.assertEqual(final_mask.bit_count(), tiles[-1].valid_rows)
+                self.assertEqual(
+                    bin(final_mask).count("1"), tiles[-1].valid_rows)
 
     def test_batch_and_tail_cover_every_coordinate_once(self):
         config = mapping_config(17, h=3, n=2)

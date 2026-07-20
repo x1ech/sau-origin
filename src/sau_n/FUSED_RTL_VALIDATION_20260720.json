@@ -1,0 +1,25 @@
+{
+  "gem5_strict_comparison": {
+    "fields_per_cycle": 53,
+    "profiles": 7,
+    "status": "passed",
+    "testlib_checks": 21,
+    "total_cycles": 7772
+  },
+  "legacy_im2col": "pass",
+  "pipeline_profiles": {
+    "01_c1_w1_oc1_ones": {"cycles": 86, "mac_commits": 27, "outputs": 3, "tiles": 1},
+    "02_c2_w5_oc3_pack": {"cycles": 277, "mac_commits": 1080, "outputs": 60, "tiles": 2},
+    "03_c3_w16_oc16_full": {"cycles": 575, "mac_commits": 20736, "outputs": 768, "tiles": 3},
+    "04_c3_w17_oc7_dil2": {"cycles": 1755, "mac_commits": 16065, "outputs": 595, "tiles": 10},
+    "05_n2_c4_w20_oc15_s2": {"cycles": 1552, "mac_commits": 32400, "outputs": 900, "tiles": 6},
+    "06_c63_w1_oc16_maxk": {"cycles": 3062, "mac_commits": 27216, "outputs": 48, "tiles": 1},
+    "07_c2_w5_oc3_outbp": {"cycles": 465, "mac_commits": 1080, "outputs": 60, "tiles": 2}
+  },
+  "result_directory": "fused_step8_results_20260720_v3",
+  "result_manifest_sha256": "b0a8c31ccfa35d9372ca3ea7af3b81fc0c3e4e9e7fa1b4fb918e2a151b4183ae",
+  "schema_version": 1,
+  "simulator": "VCS T-2022.06_Full64",
+  "standalone_array_cases": 6,
+  "status": "fused_rtl_and_gem5_per_cycle_validation_passed"
+}

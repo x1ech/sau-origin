@@ -100,9 +100,9 @@ class PipelineDerivationTest(unittest.TestCase):
 
 
 class PipelineCycleContractTest(unittest.TestCase):
-    def test_freezes_state_encoding_and_provisional_marker(self):
+    def test_freezes_state_encoding_and_validated_marker(self):
         self.assertEqual(list(range(7)), [state.value for state in PipelineState])
-        self.assertTrue(CYCLE_ANCHORS_PROVISIONAL)
+        self.assertFalse(CYCLE_ANCHORS_PROVISIONAL)
 
     def test_freezes_periodic_ready(self):
         ready = OutputReadyConfig(period=5, high_cycles=2)

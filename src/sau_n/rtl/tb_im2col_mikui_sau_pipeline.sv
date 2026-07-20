@@ -22,7 +22,7 @@ module tb_im2col_mikui_sau_pipeline;
     logic [1:0] cfg_weight_generator;
     logic cfg_bias_zero;
     logic [31:0] cfg_expected_tiles;
-    logic output_grant;
+    logic output_grant = 1'b0;
 
     logic [15:0] sram_req_valid;
     logic [15:0][11:0] sram_req_addr;
@@ -138,8 +138,6 @@ module tb_im2col_mikui_sau_pipeline;
             sram_resp_valid[bank] = sram_req_valid[bank];
             sram_resp_data[bank] = spad_mem[bank][sram_req_addr[bank]];
         end
-        output_grant =
-            (trace_cycle % output_ready_period) < output_ready_high_cycles;
     end
 
     function automatic int ceil_div(input int value, input int divisor);
@@ -339,7 +337,7 @@ module tb_im2col_mikui_sau_pipeline;
                 sa_ins_valid ? sa_valid_columns : 0,
                 sa_ins_valid ? sa_cutbit : 0,
                 sa_ins_valid ? sa_biases : 256'd0,
-                dut.sa_dut.sa_cur_state, dut.sa_dut.datain_cnt,
+                dut.array_debug_state, dut.sa_datain_count,
                 dut.sa_output_counter, sa_input_valid);
             $fwrite(trace_fd,
                 "0x%032h,0x%032h,0x%04h,0x%04h,",
@@ -480,6 +478,9 @@ module tb_im2col_mikui_sau_pipeline;
 
         trace_cycle = 0;
         while (1) begin
+            output_grant =
+                (trace_cycle % output_ready_period) <
+                output_ready_high_cycles;
             #1;
             write_trace_cycle();
             if (dut.im2col_done && im2col_done_cycle < 0)

@@ -17,7 +17,7 @@ inline constexpr uint64_t SauKernelWidth = 3;
 inline constexpr uint64_t SauMaxChannels = 63;
 inline constexpr uint64_t SauMaxOutChannels = 16;
 inline constexpr uint64_t SauMaxCutbit = 23;
-inline constexpr bool SauCycleAnchorsProvisional = true;
+inline constexpr bool SauCycleAnchorsProvisional = false;
 
 enum class PipelineState : uint8_t
 {

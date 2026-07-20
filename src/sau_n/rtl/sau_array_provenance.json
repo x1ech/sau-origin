@@ -1,0 +1,29 @@
+{
+  "base": {
+    "path": "src/sau_n/rtl/project/sau_array_16x16.sv",
+    "sha256": "cdbeb9d56c493e560d7493c02442c5a033ddefd391d53a18cdc220791a5992de",
+    "source_package": "sau_n_im2col_sau_workstation_20260720_r6.tar.gz"
+  },
+  "local_path": "src/sau_n/rtl/sau_array_16x16.sv",
+  "local_sha256": "f528a044f64237f4c213b7880f1746410ce02f6376d88ec27fe4a7b646c3a45f",
+  "local_changes": [
+    "added debug_add_commit_mask",
+    "added committed activation and weight debug buses",
+    "functional start/input/output behavior unchanged"
+  ],
+  "ownership": "project-owned; no Mikui SA_ENGINE/SA_ROW instance",
+  "schema_version": 1,
+  "status": "standalone_and_fusion_rtl_validation_passed",
+  "validation": {
+    "fused_pipeline_profiles": 7,
+    "result_directory": "fused_step8_results_20260720_v3",
+    "standalone_cases": [
+      "tail_r1_c1_k9",
+      "tail_r15_c15_k9",
+      "full_r16_c16_k9",
+      "backpressure_r3_c3_k9",
+      "sat_pos_r1_c1_k567",
+      "sat_neg_r1_c1_k567"
+    ]
+  }
+}

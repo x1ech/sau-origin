@@ -17,7 +17,7 @@ if str(SCRIPT_ROOT) not in sys.path:
 from util.conv_pipeline.step8.verify_step8_sources import verify
 
 
-PACKAGE_ROOT = "sau_n_step8_workstation_20260719"
+PACKAGE_ROOT = "sau_n_step8_fused_workstation_20260720"
 
 
 def sha256_bytes(data):
@@ -33,7 +33,11 @@ def sha256_file(path):
 
 
 def selected_files(root):
-    files = [root / "src/sau_n/SAU_PLAN.md"]
+    files = [
+        root / "src/sau_n/SAU_PLAN.md",
+        root / "src/sau_n/SAU_FREEZE_SCOPE.md",
+        root / "src/sau_n/FUSED_RTL_VALIDATION_20260720.json",
+    ]
     files.extend(
         path for path in (root / "src/sau_n/rtl").rglob("*")
         if path.is_file() and path.suffix.lower() != ".pdf"
@@ -90,13 +94,18 @@ def build(root, output):
             "schema_version": 1,
             "package_root": PACKAGE_ROOT,
             "golden_object": (
-                "2ca8252 with documented FINISH_ROW/FINISH_COL width patch"
+                "validated Im2Col plus project-owned sau_array_16x16 fusion"
             ),
             "pipeline_profiles": 7,
             "standalone_profiles": [
-                "sat_pos_k567", "sat_neg_k567"],
+                "tail_r1_c1_k9", "tail_r15_c15_k9",
+                "full_r16_c16_k9", "backpressure_r3_c3_k9",
+                "sat_pos_r1_c1_k567", "sat_neg_r1_c1_k567"],
             "includes_legacy_im2col_regression": True,
-            "final_gem5_strict_comparison": "performed after return",
+            "rtl_functional_validation": "passed",
+            "final_gem5_strict_comparison": (
+                "pending in complete local gem5 source tree"
+            ),
         }, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
 

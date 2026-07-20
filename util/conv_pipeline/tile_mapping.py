@@ -45,7 +45,7 @@ class SpatialTile:
 def _is_prefix_mask(mask, width=SA_ROWS):
     if type(mask) is not int or mask < 0 or mask >= 1 << width:
         return False
-    return mask == (1 << mask.bit_count()) - 1
+    return mask == (1 << bin(mask).count("1")) - 1
 
 
 def _tile_lanes(config, n, oh_base, ow_base, rows_per_word):

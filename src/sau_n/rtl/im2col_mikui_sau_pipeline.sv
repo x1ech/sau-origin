@@ -78,8 +78,6 @@ module im2col_mikui_sau_pipeline #(
     output logic pe_finish,
     output logic cal_finish
 );
-    import SA_pkg::*;
-
     localparam int SP_ROW_BITS = $clog2(SP_BANK_ENTRIES);
     localparam int SP_ADDR_BITS = 4 + SP_ROW_BITS;
 
@@ -100,7 +98,6 @@ module im2col_mikui_sau_pipeline #(
     logic [15:0] collect_q;
     logic [15:0] stream_q;
     logic [31:0] completed_tiles_q;
-    logic output_sequence_started_q;
     logic im2col_done_seen_q;
 
     logic im2col_busy;
@@ -109,18 +106,23 @@ module im2col_mikui_sau_pipeline #(
     logic [127:0] im2col_feed_data;
     logic [15:0] im2col_feed_mask;
 
-    logic sa_en;
-    logic [1:0] sa_calmode;
-    logic [1:0] sa_flowmode;
-    logic [1:0] sa_register_mode;
-    logic sa_shift_mode;
-    logic sa_shift_ctl;
-    logic [127:0] sa_activation_physical;
-    logic [127:0] sa_weight_physical;
-    logic [255:0] sa_bias_physical;
     logic sa_internal_valid;
     logic [3:0] sa_output_counter;
     logic [15:0] sa_os_valid;
+    logic [10:0] sa_datain_count;
+    logic array_start_ready;
+    logic array_input_ready;
+    logic array_output_valid;
+    logic [4:0] array_output_row;
+    logic [255:0] array_output_data;
+    logic array_busy;
+    logic array_done;
+    logic [2:0] array_debug_state;
+    logic [255:0] array_debug_mac_commit_mask;
+    logic [255:0] array_debug_add_commit_mask;
+    logic [2047:0] array_debug_activations;
+    logic [2047:0] array_debug_weights;
+    logic [6143:0] array_debug_accumulators;
 
     function automatic [7:0] weight_value(
         input int generator,
@@ -209,38 +211,39 @@ module im2col_mikui_sau_pipeline #(
         .feed_mask(im2col_feed_mask)
     );
 
-    SA_ENGINE #(
-        .ROW_NUM(ROWS),
-        .COL_NUM(COLS),
-        .OUTPUTDW(OUTPUT_W),
-        .CNT_DW(CNT_W),
-        .INPUTDW(INPUT_W),
-        .QUANTDW(QUANT_W)
+    sau_array_16x16 #(
+        .SIZE(ROWS),
+        .INPUT_W(INPUT_W),
+        .ACC_W(OUTPUT_W),
+        .BIAS_W(QUANT_W),
+        .OUTPUT_W(QUANT_W),
+        .K_W(11)
     ) sa_dut (
         .clk(clk),
         .rst_n(rst_n),
-        .EN_i(sa_en),
-        .Flag_o(output_request),
-        .Flag_o_ready(output_grant),
-        .ins_valid_i(sa_ins_valid),
-        .sa_calmode_i(sa_calmode),
-        .sa_flowmode_i(sa_flowmode),
-        .register_mode_i(sa_register_mode),
-        .shift_mode_i(sa_shift_mode),
-        .CALC_CYCLE_i(sa_calc_cycles),
-        .row_num_i(sa_valid_rows),
-        .col_num_i(sa_valid_columns),
-        .cutbit(sa_cutbit),
-        .shift_ctl_i(sa_shift_ctl),
-        .data_active_left(sa_activation_physical),
-        .in_weight_above(sa_weight_physical),
-        .in_bias_above(sa_bias_physical),
-        .out_sum_final_q(output_slots),
-        .row_score_valid(row_score_valid),
-        .row_seq_o(row_sequence),
-        .storage_ready(storage_ready),
-        .pe_finish_o(pe_finish),
-        .cal_finish(cal_finish)
+        .start(sa_ins_valid),
+        .start_ready(array_start_ready),
+        .cfg_k(sa_calc_cycles),
+        .cfg_rows(sa_valid_rows),
+        .cfg_cols(sa_valid_columns),
+        .cfg_cutbit(sa_cutbit),
+        .cfg_bias(sa_biases),
+        .input_valid(sa_input_valid),
+        .input_ready(array_input_ready),
+        .activation_data(sa_activations),
+        .weight_data(sa_weights),
+        .output_valid(array_output_valid),
+        .output_ready(output_grant),
+        .output_row(array_output_row),
+        .output_data(array_output_data),
+        .busy(array_busy),
+        .done(array_done),
+        .debug_state(array_debug_state),
+        .debug_mac_commit_mask(array_debug_mac_commit_mask),
+        .debug_add_commit_mask(array_debug_add_commit_mask),
+        .debug_activation_packed(array_debug_activations),
+        .debug_weight_packed(array_debug_weights),
+        .debug_acc_packed(array_debug_accumulators)
     );
 
     always_comb begin
@@ -254,34 +257,21 @@ module im2col_mikui_sau_pipeline #(
 
         sa_ins_valid = state_q == P_LAUNCH_SA;
         sa_input_valid = state_q == P_STREAM_K;
-        sa_en = sa_input_valid;
         sa_calc_cycles = k_q[10:0];
         sa_valid_rows = collect_q == 0 ? 5'd0 :
             mask_population(tile_mask[0]);
         sa_valid_columns = cfg_out_channels[4:0];
         sa_cutbit = cfg_cutbit;
-        sa_calmode = 2'b01;
-        sa_flowmode = 2'b00;
-        sa_register_mode = 2'b00;
-        sa_shift_mode = 1'b0;
-        sa_shift_ctl = 1'b0;
 
         sa_activations = '0;
         sa_weights = '0;
         sa_biases = '0;
-        sa_activation_physical = '0;
-        sa_weight_physical = '0;
-        sa_bias_physical = '0;
         sa_row_mask = '0;
         sa_column_mask = '0;
         for (int column = 0; column < COLS; column++) begin
             if (column < cfg_out_channels) begin
-                sa_bias_physical[column*16 +: 16] =
+                sa_biases[column*16 +: 16] =
                     bias_value(cfg_bias_zero, column);
-                if (sa_ins_valid) begin
-                    sa_biases[column*16 +: 16] =
-                        bias_value(cfg_bias_zero, column);
-                end
             end
         end
         if (sa_input_valid) begin
@@ -289,30 +279,42 @@ module im2col_mikui_sau_pipeline #(
             sa_row_mask = tile_mask[0];
             sa_column_mask = cfg_out_channels == 16 ? 16'hffff :
                 (16'h0001 << cfg_out_channels) - 1'b1;
-            for (int row = 0; row < ROWS; row++) begin
-                sa_activation_physical[(ROWS-1-row)*8 +: 8] =
-                    tile_data[stream_q][row*8 +: 8];
-            end
             for (int column = 0; column < COLS; column++) begin
                 if (column < cfg_out_channels) begin
                     sa_weights[column*8 +: 8] = weight_value(
                         cfg_weight_generator, column, stream_q / 9,
                         (stream_q % 9) / 3, stream_q % 3);
-                    sa_weight_physical[column*8 +: 8] =
-                        sa_weights[column*8 +: 8];
                 end
             end
         end
 
-        output_request =
-            (state_q == P_WAIT_RESULT || state_q == P_DRAIN_OUTPUT) &&
-            !output_sequence_started_q && storage_ready;
-        sa_internal_valid = sa_dut.valid_o;
-        sa_output_counter = sa_dut.cnt_o;
-        sa_os_valid = sa_dut.OS_valid;
+        output_request = array_output_valid;
+        sa_internal_valid = array_output_valid && output_grant;
+        sa_output_counter = array_output_row[3:0];
+        sa_os_valid = array_output_valid ?
+            (16'h0001 << array_output_row) : 16'h0000;
+        output_slots = array_output_data;
+        row_score_valid = array_output_valid && output_grant;
+        row_sequence = row_score_valid ? array_output_row : 5'd0;
+        storage_ready = array_output_valid;
+        pe_finish = array_output_valid && array_output_row == 0;
+        cal_finish = array_done;
+        sa_datain_count = stream_q[10:0];
+        pe_valid_mask = array_debug_mac_commit_mask;
+        pe_mac_commit_mask = array_debug_mac_commit_mask;
+        pe_add_commit_mask = array_debug_add_commit_mask;
+        pe_activations = array_debug_activations;
+        pe_weights = array_debug_weights;
+        pe_accumulators = '0;
+        for (int pe = 0; pe < ROWS * COLS; pe++) begin
+            if (array_debug_mac_commit_mask[pe] ||
+                array_debug_add_commit_mask[pe])
+                pe_accumulators[pe*OUTPUT_W +: OUTPUT_W] =
+                    array_debug_accumulators[pe*OUTPUT_W +: OUTPUT_W];
+        end
         drained = state_q == P_DONE && im2col_done_seen_q &&
             im2col_dut.fifo_count == 0 && collect_q == 0 &&
-            sa_dut.sa_cur_state == 0 &&
+            !array_busy &&
             completed_tiles_q == cfg_expected_tiles;
     end
 
@@ -322,7 +324,6 @@ module im2col_mikui_sau_pipeline #(
             collect_q <= 0;
             stream_q <= 0;
             completed_tiles_q <= 0;
-            output_sequence_started_q <= 1'b0;
             im2col_done_seen_q <= 1'b0;
             row_ready_mask <= '0;
             for (int index = 0; index < MAX_K; index++) begin
@@ -332,11 +333,8 @@ module im2col_mikui_sau_pipeline #(
         end else begin
             if (im2col_done)
                 im2col_done_seen_q <= 1'b1;
-            row_ready_mask <= row_ready_mask | sa_dut.OS_valid;
-            if (sa_dut.valid_o)
-                output_sequence_started_q <= 1'b1;
+            row_ready_mask <= row_ready_mask | sa_os_valid;
             if (cal_finish) begin
-                output_sequence_started_q <= 1'b0;
                 row_ready_mask <= '0;
             end
 
@@ -369,7 +367,7 @@ module im2col_mikui_sau_pipeline #(
                         state_q <= P_WAIT_RESULT;
                 end
                 P_WAIT_RESULT: begin
-                    if (sa_dut.valid_o)
+                    if (array_output_valid)
                         state_q <= P_DRAIN_OUTPUT;
                 end
                 P_DRAIN_OUTPUT: begin
@@ -393,28 +391,4 @@ module im2col_mikui_sau_pipeline #(
         end
     end
 
-    generate
-        for (genvar row = 0; row < ROWS; row++) begin : OBS_ROW
-            for (genvar column = 0; column < COLS; column++) begin : OBS_COL
-                localparam int PE_INDEX = row * COLS + column;
-                wire pe_mac_valid = sa_dut.PE_row[row].PE_row_unit
-                    .PE_COL[column].PE_unit.mac_en[1];
-                wire pe_add_valid = sa_dut.PE_row[row].PE_row_unit
-                    .PE_COL[column].PE_unit.add_state_valid;
-                assign pe_valid_mask[PE_INDEX] = pe_mac_valid;
-                assign pe_mac_commit_mask[PE_INDEX] = pe_mac_valid;
-                assign pe_add_commit_mask[PE_INDEX] = pe_add_valid;
-                assign pe_activations[PE_INDEX*8 +: 8] = pe_mac_valid ?
-                    sa_dut.PE_row[row].PE_row_unit.PE_COL[column]
-                        .PE_unit.data_active_right_r : 8'h00;
-                assign pe_weights[PE_INDEX*8 +: 8] = pe_mac_valid ?
-                    sa_dut.PE_row[row].PE_row_unit.PE_COL[column]
-                        .PE_unit.data_weight_below_r : 8'h00;
-                assign pe_accumulators[PE_INDEX*24 +: 24] =
-                    (pe_mac_valid || pe_add_valid) ?
-                    sa_dut.PE_row[row].PE_row_unit.PE_COL[column]
-                        .PE_unit.data_out_sum_tmp : 24'h000000;
-            end
-        end
-    endgenerate
 endmodule

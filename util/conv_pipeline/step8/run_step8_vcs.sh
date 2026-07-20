@@ -11,7 +11,7 @@ usage() {
     printf '%s\n' \
         "Usage: $0 --outdir PATH [--vcs PATH] [--dry-run]" \
         "" \
-        "Runs legacy Im2Col, two SA saturation cases, and seven pipelines."
+        "Runs legacy Im2Col, six project-array cases, and seven pipelines."
 }
 
 while (($#)); do
@@ -77,7 +77,7 @@ run_command python3 util/conv_pipeline/step8/verify_step8_sources.py
 
 step8_legacy_simv="${step8_outdir}/legacy/simv"
 run_command "${step8_vcs}" \
-    -full64 -sverilog -timescale=1ns/1ps \
+    -full64 -sverilog -timescale=1ns/1ps -debug_access+all \
     -top tb_gemmini_im2col_chw_gather_readable \
     src/sau_n/rtl/gemmini_im2col_chw_gather_readable.sv \
     src/sau_n/rtl/tb_gemmini_im2col_chw_gather_readable.sv \
@@ -89,21 +89,26 @@ run_command "${step8_legacy_simv}" -l "${step8_outdir}/legacy/run.log"
 step8_sa_simv="${step8_outdir}/standalone/simv"
 run_command "${step8_vcs}" \
     -full64 -sverilog -timescale=1ns/1ps \
-    -top tb_mikui_sau_engine_step0 \
-    -f src/sau_n/rtl/mikui/filelists/integration.f \
+    -top tb_sau_array_16x16 \
+    -f src/sau_n/rtl/sau_array_16x16.f \
     -Mdir="${step8_outdir}/standalone/csrc" \
     -o "${step8_sa_simv}" \
     -l "${step8_outdir}/standalone/compile.log"
-for step8_case in sat_pos_k567 sat_neg_k567; do
+for step8_case in \
+    tail_r1_c1_k9 \
+    tail_r15_c15_k9 \
+    full_r16_c16_k9 \
+    backpressure_r3_c3_k9 \
+    sat_pos_r1_c1_k567 \
+    sat_neg_r1_c1_k567; do
     run_command "${step8_sa_simv}" \
         "+CASE=${step8_case}" \
-        +EXPECT_PATCHED=1 \
         "+TRACE=${step8_outdir}/standalone/${step8_case}.csv" \
         -l "${step8_outdir}/standalone/${step8_case}.log"
-    run_command python3 util/conv_pipeline/step0/verify_step0_trace.py \
+    run_command python3 \
+        util/conv_pipeline/array/verify_sau_array_trace.py \
         --trace "${step8_outdir}/standalone/${step8_case}.csv" \
-        --case "${step8_case}" \
-        --variant integration
+        --case "${step8_case}"
 done
 
 step8_pipeline_simv="${step8_outdir}/pipeline/simv"

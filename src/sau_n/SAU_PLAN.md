@@ -1,8 +1,51 @@
-# Gem5 Im2Col -> Mikui SAU 标准卷积周期模型计划
+# Gem5 Im2Col -> 16x16 SA 标准卷积周期模型计划
+
+> 2026-07-20 架构修订：本文早期章节记录了以 Mikui `SA_ENGINE` 为目标的历史计划；
+> 最终冻结对象已经改为项目自有 `sau_array_16x16.sv` 与 Im2Col 的融合 RTL。
+> 当前有效边界和验收结论以 `SAU_FREEZE_SCOPE.md`、
+> `FUSED_RTL_VALIDATION_20260720.json` 和 `STATUS.md` 的 2026-07-20 更新为准。
+> Mikui 源码仅保留作来源证据，不再属于融合 pipeline 的综合层次。
+
+## 0. 当前有效执行计划（2026-07-20）
+
+本节覆盖本文后续所有以 Mikui `SA_ENGINE` 为黄金对象的历史实施描述。历史章节继续
+保留，用于解释需求演进、旧模型来源和为什么调整冻结边界，但不再指导当前实现。
+
+当前冻结数据流为：
+
+```text
+NCHW activation
+  -> gemmini_im2col_chw_gather_readable
+  -> single-tile activation buffer
+  -> deterministic weight/bias provider
+  -> project-owned sau_array_16x16
+  -> same-cycle valid/grant output collector
+  -> NCHW output
+```
+
+当前工作分为四项：
+
+1. **融合 RTL 验收（已完成）**：VCS 运行 Im2Col legacy、六项独立阵列和七项融合
+   profile；最终输出匹配独立 Python oracle，并验证每个有效 PE 恰好 K 次 MAC 和
+   一次 bias commit。
+2. **新 gem5 分支迁移（已完成）**：在 `feature/sau-command-types` 的
+   `b9fbc18c20f3` 基线上导入项目自有阵列、融合 wrapper、工具和 provenance；旧
+   Mikui 层次不进入 pipeline filelist。
+3. **周期模型校准与构建（已完成）**：按 VCS trace 更新 SA 状态、MAC skew、固定
+   drain、输出握手、`pe_finish`、`row_ready_mask` 和 `cal_finish`；已经成功生成
+   `build/RISCV/gem5.opt`。
+4. **最终严格验收（已完成）**：七项 gem5 quick test 已将 gem5 生成的 53 字段
+   trace 和 NCHW output 与融合 RTL golden 严格比较，合计 7,772 个 cycle 无差异。
+
+当前验证结论为：
+
+```text
+Im2Col-to-project-owned-16x16-SA gem5/RTL per-cycle validation passed.
+```
 
 ## 1. 目标
 
-在已经通过 RTL 逐拍验收的 `Im2ColModel` 下游建立 Mikui 16x16 SAU
+在已经通过 RTL 逐拍验收的 `Im2ColModel` 下游建立项目自有 16x16 SA
 周期模型，形成一个独立的标准卷积 pipeline：
 
 ```text
@@ -10,7 +53,7 @@ NCHW activation
   -> Im2Col
   -> single-tile activation buffer
   -> deterministic weight/bias provider
-  -> Mikui 16x16 SA_ENGINE cycle model
+  -> project-owned sau_array_16x16 cycle model
   -> quantized output collector
   -> NCHW output
 ```
@@ -25,26 +68,17 @@ NCHW activation
 不得读取 golden trace 驱动模型，不得保存 fixture 对应的魔法周期表，也不得通过
 调整期望结果迁就实现。
 
-在 RTL trace 尚未返回前，最多只能声明：
-
-```text
-SAU pipeline implementation complete, RTL validation pending
-```
-
-只有全部冻结 golden profile 逐拍通过后才能声明：
+融合 RTL trace 已返回并完成来源、功能和 oracle 验收；全部冻结 golden profile
+也已与 gem5 逐拍通过，当前可以声明：
 
 ```text
 Im2Col-to-SAU RTL per-cycle validation passed
 ```
 
-RTL 仿真结果是最终逐拍验收依据，不是开始建模的前置输入。Step 0 本地完成来源、补丁、
-testbench和候选周期契约冻结后，即使暂时拿不到 VCS 结果，也允许继续 Step 1 至 Step 7。
-模型必须直接根据 RTL 源码的组合逻辑、寄存器、nonblocking assignment和流水结构实现，
-不得等待或读取 golden trace 来决定行为。尚未由 RTL 仿真确认的首输入、MAC commit、
-bias、首输出、反压和 `cal_finish` 周期锚点必须标记为 provisional，并用 directed contract
-test固定当前源码推导。VCS 结果返回后先校准这些锚点；若有差异，只能修订受影响的周期
-契约、模型和测试并重新回归，不能调整 RTL golden 迁就模型。Step 8 golden导入和最终
-`RTL per-cycle validation passed`声明仍必须等待 VCS 验收。
+模型必须直接根据 RTL 源码的组合逻辑、寄存器、nonblocking assignment 和流水结构
+实现，不得读取 golden trace 驱动执行，也不得保存 fixture 对应的魔法周期表。VCS
+trace 只用于校准通用周期契约和最终逐拍比较；发现差异时只能修订模型或明确 RTL 问题，
+不能调整 golden 迁就模型。
 
 ## 2. RTL 来源和黄金边界
 
@@ -952,16 +986,16 @@ m5out/conv_pipeline/provenance/src_sau_baseline/*  # 本地只读证据，不纳
 验收：纯 C++单元测试与独立数值向量一致，不依赖 RTL trace；K567正负 profile逐次
 检查首次饱和拍和后续保持行为。
 
-### Step 4：SA周期状态和256 PE阵列
+### Step 4：SA周期状态和256 PE阵列（已按新阵列重做）
 
-- 逐拍复刻 SA_ENGINE/SA_ROW/SA_PE old-state/next-state行为；
-- 实现 input/weight skew、valid传播、MAC delay、acc finish和row output；
-- 复刻 patched `row_num_i/col_num_i`、第 8.4 节完整控制协议、output grant和内部
-  停顿；
+- 逐拍复刻 `sau_array_16x16` 的 `IDLE/STREAM/DRAIN/BIAS/OUTPUT` 状态；
+- 实现 input/weight skew、`2 + row + column` MAC commit、固定 drain、全阵列 bias 和
+  row output；
+- 实现 `validRows/validColumns` tail、output grant停顿和同拍输出握手；
 - 暴露 canonical packed PE snapshot。
 
 验收：standalone SA directed cycle tests覆盖 K=9、K=567、row/col tail和backpressure；
-VCS返回前周期锚点状态为provisional，不能声称RTL逐拍通过。
+六项项目自有阵列 VCS/oracle 验收已经通过，周期锚点不再是 provisional。
 
 ### Step 5：单 tile buffer和端到端 pipeline
 
@@ -981,11 +1015,10 @@ VCS返回前周期锚点状态为provisional，不能声称RTL逐拍通过。
 - 支持默认/周期性 output ready；
 - 保持 `Im2ColTiming` standalone不变。
 
-构建由用户手动执行：
+构建已由用户手动执行成功：
 
 ```bash
-scons build/RISCV/gem5.opt -j4 \
-    --ignore-style --limit-ld-memory-usage
+scons build/RISCV/gem5.opt -j"$(nproc)" --ignore-style
 ```
 
 验收：最小 fixture通过标准 gem5 exit event drained，统计守恒。
@@ -999,19 +1032,17 @@ scons build/RISCV/gem5.opt -j4 \
 
 验收：合法 trace可 round-trip，所有错误格式被拒绝。
 
-### Step 8：RTL wrapper、工作站包和golden导入
+### Step 8：RTL wrapper、工作站包和golden导入（RTL侧已完成）
 
-- 完成 patched integration wrapper/testbench和fixture runner；
-- 先通过 legacy Im2Col回归和 SA baseline；
-- 生成7个端到端profile及2个standalone饱和profile的工作站包；
+- 完成项目自有阵列 integration wrapper/testbench和fixture runner；
+- 通过 legacy Im2Col、六项独立阵列和七项融合 pipeline VCS 回归；
 - 校验返回 source/config/simulator manifest；
-- 分别验证 RTL output与Python oracle；
-- 对7个profile执行 gem5/RTL strict per-cycle comparison；
-- 对2个standalone profile执行C++ SA/RTL accumulator strict per-cycle comparison；
-- 导入 validated golden和testlib quick tests。
+- 验证 RTL output与Python oracle以及每 tile/PE commit次数；
+- 导入七项 validated golden和testlib quick tests；
+- 七项 gem5/RTL strict per-cycle comparison 全部通过，共比较 7,772 个 cycle。
 
-验收：7个端到端profile完成gem5/RTL逐拍比较，2个standalone profile完成C++ SA/RTL
-accumulator逐拍比较，才能声明 RTL per-cycle validation passed。
+验收：六项 standalone 阵列 VCS 验收和七个端到端 profile 的 gem5/RTL 逐拍比较
+均已通过，可以声明融合 pipeline 的 RTL per-cycle validation passed。
 
 ### Step 9：文档和最终验收
 
@@ -1030,17 +1061,17 @@ accumulator逐拍比较，才能声明 RTL per-cycle validation passed。
 1. 原 Im2Col standalone Python、C++、gem5和7-profile RTL golden回归继续通过；
 2. SA和pipeline Python/C++单元测试通过；
 3. Python convolution oracle验证所有最终 NCHW output；
-4. Mikui `original/` 与 `2ca8252` 逐字节一致；integration variant只包含已记录的
-   `FINISH_ROW/FINISH_COL` 位宽补丁；
+4. 项目自有 `sau_array_16x16.sv` 的来源、SHA256 和冻结范围记录完整，pipeline
+   filelist 不包含 Mikui `SA_ENGINE/SA_ROW`；
 5. integration wrapper的7个 RTL profile全部运行通过；
-6. 7个端到端profile的gem5/RTL逐拍、逐字段一致，2个standalone profile的C++
-   SA/RTL accumulator逐拍一致；
+6. 7个端到端profile的gem5/RTL逐拍、逐字段一致，6个standalone阵列profile通过
+   VCS/oracle验收；
 7. 256个PE的valid activation/weight/accumulator逐拍一致；
 8. output数据、数量、顺序和done/drained守恒；
 9. 默认和output backpressure场景均通过；
 10. README、运行命令、限制和RTL provenance完整；
 11. `src/sau/` 最终路径/mode/size/SHA256和git状态与Pre-Step 0基线逐项一致；
-12. 最终声明严格限定为 Im2Col -> Mikui SAU INT8 3x3标准卷积周期模型；
+12. 最终声明严格限定为 Im2Col -> project-owned 16x16 SA INT8 3x3标准卷积周期模型；
 13. 两个K567 standalone profile分别证明24-bit正、负逐次饱和的首次发生拍及后续
     行为与RTL一致。
 

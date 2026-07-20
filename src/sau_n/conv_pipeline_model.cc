@@ -83,11 +83,6 @@ ConvPipelineModel::saInputsForState(PipelineState oldState) const
             inputs.weights[column] = weightValue(
                 resolved.weightGenerator, column, channel, kh, kw);
         }
-    } else if (
-        (oldState == PipelineState::WaitResult ||
-         oldState == PipelineState::DrainOutput) &&
-        !outputSequenceStarted && previousSau.storageReady) {
-        inputs.outputRequest = true;
     }
     return inputs;
 }
@@ -181,7 +176,6 @@ ConvPipelineModel::completeTile()
     collectK = 0;
     streamK = 0;
     tileOutputRows = 0;
-    outputSequenceStarted = false;
 }
 
 void
@@ -256,6 +250,9 @@ ConvPipelineModel::tick()
     observation.saInputValid = saInputs.inputValid;
     observation.sauInputs = saInputs;
     observation.sau = sauModel.tick(saInputs);
+    // The fused wrapper exposes the array's output-valid as output_request.
+    // This is observational only; output acceptance is controlled by grant.
+    observation.sauInputs.outputRequest = observation.sau.storageReady;
     if (saInputs.inputValid) {
         counters.engineInputCycles = checkedAdd(
             counters.engineInputCycles, 1, "SA engine input cycle count");
@@ -292,13 +289,10 @@ ConvPipelineModel::tick()
     if ((oldState == PipelineState::WaitResult ||
          oldState == PipelineState::DrainOutput) &&
         !observation.outputReady &&
-        (saInputs.outputRequest || outputSequenceStarted)) {
+        observation.sau.storageReady) {
         counters.outputBackpressureCycles = checkedAdd(
             counters.outputBackpressureCycles, 1,
             "output backpressure cycle count");
-    }
-    if (observation.sau.engineOutputFire) {
-        outputSequenceStarted = true;
     }
     observation.outputCollected = observation.sau.rowScoreValid;
     collectOutput(observation.sau);
@@ -328,7 +322,7 @@ ConvPipelineModel::tick()
         }
         break;
       case PipelineState::WaitResult:
-        if (observation.sau.engineOutputFire) {
+        if (observation.sau.storageReady) {
             nextState = PipelineState::DrainOutput;
         }
         break;
@@ -371,7 +365,6 @@ ConvPipelineModel::tick()
     }
 
     pipelineState = nextState;
-    previousSau = observation.sau;
     checkInvariants();
     cycleNumber = checkedAdd(cycleNumber, 1, "pipeline model cycle");
     return observation;

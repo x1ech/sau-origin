@@ -1,11 +1,4 @@
-+incdir+src/sau_n/rtl/mikui/original
-src/sau_n/rtl/mikui/original/SA_pkg.sv
-src/sau_n/rtl/mikui/original/DW02_mult_2_stage.v
-src/sau_n/rtl/mikui/original/active_delay.v
-src/sau_n/rtl/mikui/original/weight_delay.v
-src/sau_n/rtl/mikui/original/SA_PE.sv
-src/sau_n/rtl/mikui/original/SA_ROW.sv
-src/sau_n/rtl/mikui/integration/SA_ENGINE.sv
 src/sau_n/rtl/gemmini_im2col_chw_gather_readable.sv
+src/sau_n/rtl/sau_array_16x16.sv
 src/sau_n/rtl/im2col_mikui_sau_pipeline.sv
 src/sau_n/rtl/tb_im2col_mikui_sau_pipeline.sv

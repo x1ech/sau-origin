@@ -89,7 +89,6 @@ class ConvPipelineModel
     Im2ColModel im2colModel;
     SauTileBuffer tileBuffer;
     SauCycleModel sauModel;
-    SauCycleObservation previousSau{};
     PipelineState pipelineState = PipelineState::CollectTile;
     ConvPipelineModelStats counters;
     std::vector<int8_t> collectedOutputs;
@@ -97,7 +96,6 @@ class ConvPipelineModel
     uint64_t collectK = 0;
     uint64_t streamK = 0;
     uint64_t tileOutputRows = 0;
-    bool outputSequenceStarted = false;
     uint64_t cycleNumber = 0;
     std::optional<uint64_t> im2colDoneAt;
     std::optional<uint64_t> sauLastResultAt;
