@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "04_c3_w17_oc7_dil2",
+  "im2col": {
+    "schema_version": 1,
+    "name": "04_c3_w17_oc7_dil2_im2col",
+    "n": 1,
+    "c": 3,
+    "h": 5,
+    "w": 17,
+    "kernel_h": 3,
+    "kernel_w": 3,
+    "stride_h": 1,
+    "stride_w": 1,
+    "dilation_h": 2,
+    "dilation_w": 2,
+    "pad_top": 2,
+    "pad_left": 2,
+    "spad_base": 0,
+    "input_generator": "tb_act_value_v1"
+  },
+  "out_channels": 7,
+  "cutbit": 4,
+  "weight_generator": "tb_weight_value_v1",
+  "bias_generator": "tb_bias_value_v1"
+}

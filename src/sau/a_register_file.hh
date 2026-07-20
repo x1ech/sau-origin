@@ -16,7 +16,8 @@ namespace gem5::sau
 class ARegisterFileIn
 {
   public:
-    explicit ARegisterFileIn(const SauCommand &command);
+    explicit ARegisterFileIn(const SauCommand &command,
+                             uint32_t totalArrayInputs = 0);
 
     void load(const Beat &beat);
 
@@ -34,6 +35,7 @@ class ARegisterFileIn
     void checkInstruction(uint32_t instruction) const;
 
     const SauCommand command;
+    const uint32_t arrayInputs;
     std::vector<bool> loaded;
 };
 

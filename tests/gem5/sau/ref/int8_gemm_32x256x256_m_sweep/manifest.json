@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "fixture_name": "int8_gemm_32x256x256_m_sweep",
+  "fixture_role": "coverage",
+  "sweep_dimension": "M (32 vs baseline 64), K=256 N=256 held constant",
+  "precision": "int8",
+  "operation": "GEMM",
+  "matrix": {
+    "m": 32,
+    "k": 256,
+    "n": 256
+  },
+  "trans_mode": "0x1",
+  "reuse_mode": "0x1",
+  "command_count": 1,
+  "flow_loop_times": 8,
+  "cutbit": 13,
+  "sa_rows": 32,
+  "sa_cols": 32,
+  "sram_data_bits": 256,
+  "beat_bytes": 32,
+  "elaboration_params": {
+    "SA_SIZE": 32,
+    "ROW_NUM": 32,
+    "COL_NUM": 32,
+    "REGDEPTH": 256,
+    "SRAM_DELAY": 3,
+    "ADDR_DELAY": 2,
+    "SRAM_DATA_WIDTH": 256,
+    "clock_period_ns": 1.666
+  },
+  "reset_length_ns": 100,
+  "csr_start_cycle": 28914,
+  "core_start_cycle": 28914,
+  "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
+  "npu_worktree_diff_sha256": "56c3abd94c9677886b604ccb6da9feaeb67941649163f0e0e3365ef2a082e6b3",
+  "simulator": "VCS",
+  "simulator_version": "VCS T-2022.06_Full64",
+  "run_command": "make -C sim/vcs/script/case_yinglong sim FIRMWARE_DIR=software/benchmarks/yinglong_sau_test/build",
+  "testcase_dir": "/home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test/build",
+  "testcase_sha256": {
+    "instruction.hex": "80dfb95553a13733940f3754acde598d9a396cb5190e2922e14d76c90b7172ed",
+    "memory.hex": "41a6f3d202b20e0b9e73d655e92f25798b6706a9f46336f3c16d8e43c629c952",
+    "memory_mod_0.hex": "ed23225668aedf1f5a7c2121aec283e0a61db3c373d7fbc0c52c2a5c3cf335d6",
+    "memory_mod_1.hex": "e53848f4dc1060cae1cae6d868018580c37842edb83abea8ccbcf3d51dd0feae",
+    "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+  },
+  "architecture_row_count": 9223,
+  "diagnostic_row_count": 2813,
+  "csr_write_count": 7,
+  "fsdb_path": "sim/vcs/build/yinglong/yinglong.fsdb",
+  "artifacts_sha256": {
+    "csr_writes.csv": "cc2373c6b4ecb28d939684e6eae6fb7ed1161b726e90cec49ba344a5073e9159",
+    "csr_snapshot.json": "557c8cc4106d94710dfe1c9bdb6b4c44f1808897b72941306fb471c1caccfaf4",
+    "architecture.csv": "146baa126bf21a59f8164cbfd36db3482fee8ee621c972b1017f15824a9fbaf0",
+    "diagnostic.csv": "fc9737365f335fb7e473f016bce788535dd3cc06608c9755edc77a403aa51a68",
+    "manifest.json": "f552b0a4c6679b68d9d4d9900174317801f9f67f6e38aca1f395aabce1693720"
+  }
+}

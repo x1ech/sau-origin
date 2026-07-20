@@ -16,7 +16,9 @@ class SauModel(ClockedObject):
     write_issue_width = Param.Unsigned(1, "Maximum accepted writes per cycle")
     max_outstanding_reads = Param.Unsigned(4, "Read response slots")
     max_outstanding_writes = Param.Unsigned(4, "Write response slots")
-    input_buffer_entries = Param.Unsigned(8, "Returned operand token slots")
+    input_buffer_entries = Param.Unsigned(
+        8, "Non-strict returned plus in-flight Operand-B token slots"
+    )
     output_buffer_entries = Param.Unsigned(256, "Result token slots")
     array_fill_cycles = Param.Cycles(343, "Calibrated fill latency")
     array_ii_cycles = Param.Cycles(1, "Array initiation interval")
@@ -55,7 +57,27 @@ class SauModel(ClockedObject):
         False, "Use local fixed-cadence memory for RTL timing calibration"
     )
     calibration_read_latency_cycles = Param.Cycles(
-        4, "Fixed read accepted-to-visible latency in calibration-memory mode"
+        4, "Non-strict fixed-memory read latency override"
+    )
+    csr_fixture = Param.String(
+        "", "Directory containing an RTL csr_writes.csv fixture"
+    )
+    strict_timing = Param.Bool(
+        False, "Derive timing only from the CSR fixture and named RTL parameters"
+    )
+    rtl_sa_size = Param.Unsigned(32, "RTL scheduler SA_SIZE")
+    rtl_register_depth = Param.Unsigned(256, "RTL register-file depth")
+    rtl_sram_delay = Param.Unsigned(3, "RTL SA_CORE SRAM_DELAY")
+    rtl_sram_data_width = Param.Unsigned(256, "RTL SRAM_DATA_WIDTH in bits")
+    rtl_mem_address_delay = Param.Unsigned(2, "RTL SA_CORE ADDR_DELAY")
+    rtl_memctrl_delay = Param.Unsigned(2, "RTL feeder MEMCTRL_DELAY")
+    rtl_register_file_address_delay = Param.Unsigned(
+        1, "RTL register_file_in ADDR_DELAY"
+    )
+    rtl_register_delay = Param.Unsigned(2, "RTL feeder REGISTER_DELAY")
+    timing_ledger_file = Param.String("", "Per-command timing derivation CSV")
+    state_trace_file = Param.String(
+        "", "Independent semantic-state debug trace CSV"
     )
     trace_file = Param.String("", "CSV timing trace path")
     exit_on_done = Param.Bool(

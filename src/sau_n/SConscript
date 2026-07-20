@@ -1,6 +1,7 @@
 Import("*")
 
 SimObject("Im2Col.py", sim_objects=["Im2ColTiming"])
+SimObject("ConvPipeline.py", sim_objects=["ConvPipelineTiming"])
 
 Source("im2col_types.cc")
 Source("im2col_address.cc")
@@ -8,6 +9,13 @@ Source("banked_scratchpad.cc")
 Source("im2col_model.cc")
 Source("im2col_trace.cc")
 Source("im2col_timing.cc")
+Source("sau_types.cc")
+Source("sau_generators.cc")
+Source("sau_model.cc")
+Source("sau_tile_buffer.cc")
+Source("conv_pipeline_model.cc")
+Source("conv_pipeline_io.cc")
+Source("conv_pipeline_timing.cc")
 
 GTest("im2col_types.test", "im2col_types.test.cc", "im2col_types.cc")
 GTest(
@@ -38,5 +46,57 @@ GTest(
     "im2col_model.cc",
     "banked_scratchpad.cc",
     "im2col_address.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "sau_types.test",
+    "sau_types.test.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "sau_generators.test",
+    "sau_generators.test.cc",
+    "sau_generators.cc",
+)
+GTest(
+    "sau_model.test",
+    "sau_model.test.cc",
+    "sau_model.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "sau_cycle_model.test",
+    "sau_cycle_model.test.cc",
+    "sau_model.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "sau_tile_buffer.test",
+    "sau_tile_buffer.test.cc",
+    "sau_tile_buffer.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "conv_pipeline_model.test",
+    "conv_pipeline_model.test.cc",
+    "conv_pipeline_model.cc",
+    "sau_tile_buffer.cc",
+    "sau_model.cc",
+    "sau_generators.cc",
+    "sau_types.cc",
+    "im2col_model.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "conv_pipeline_io.test",
+    "conv_pipeline_io.test.cc",
+    "conv_pipeline_io.cc",
+    "sau_types.cc",
     "im2col_types.cc",
 )

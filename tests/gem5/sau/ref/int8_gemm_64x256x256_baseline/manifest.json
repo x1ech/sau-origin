@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "fixture_name": "int8_gemm_64x256x256_baseline",
+  "fixture_role": "coverage",
+  "sweep_dimension": null,
+  "precision": "int8",
+  "operation": "GEMM",
+  "matrix": {
+    "m": 64,
+    "k": 256,
+    "n": 256
+  },
+  "trans_mode": "0x1",
+  "reuse_mode": "0x1",
+  "command_count": 2,
+  "flow_loop_times": 8,
+  "cutbit": 13,
+  "sa_rows": 32,
+  "sa_cols": 32,
+  "sram_data_bits": 256,
+  "beat_bytes": 32,
+  "elaboration_params": {
+    "SA_SIZE": 32,
+    "ROW_NUM": 32,
+    "COL_NUM": 32,
+    "REGDEPTH": 256,
+    "SRAM_DELAY": 3,
+    "ADDR_DELAY": 2,
+    "SRAM_DATA_WIDTH": 256,
+    "clock_period_ns": 1.666
+  },
+  "reset_length_ns": 100,
+  "command_start_cycles": [
+    28914,
+    32005
+  ],
+  "command_start_rows": [
+    1,
+    8
+  ],
+  "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
+  "npu_worktree_diff_sha256": "f2c7ac14e23e03848385743017a087e2648fb156f11c2ae684d24e2ad1b8eccc",
+  "simulator": "VCS",
+  "simulator_version": "VCS T-2022.06_Full64",
+  "run_command": "make -C sim/vcs/script/case_yinglong verdi FIRMWARE_DIR=software/benchmarks/yinglong_sau_test/build",
+  "fsdb_path": "sim/vcs/build/yinglong/yinglong.fsdb",
+  "testcase_dir": "/home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test/build",
+  "testcase_sha256": {
+    "instruction.hex": "1e3e8808ec69610a6241e1d525b8f4ef873da5e8509c3729a402850cfc1266c9",
+    "memory.hex": "e8aadfadfbfb8bb9b5364fc77a2df8ba1989c302d66b303fcd556c1b4fa02235",
+    "memory_mod_0.hex": "b473a998f700bf1eb67df8c98eac041d887208db4ebec294571050ac5c17aa25",
+    "memory_mod_1.hex": "f909a4b0723567c7a4ef34f8286af7b727a8a9508cade55a6599b06edfc90e01",
+    "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+  },
+  "architecture_row_count": 18446,
+  "diagnostic_row_count": 5905,
+  "csr_write_count": 14,
+  "artifacts_sha256": {
+    "csr_writes.csv": "af1b5aa0574d8869ab3560b96ba8356693aa3fdd9f08a7b3a959ab454ccb9d3e",
+    "csr_snapshot.json": "98d59285b5b65277a8e1c2c0c06f5d022789981c7cf53402b1bace55e546eadd",
+    "architecture.csv": "050ba02cfeb2a40eae69cbbdbdfb929695af9de8a3c07c07a612cb77b7453852",
+    "diagnostic.csv": "6535a36fcb78692df7793b3971f243d4010be952acdfe9bba1f0a9207cae8d1f",
+    "manifest.json": "21780a85b66d811bf8cb7b978a3cef44b9d9534a8b921802d833c171005230a1"
+  }
+}

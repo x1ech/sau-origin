@@ -7,6 +7,7 @@
 
 #include "base/logging.hh"
 #include "sau/command.hh"
+#include "sau/csr_fixture.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
@@ -21,7 +22,7 @@ SauCommand
 buildStartupCommand(const SauModelParams &params)
 {
     const uint64_t work_items =
-        static_cast<uint64_t>(params.a_beats) * params.flow_loops *
+        static_cast<uint64_t>(params.b_beats) * params.flow_loops *
         params.instruction_loops;
     if (work_items > std::numeric_limits<uint32_t>::max()) {
         throw std::invalid_argument(
@@ -105,6 +106,14 @@ SauModel::SauModel(const Params &params)
       commandStartCycles(params.command_start_cycles),
       calibrationMemory(params.calibration_memory),
       calibrationReadLatencyCycles(params.calibration_read_latency_cycles),
+      strictTiming(params.strict_timing),
+      rtlTiming({params.rtl_sa_size, params.rtl_register_depth,
+                 params.rtl_sram_delay, params.rtl_sram_data_width,
+                 params.rtl_mem_address_delay,
+                 params.rtl_memctrl_delay,
+                 params.rtl_register_file_address_delay,
+                 params.rtl_register_delay}),
+      rtlStorageTiming(RtlStorageTiming::derive(rtlTiming)),
       commandCount(params.command_count),
       interCommandGapCycles(params.inter_command_gap_cycles),
       aCommandStride(params.a_command_stride),
@@ -115,6 +124,8 @@ SauModel::SauModel(const Params &params)
       outputBuffer(outputBufferEntries),
       arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
       traceWriter(params.trace_file),               // 打开 trace CSV 文件
+      timingLedger(params.timing_ledger_file),
+      stateTraceWriter(params.state_trace_file),
       startupEvent([this] { submitNextCommand(); }, name() + ".startup"),
       tickEvent([this] { tick(); }, name() + ".tick"),
       stats(this, commandCount)                     // 统计组挂靠在 SauModel 下
@@ -136,6 +147,28 @@ SauModel::SauModel(const Params &params)
     panic_if(calibrationMemory && calibrationReadLatencyCycles == Cycles(0),
              "SAU calibration-memory read latency must be nonzero");
     panic_if(commandCount == 0, "SAU synthetic command count must be nonzero");
+    panic_if(strictTiming && !calibrationMemory,
+             "strict SAU timing requires calibration_memory");
+    panic_if(strictTiming && params.csr_fixture.empty(),
+             "strict SAU timing requires a CSR fixture directory");
+    panic_if(strictTiming && beatBytes != rtlStorageTiming.beatBytes,
+             "strict SAU timing beat size differs from RTL storage contract");
+    panic_if(strictTiming &&
+                 (readIssueWidth != rtlStorageTiming.issueWidth ||
+                  writeIssueWidth != rtlStorageTiming.issueWidth),
+             "strict SAU timing requires the RTL single-issue SRAM port");
+    if (strictTiming) {
+        fixtureCommands = loadCsrFixture(params.csr_fixture, rtlTiming);
+        panic_if(fixtureCommands.size() != commandCount,
+                 "SAU CSR fixture command count does not match command_count");
+    }
+    if (!params.timing_ledger_file.empty() && !timingLedger.is_open()) {
+        throw std::runtime_error("failed to open SAU timing ledger: " +
+                                 params.timing_ledger_file);
+    }
+    if (timingLedger.is_open()) {
+        timingLedger << "command_id,term,cycles,source\n";
+    }
 }
 
 // ==================== gem5 SimObject 标准接口 ====================
@@ -169,17 +202,37 @@ SauModel::submitCommand(const SauCommand &command)
 
     // 校验并记录命令
     validateCommand(command, beatBytes);
+    // ArrayPipeline tokens account for capacity/II within one command. A
+    // reduced-output command can complete before every shadow token reaches
+    // its nominal ready cycle, so clear the previous command's epoch before
+    // configuring the next command's derived fill timing.
+    arrayPipeline.resetForCommand();
+    arrayPipeline.configure(activeArrayFillCycles(), arrayIiCycles);
     activeCommand = command;
+    scheduleState.beginCommand();
+    lastTracedScheduleState.reset();
+    lastTracedInputSwitch.clear();
+    traceScheduleState = SauScheduleState::ResidentLoad;
+    transposeCompleteCycle.reset();
+    inputSwitchVisibleCycle.reset();
+    inputSwitchResetVisibleCycle.reset();
+    traceInstructionTransitionCycle.reset();
+    traceInstructionIndex = 0;
+    projectedInputSwitch = "00";
     readGenerator.emplace(command);
-    aRegisterFile.emplace(command);
+    aRegisterFile.emplace(command, activeArrayInputABeats());
     arrayInputScheduler.emplace(
-        command.workItems, arrayInputSkewCycles, arrayInputBurstBeats,
-        arrayInputsPerFlow(), arrayInputBurstGapCycles,
-        arrayInputFlowGapCycles);
+        activeArrayInputABeats(), activeArrayInputBBeats(),
+        activeArrayInputSkewCycles(),
+        activeArrayInputBurstBeats(), arrayInputsPerInstruction(),
+        activeArrayInputBurstGapCycles(),
+        activeArrayInputFlowGapCycles(1),
+        activeArrayInputFlowGapCycles(2),
+        activeArrayInputFlowGapCycles(3));
     resultScheduler.emplace(
-        expectedOutputBeats(), outputBeatsPerFlow(), arrayFillCycles,
-        resultFlowGapCycles);
-    arrayPipeline.reset();
+        expectedOutputBeats(), outputBeatsPerInstruction(),
+        activeArrayFillCycles(),
+        activeResultFlowGapCycles());
     availableB.clear();
     visibleMemoryResponses.clear();
     nextResultIndex = 0;
@@ -209,6 +262,8 @@ SauModel::submitCommand(const SauCommand &command)
                      0, 0, phase);
     traceWriter.emit(sauCycle, EventKind::CommandAccepted, command.id, "none",
                      0, 0, phase);
+    emitTimingLedger(command);
+    emitScheduleState("command_accepted");
 
     // The feeder delay is applied by issueReads() in command-local cycles.
     // Keep the clock active so that delay itself is represented in the trace.
@@ -220,6 +275,7 @@ SauModel::submitCommand(const SauCommand &command)
 void
 SauModel::tick()
 {
+    externalRequestsIssuedThisCycle = 0;
     bool acceptedCommandThisTick = false;
     if (!activeCommand && nextCommandStartCycle &&
         Cycles(sauCycle) >= *nextCommandStartCycle) {
@@ -256,6 +312,7 @@ SauModel::tick()
     }
 
     issueReads();
+    advanceScheduleProjection();
 
     auto responses = takeVisibleReadResponses();
     for (const auto &beat : responses) {
@@ -287,7 +344,13 @@ SauModel::consumeResponses()
     for (const auto &beat : visibleMemoryResponses) {
         ++visibleReadBeats;
         if (beat.stream == StreamKind::OperandA) {
+            if (!scheduleState.canLoadResident()) {
+                panic("SAU schedule rejected an Operand-A resident load");
+            }
             aRegisterFile->load(beat);
+            if (anyResidentAReady() && !scheduleState.onResidentReady()) {
+                panic("SAU schedule rejected a resident-ready transition");
+            }
         } else if (beat.stream == StreamKind::OperandB) {
             availableB.push_back(beat);
         } else {
@@ -307,11 +370,12 @@ SauModel::advanceArray()
         arrayInputScheduler->complete()) {
         return;
     }
-    if (commandCycle() < arrayInputStartDelayCycles) {
+    if (commandCycle() < activeArrayInputStartDelayCycles()) {
         return;
     }
 
-    const bool bWanted = arrayInputScheduler->canIssueB();
+    const bool bWanted = scheduleState.canAdmitArrayB() &&
+        arrayInputScheduler->canIssueB();
     bool bProgressed = false;
     bool progressed = false;
 
@@ -323,7 +387,8 @@ SauModel::advanceArray()
         progressed = bProgressed || progressed;
     }
 
-    const bool aWanted = arrayInputScheduler->canIssueA();
+    const bool aWanted = scheduleState.canAdmitArrayA() &&
+        arrayInputScheduler->canIssueA();
     if (aWanted) {
         progressed = advanceArrayA(bProgressed) || progressed;
     }
@@ -351,6 +416,9 @@ SauModel::advanceArrayB()
     if (!arrayInputScheduler->canIssueB()) {
         return false;
     }
+    if (!scheduleState.canAdmitArrayB()) {
+        return false;
+    }
     if (availableB.empty()) {
         return false;
     }
@@ -361,6 +429,14 @@ SauModel::advanceArrayB()
     const uint32_t arrayIndex = arrayInputScheduler->issueB();
     availableB.pop_front();
     const bool lastWork = arrayIndex + 1 == activeCommand->workItems;
+    const bool flowBoundary = !lastWork &&
+        (arrayIndex + 1) % arrayInputsPerInstruction() == 0;
+    if (!scheduleState.onArrayBAdmitted(flowBoundary, lastWork)) {
+        panic("SAU schedule rejected an Operand-B array admission");
+    }
+    emitScheduleState(lastWork ? "final_b_work_accepted" :
+                      flowBoundary ? "flow_boundary" :
+                      "array_b_admitted");
 
     if (phase == Phase::OperandLoad) {
         transitionTo(Phase::ArrayActive);
@@ -398,6 +474,9 @@ SauModel::advanceArrayA(bool allowPipelineBypass)
     if (!arrayInputScheduler->canIssueA()) {
         return false;
     }
+    if (!scheduleState.canAdmitArrayA()) {
+        return false;
+    }
 
     const uint32_t arrayIndex = arrayInputScheduler->issuedA();
     if (!instructionReadyForArrayIndex(arrayIndex)) {
@@ -413,6 +492,10 @@ SauModel::advanceArrayA(bool allowPipelineBypass)
     const Beat aBeat = makeArrayABeat(arrayIndex);
     const uint32_t issuedIndex = arrayInputScheduler->issueA();
     assert(issuedIndex == arrayIndex);
+    if (!scheduleState.onArrayAAdmitted()) {
+        panic("SAU schedule rejected an Operand-A array admission");
+    }
+    emitScheduleState("array_a_admitted");
 
     if (phase == Phase::OperandLoad) {
         transitionTo(Phase::ArrayActive);
@@ -450,7 +533,7 @@ SauModel::produceResults()
     }
 
     if (!activeCommand || !resultScheduler || resultScheduler->complete() ||
-        !resultFlowReady()) {
+        !scheduleState.canReleaseResult() || !resultFlowReady()) {
         return;
     }
     resultScheduler->deferUntil(commandCycle());
@@ -466,6 +549,12 @@ SauModel::produceResults()
     const bool last = resultIndex + 1 == expectedOutputBeats();
     outputBuffer.push({activeCommand->id, resultIndex, commandCycle(), last});
     lastResultCycle = commandCycle();
+    if (last) {
+        if (!inputSwitchResetVisibleCycle) {
+            inputSwitchResetVisibleCycle = commandCycle() +
+                activeInputSwitchResetVisibleDelayCycles();
+        }
+    }
     if (!firstResultCycle) {
         firstResultCycle = commandCycle();
         stats.firstResultOffset[activeCommandIndex] =
@@ -488,7 +577,7 @@ void
 SauModel::issueWrites()
 {
     if (!activeCommand || outputBuffer.size() == 0 ||
-        memoryBlocked()) {
+        memoryBlocked() || !scheduleState.canIssueWriteback()) {
         return;
     }
     // RTL calibration keeps all output tokens until the result stream is
@@ -501,16 +590,21 @@ SauModel::issueWrites()
          resultsProduced != expectedOutputBeats()) || !lastResultCycle ||
         static_cast<uint64_t>(commandCycle()) <
             static_cast<uint64_t>(*lastResultCycle +
-                                  writebackStartDelayCycles)) {
+                                  activeWritebackStartDelayCycles())) {
         return;
     }
     if (!calibrationMemory && outstandingWrites() >= maxOutstandingWrites) {
         ++stats.stallOutstandingWriteLimit;
         return;
     }
+    if (strictTiming &&
+        externalRequestsIssuedThisCycle >= activeStorageIssueWidth()) {
+        return;
+    }
 
     unsigned issued = 0;
-    const unsigned issueLimit = calibrationMemory ? 1 : writeIssueWidth;
+    const unsigned issueLimit = strictTiming ? activeStorageIssueWidth() :
+        (calibrationMemory ? 1 : writeIssueWidth);
     while (issued < issueLimit && outputBuffer.size() > 0 &&
            (calibrationMemory || outstandingWrites() < maxOutstandingWrites) &&
            memoryCanIssue()) {
@@ -554,7 +648,7 @@ SauModel::issueReads()
     // The feeder starts after command acceptance.  This is distinct from
     // physical event scheduling: it defines the command-local trace boundary
     // between command acceptance and the first external read.
-    if (commandCycle() < commandStartCycles) {
+    if (commandCycle() < activeCommandStartCycles()) {
         return;
     }
     if (!calibrationMemory && outstandingReads() >= maxOutstandingReads) {
@@ -563,11 +657,15 @@ SauModel::issueReads()
     }
 
     unsigned issued = 0;
-    const unsigned issueLimit = calibrationMemory ? 1 : readIssueWidth;
+    const unsigned issueLimit = strictTiming ? activeStorageIssueWidth() :
+        (calibrationMemory ? 1 : readIssueWidth);
     while (issued < issueLimit && !readGenerator->empty() &&
            (calibrationMemory || outstandingReads() < maxOutstandingReads) &&
            memoryCanIssue()) {
         const Beat beat = readGenerator->front();
+        if (!scheduleState.canIssueRead(beat.stream)) {
+            break;
+        }
         if (beat.stream == StreamKind::OperandB && bReadInCooldown()) {
             break;
         }
@@ -577,8 +675,15 @@ SauModel::issueReads()
         const bool acceptedOrBlocked = calibrationMemory ?
             true : memoryPort.trySend(beat, false);
         if (calibrationMemory) {
+            const Cycles acceptedCycle = commandCycle();
+            const Cycles visibleCycle =
+                acceptedCycle + activeReadVisibleLatencyCycles();
+            panic_if(strictTiming && !calibrationReadResponses.empty() &&
+                         visibleCycle <
+                             calibrationReadResponses.back().visibleCycle,
+                     "strict SAU SRAM responses must remain ordered");
             calibrationReadResponses.push_back({
-                commandCycle() + calibrationReadLatencyCycles, beat});
+                acceptedCycle, visibleCycle, beat});
             requestAccepted(beat, false);
             if (beat.stream == StreamKind::OperandB) {
                 applyBReadCooldown();
@@ -615,10 +720,11 @@ SauModel::applyBReadCooldown()
         return;
     }
 
-    if (readAcceptedTraceB % activeCommand->operandB.beats == 0) {
-        bReadCooldownCycles = arrayInputFlowGapCycles;
-    } else if (readAcceptedTraceB % arrayInputBurstBeats == 0) {
-        bReadCooldownCycles = arrayInputBurstGapCycles;
+    if (readAcceptedTraceB % arrayInputsPerInstruction() == 0) {
+        bReadCooldownCycles = activeArrayInputFlowGapCycles(
+            readAcceptedTraceB / arrayInputsPerInstruction());
+    } else if (readAcceptedTraceB % activeArrayInputBurstBeats() == 0) {
+        bReadCooldownCycles = activeArrayInputBurstGapCycles();
     }
 }
 
@@ -632,6 +738,15 @@ SauModel::takeVisibleReadResponses()
     std::vector<Beat> responses;
     if (!calibrationReadResponses.empty() &&
         calibrationReadResponses.front().visibleCycle <= commandCycle()) {
+        const auto &response = calibrationReadResponses.front();
+        panic_if(strictTiming && response.visibleCycle != commandCycle(),
+                 "strict SAU SRAM response missed its fixed visible cycle");
+        panic_if(strictTiming &&
+                     response.visibleCycle !=
+                         response.acceptedCycle +
+                             activeReadVisibleLatencyCycles(),
+                 "strict SAU SRAM response violates accepted-to-visible "
+                 "latency");
         responses.push_back(calibrationReadResponses.front().beat);
         calibrationReadResponses.pop_front();
         responseAvailable();
@@ -672,7 +787,25 @@ SauModel::outstandingWrites() const
 bool
 SauModel::canIssueReadBeat(const Beat &beat) const
 {
-    if (beat.stream != StreamKind::OperandB || bReadStartAheadBeats == 0) {
+    if (beat.stream != StreamKind::OperandB) {
+        return true;
+    }
+
+    if (!strictTiming) {
+        // A timing-memory run can backpressure future reads. Reserve slots for
+        // both returned tokens and accepted responses which are still in
+        // flight, otherwise a delayed response burst can overflow the FIFO.
+        assert(readAcceptedTraceB >= readResponseTraceB);
+        const uint64_t pendingBResponses =
+            readAcceptedTraceB - readResponseTraceB;
+        const uint64_t reservedBSlots =
+            availableB.size() + pendingBResponses;
+        if (reservedBSlots >= activeBStagingBeats()) {
+            return false;
+        }
+    }
+
+    if (activeBReadStartAheadBeats() == 0) {
         return true;
     }
 
@@ -683,7 +816,28 @@ SauModel::canIssueReadBeat(const Beat &beat) const
     const uint32_t aPreloadBeats =
         activeCommand->operandA.beats * activeCommand->instructionLoops;
     return readResponseTraceA >= aPreloadBeats &&
-        arrayInputScheduler->issuedA() >= bReadStartAheadBeats;
+        arrayInputScheduler->issuedA() >= activeBReadStartAheadBeats();
+}
+
+Cycles
+SauModel::activeReadVisibleLatencyCycles() const
+{
+    return timingPolicy() ? timingPolicy()->storage.readVisibleLatencyCycles :
+                            calibrationReadLatencyCycles;
+}
+
+unsigned
+SauModel::activeStorageIssueWidth() const
+{
+    return timingPolicy() ? timingPolicy()->storage.issueWidth :
+                            rtlStorageTiming.issueWidth;
+}
+
+unsigned
+SauModel::activeBStagingBeats() const
+{
+    return timingPolicy() ? timingPolicy()->bStagingBeats :
+                            inputBufferEntries;
 }
 
 void
@@ -699,6 +853,9 @@ SauModel::updatePhase()
     }
 
     if (commandLocallyComplete()) {
+        traceScheduleState = SauScheduleState::Complete;
+        scheduleState.completeCommand();
+        emitScheduleState("command_complete");
         transitionTo(Phase::Complete);
         traceWriter.emit(sauCycle, EventKind::CommandComplete,
                          activeCommand->id, "none", 0, 0, phase);
@@ -713,8 +870,20 @@ SauModel::updatePhase()
         resultScheduler.reset();
         availableB.clear();
         if (moreCommands) {
-            nextCommandStartCycle =
-                Cycles(sauCycle) + interCommandGapCycles;
+            if (strictTiming) {
+                const auto &firstFixtureCommand = fixtureCommands.front();
+                const auto &nextFixtureCommand =
+                    fixtureCommands.at(nextCommandIndex);
+                const Cycles nextStart = Cycles(
+                    nextFixtureCommand.startCycle -
+                    firstFixtureCommand.startCycle);
+                panic_if(nextStart <= Cycles(sauCycle),
+                         "SAU CSR fixture overlaps an active command");
+                nextCommandStartCycle = nextStart;
+            } else {
+                nextCommandStartCycle =
+                    Cycles(sauCycle) + interCommandGapCycles;
+            }
         } else if (exitOnDone) {
             exitSimLoop("SAU command complete");
         }
@@ -769,6 +938,9 @@ SauModel::transitionTo(Phase newPhase)
 void
 SauModel::checkConservation() const
 {
+    assert(!strictTiming ||
+           externalRequestsIssuedThisCycle <= activeStorageIssueWidth());
+    assert(availableB.size() <= activeBStagingBeats());
     assert(visibleReadBeats <= acceptedReadBeats);
     assert(resultsProduced <= arrayAdmissions);
     assert(writesAccepted <= resultsProduced);
@@ -783,7 +955,9 @@ SauModel::checkConservation() const
         assert(arrayInputScheduler->issuedB() <=
                arrayInputScheduler->issuedA());
         assert(arrayInputScheduler->issuedA() <=
-               arrayInputScheduler->totalInputs());
+               arrayInputScheduler->totalAInputs());
+        assert(arrayInputScheduler->issuedB() <=
+               arrayInputScheduler->totalBInputs());
     }
     if (resultScheduler) {
         assert(resultScheduler->produced() == resultsProduced);
@@ -802,18 +976,323 @@ SauModel::hasPendingWork() const
         nextCommandStartCycle.has_value();
 }
 
+const TimingPolicy *
+SauModel::timingPolicy() const
+{
+    return activeTimingPolicy ? &*activeTimingPolicy : nullptr;
+}
+
+Cycles
+SauModel::activeArrayFillCycles() const
+{
+    return timingPolicy() ? timingPolicy()->arrayFillCycles : arrayFillCycles;
+}
+
+Cycles
+SauModel::activeInputSwitchVisibleDelayCycles() const
+{
+    return timingPolicy() ? timingPolicy()->inputSwitchVisibleDelayCycles :
+                            Cycles(0);
+}
+
+Cycles
+SauModel::activeInputSwitchResetVisibleDelayCycles() const
+{
+    return timingPolicy() ?
+        timingPolicy()->inputSwitchResetVisibleDelayCycles : Cycles(0);
+}
+
+Cycles
+SauModel::activeTraceFlowExecuteCycles() const
+{
+    if (timingPolicy() && timingPolicy()->shortDirectDOutPath) {
+        return timingPolicy()->shortExecuteCycles(traceInstructionIndex);
+    }
+    if (timingPolicy()) {
+        return timingPolicy()->flowExecuteCycles;
+    }
+    return Cycles(arrayInputsPerInstruction() - activeBReadStartAheadBeats());
+}
+
+Cycles
+SauModel::activeTraceShortDrainCycles() const
+{
+    panic_if(!timingPolicy() || !timingPolicy()->shortDirectDOutPath,
+             "short D_OUT duration requested for a non-short RTL path");
+    return timingPolicy()->shortDrainCycles(traceInstructionIndex);
+}
+
+Cycles
+SauModel::activeTraceFlowBoundaryCycles() const
+{
+    // TRANSPOSE_CLIP holds one SA_SIZE row before scheduler.sv enters D_OUT;
+    // include the state-register edge that commits the new state.
+    return Cycles(static_cast<uint64_t>(rtlTiming.saSize) +
+                  rtlTiming.schedulerStateRegisterDelay);
+}
+
+Cycles
+SauModel::activeArrayInputStartDelayCycles() const
+{
+    return timingPolicy() ? timingPolicy()->arrayInputStartDelayCycles :
+                            arrayInputStartDelayCycles;
+}
+
+unsigned
+SauModel::activeArrayInputBurstBeats() const
+{
+    return timingPolicy() ? timingPolicy()->arrayInputBurstBeats :
+                            arrayInputBurstBeats;
+}
+
+Cycles
+SauModel::activeArrayInputBurstGapCycles() const
+{
+    return timingPolicy() ? timingPolicy()->arrayInputBurstGapCycles :
+                            arrayInputBurstGapCycles;
+}
+
+Cycles
+SauModel::activeArrayInputFlowGapCycles(uint32_t completedFlows) const
+{
+    return timingPolicy() ?
+        timingPolicy()->arrayInputFlowGapAfter(completedFlows) :
+                            arrayInputFlowGapCycles;
+}
+
+uint32_t
+SauModel::activeArrayInputABeats() const
+{
+    panic_if(!activeCommand, "array-input A extent requires an active command");
+    return timingPolicy() ? timingPolicy()->arrayInputABeats :
+                            activeCommand->workItems;
+}
+
+uint32_t
+SauModel::activeArrayInputBBeats() const
+{
+    panic_if(!activeCommand, "array-input B extent requires an active command");
+    return timingPolicy() ? timingPolicy()->arrayInputBBeats :
+                            activeCommand->workItems;
+}
+
+unsigned
+SauModel::activeArrayInputSkewCycles() const
+{
+    return timingPolicy() ? timingPolicy()->arrayInputSkewCycles :
+                            arrayInputSkewCycles;
+}
+
+unsigned
+SauModel::activeBReadStartAheadBeats() const
+{
+    return timingPolicy() ? timingPolicy()->bReadStartAheadBeats :
+                            bReadStartAheadBeats;
+}
+
+Cycles
+SauModel::activeResultFlowGapCycles() const
+{
+    return timingPolicy() ? timingPolicy()->resultFlowGapCycles :
+                            resultFlowGapCycles;
+}
+
+Cycles
+SauModel::activeWritebackStartDelayCycles() const
+{
+    if (!timingPolicy()) {
+        return writebackStartDelayCycles;
+    }
+    // register_file_out can overlap its REGISTER_UNLOAD activation with the
+    // tail of result production.  Once the propagated input switch is already
+    // clear, that activation edge is no longer on the write critical path.
+    return projectedInputSwitch == "00" ?
+        timingPolicy()->earlyUnloadWritebackStartDelayCycles :
+        timingPolicy()->writebackStartDelayCycles;
+}
+
+Cycles
+SauModel::activeCompletionDelayCycles() const
+{
+    return timingPolicy() ? timingPolicy()->completionDelayCycles :
+                            completionDelayCycles;
+}
+
+Cycles
+SauModel::activeCommandStartCycles() const
+{
+    return timingPolicy() ? timingPolicy()->commandStartCycles :
+                            commandStartCycles;
+}
+
+void
+SauModel::emitTimingLedger(const SauCommand &command)
+{
+    if (!timingLedger.is_open() || !timingPolicy()) {
+        return;
+    }
+    for (const auto &entry : timingPolicy()->ledger) {
+        timingLedger << command.id << ',' << entry.term << ','
+                     << static_cast<uint64_t>(entry.cycles) << ','
+                     << entry.source << '\n';
+    }
+    timingLedger.flush();
+}
+
+void
+SauModel::advanceScheduleProjection()
+{
+    if (!activeCommand) {
+        return;
+    }
+
+    if (transposeCompleteCycle &&
+        commandCycle() >= *transposeCompleteCycle &&
+        scheduleState.state() == SauScheduleState::TransposeSetup) {
+        if (!scheduleState.onTransposeComplete()) {
+            panic("SAU schedule rejected the RTL transpose-complete guard");
+        }
+        inputSwitchVisibleCycle = commandCycle() +
+            activeInputSwitchVisibleDelayCycles();
+        traceScheduleState = SauScheduleState::FlowExecute;
+        scheduleTraceInstructionTransition(true);
+        emitScheduleState("transpose_complete");
+    }
+
+    if (traceInstructionTransitionCycle &&
+        commandCycle() >= *traceInstructionTransitionCycle) {
+        const uint32_t totalInstructions = scheduleInstructionCount();
+        switch (traceScheduleState) {
+          case SauScheduleState::FlowExecute:
+            if (timingPolicy() && timingPolicy()->shortDirectDOutPath) {
+                traceScheduleState = SauScheduleState::DrainAndWriteback;
+                if (traceInstructionIndex + 1 == totalInstructions) {
+                    traceInstructionTransitionCycle.reset();
+                    if (timingPolicy()->earlyFinalUnload) {
+                        inputSwitchResetVisibleCycle = commandCycle() +
+                            timingPolicy()->
+                                finalDrainToInputSwitchResetCycles;
+                    }
+                } else {
+                    traceInstructionTransitionCycle = commandCycle() +
+                        activeTraceShortDrainCycles();
+                }
+                emitScheduleState("drain_results");
+                break;
+            }
+            if (traceInstructionIndex + 1 == totalInstructions) {
+                traceScheduleState = SauScheduleState::DrainAndWriteback;
+                traceInstructionTransitionCycle.reset();
+                if (timingPolicy() && timingPolicy()->earlyFinalUnload) {
+                    inputSwitchResetVisibleCycle = commandCycle() +
+                        timingPolicy()->finalDrainToInputSwitchResetCycles;
+                }
+                emitScheduleState("final_flow");
+            } else {
+                traceScheduleState = SauScheduleState::FlowBoundary;
+                traceInstructionTransitionCycle = commandCycle() +
+                    activeTraceFlowBoundaryCycles();
+                emitScheduleState("flow_boundary");
+            }
+            break;
+          case SauScheduleState::FlowBoundary:
+            traceScheduleState = SauScheduleState::DrainAndWriteback;
+            traceInstructionTransitionCycle = commandCycle() + Cycles(1);
+            emitScheduleState("drain_results");
+            break;
+          case SauScheduleState::DrainAndWriteback:
+            ++traceInstructionIndex;
+            traceScheduleState = SauScheduleState::FlowExecute;
+            scheduleTraceInstructionTransition(false);
+            emitScheduleState("transpose_complete");
+            break;
+          default:
+            break;
+        }
+    }
+
+    if (inputSwitchVisibleCycle &&
+        commandCycle() >= *inputSwitchVisibleCycle &&
+        projectedInputSwitch != "01") {
+        projectedInputSwitch = "01";
+        emitScheduleState("input_switch_visible");
+    }
+
+    if (inputSwitchResetVisibleCycle &&
+        commandCycle() >= *inputSwitchResetVisibleCycle &&
+        projectedInputSwitch != "00") {
+        projectedInputSwitch = "00";
+        inputSwitchVisibleCycle.reset();
+        emitScheduleState("input_switch_visible");
+    }
+}
+
+void
+SauModel::scheduleTraceInstructionTransition(bool firstInstruction)
+{
+    Cycles executeCycles = activeTraceFlowExecuteCycles();
+    if (firstInstruction &&
+        !(timingPolicy() && timingPolicy()->shortDirectDOutPath)) {
+        // The TRANSPOSE_LOAD -> REUSE_LOAD edge is also the first sampled
+        // REUSE_LOAD frame, so its first data_last guard is one edge earlier.
+        executeCycles = executeCycles -
+            Cycles(rtlTiming.schedulerStateRegisterDelay);
+    }
+    traceInstructionTransitionCycle = commandCycle() + executeCycles;
+}
+
+std::string
+SauModel::scheduleInputSwitch() const
+{
+    switch (traceScheduleState) {
+      case SauScheduleState::Idle:
+      case SauScheduleState::ResidentLoad:
+      case SauScheduleState::TransposeSetup:
+      case SauScheduleState::Complete:
+        return "00";
+      case SauScheduleState::FlowExecute:
+      case SauScheduleState::FlowBoundary:
+      case SauScheduleState::DrainAndWriteback:
+        return projectedInputSwitch;
+    }
+    panic("unknown SAU schedule state while tracing input switch");
+}
+
+void
+SauModel::emitScheduleState(std::string_view cause)
+{
+    if (!activeCommand || !stateTraceWriter.enabled()) {
+        return;
+    }
+    const auto state = traceScheduleState;
+    const auto inputSwitch = scheduleInputSwitch();
+    if (lastTracedScheduleState && *lastTracedScheduleState == state &&
+        lastTracedInputSwitch == inputSwitch) {
+        return;
+    }
+    stateTraceWriter.emit(sauCycle, activeCommand->id, state, inputSwitch,
+                          cause);
+    lastTracedScheduleState = state;
+    lastTracedInputSwitch = inputSwitch;
+}
+
 bool
 SauModel::commandLocallyComplete() const
 {
     return activeCommand &&
         writesAccepted == expectedOutputBeats() &&
         outputBuffer.size() == 0 &&
-        arrayPipeline.inFlight() == 0 &&
+        // ArrayPipeline occupancy is a capacity/II accounting mechanism.
+        // ResultScheduler and accepted writeback define architectural
+        // completion; waiting for every shadow admission token to age by the
+        // full fill latency double-counts the RTL result pipeline when output
+        // extent is smaller than input work (the N-sweep case).
         arrayInputScheduler && arrayInputScheduler->complete() &&
         resultScheduler && resultScheduler->complete() &&
         lastWriteCycle &&
         static_cast<uint64_t>(commandCycle()) >=
-            static_cast<uint64_t>(*lastWriteCycle + completionDelayCycles) &&
+            static_cast<uint64_t>(*lastWriteCycle +
+                                  activeCompletionDelayCycles()) &&
         (!readGenerator || readGenerator->empty()) &&
         visibleReadBeats == acceptedReadBeats &&
         visibleMemoryResponses.empty() &&
@@ -832,6 +1311,9 @@ SauModel::commandCycle() const
 SauCommand
 SauModel::buildCommandForIndex(uint32_t index) const
 {
+    if (strictTiming) {
+        return fixtureCommands.at(index).decoded.command;
+    }
     auto command = startupCommand;
     command.id = startupCommand.id + index;
     command.operandA.base += static_cast<Addr>(index) * aCommandStride;
@@ -846,6 +1328,12 @@ SauModel::submitNextCommand()
     panic_if(nextCommandIndex >= commandCount,
              "SAU synthetic command index exceeds command count");
     activeCommandIndex = nextCommandIndex;
+    if (strictTiming) {
+        activeTimingPolicy =
+            fixtureCommands.at(nextCommandIndex).decoded.timingPolicy;
+    } else {
+        activeTimingPolicy.reset();
+    }
     submitCommand(buildCommandForIndex(nextCommandIndex++));
 }
 
@@ -859,30 +1347,35 @@ SauModel::expectedOutputBeats() const
 }
 
 uint32_t
-SauModel::outputBeatsPerFlow() const
+SauModel::scheduleInstructionCount() const
 {
     assert(activeCommand);
-    const uint32_t totalFlows =
-        activeCommand->flowLoops * activeCommand->instructionLoops;
-    const uint32_t totalOutputs = expectedOutputBeats();
-    if (totalOutputs % totalFlows != 0) {
-        throw std::invalid_argument(
-            "SAU output beats must divide evenly across flows");
-    }
-    return totalOutputs / totalFlows;
+    return effectiveScheduleInstructions(*activeCommand);
 }
 
 uint32_t
-SauModel::arrayInputsPerFlow() const
+SauModel::outputBeatsPerInstruction() const
 {
     assert(activeCommand);
-    const uint32_t totalFlows =
-        activeCommand->flowLoops * activeCommand->instructionLoops;
-    if (activeCommand->workItems % totalFlows != 0) {
+    const uint32_t totalInstructions = scheduleInstructionCount();
+    const uint32_t totalOutputs = expectedOutputBeats();
+    if (totalOutputs % totalInstructions != 0) {
         throw std::invalid_argument(
-            "SAU work items must divide evenly across flows");
+            "SAU output beats must divide evenly across schedule instructions");
     }
-    return activeCommand->workItems / totalFlows;
+    return totalOutputs / totalInstructions;
+}
+
+uint32_t
+SauModel::arrayInputsPerInstruction() const
+{
+    assert(activeCommand);
+    const uint32_t totalInstructions = scheduleInstructionCount();
+    if (activeCommand->workItems % totalInstructions != 0) {
+        throw std::invalid_argument(
+            "SAU work items must divide evenly across schedule instructions");
+    }
+    return activeCommand->workItems / totalInstructions;
 }
 
 bool
@@ -893,9 +1386,26 @@ SauModel::resultFlowReady() const
     }
 
     const uint64_t flow =
-        resultScheduler->produced() / outputBeatsPerFlow();
-    const uint64_t requiredInputs = (flow + 1) * arrayInputsPerFlow();
+        resultScheduler->produced() / outputBeatsPerInstruction();
+    const uint64_t requiredInputs =
+        (flow + 1) * arrayInputsPerInstruction();
     return arrayAdmissions >= requiredInputs;
+}
+
+bool
+SauModel::anyResidentAReady() const
+{
+    if (!activeCommand || !aRegisterFile) {
+        return false;
+    }
+
+    for (uint32_t instruction = 0;
+         instruction < activeCommand->instructionLoops; ++instruction) {
+        if (aRegisterFile->instructionReady(instruction)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool
@@ -906,8 +1416,9 @@ SauModel::instructionReadyForArrayIndex(uint32_t index) const
     }
 
     const uint32_t perInstruction =
-        activeCommand->operandA.beats * activeCommand->flowLoops;
-    const uint32_t instruction = index / perInstruction;
+        activeCommand->workItems / activeCommand->instructionLoops;
+    const uint32_t instruction =
+        (index / perInstruction) % activeCommand->instructionLoops;
     return instruction < activeCommand->instructionLoops &&
         aRegisterFile->instructionReady(instruction);
 }
@@ -918,12 +1429,15 @@ SauModel::makeArrayABeat(uint32_t index) const
     assert(activeCommand);
     assert(aRegisterFile);
 
-    const uint32_t beatsPerFlow = activeCommand->operandA.beats;
-    const uint32_t perInstruction = beatsPerFlow * activeCommand->flowLoops;
-    const uint32_t instruction = index / perInstruction;
+    const uint32_t perInstruction =
+        activeCommand->workItems / activeCommand->instructionLoops;
+    const uint32_t instruction =
+        (index / perInstruction) % activeCommand->instructionLoops;
     const uint32_t withinInstruction = index % perInstruction;
-    const uint32_t flow = withinInstruction / beatsPerFlow;
-    const uint32_t beat = withinInstruction % beatsPerFlow;
+    const uint32_t flow =
+        (withinInstruction / activeCommand->operandA.beats) %
+        activeCommand->flowLoops;
+    const uint32_t beat = withinInstruction % activeCommand->operandA.beats;
 
     return aRegisterFile->arrayInputBeat(instruction, flow, beat, index);
 }
@@ -933,6 +1447,20 @@ SauModel::requestAccepted(const Beat &beat, bool write)
 {
     panic_if(!activeCommand,
              "SAU memory request accepted without an active command");
+    if (strictTiming) {
+        ++externalRequestsIssuedThisCycle;
+        panic_if(externalRequestsIssuedThisCycle > activeStorageIssueWidth(),
+                 "strict SAU issued more than one shared SRAM request in a "
+                 "cycle");
+        panic_if(write && readGenerator && !readGenerator->empty(),
+                 "strict SAU write bypassed a pending higher-priority read");
+        const uint32_t expectedAReads =
+            activeCommand->operandA.beats * activeCommand->instructionLoops;
+        panic_if(!write && beat.stream == StreamKind::OperandB &&
+                     readAcceptedTraceA < expectedAReads,
+                 "strict SAU issued Operand-B before all Operand-A preload "
+                 "requests");
+    }
 
     if (write) {
         ++stats.writeRequests;
@@ -968,6 +1496,18 @@ SauModel::requestAccepted(const Beat &beat, bool write)
         auto &counter = beat.stream == StreamKind::OperandA ?
             readAcceptedTraceA : readAcceptedTraceB;
         traceBeat = counter++;
+        if (beat.stream == StreamKind::OperandA &&
+            !scheduleState.onAReadAccepted(beat.last)) {
+            panic("SAU schedule rejected an Operand-A read acceptance");
+        }
+        if (beat.stream == StreamKind::OperandA && beat.last) {
+            // scheduler.sv enters TRANSPOSE_LOAD on register_load_done; the
+            // following SA_SIZE cycles are projected separately in tick().
+            transposeCompleteCycle = commandCycle() +
+                Cycles(activeArrayInputBurstBeats());
+            traceScheduleState = SauScheduleState::TransposeSetup;
+            emitScheduleState("register_load_done");
+        }
     }
 
     traceWriter.emit(sauCycle,

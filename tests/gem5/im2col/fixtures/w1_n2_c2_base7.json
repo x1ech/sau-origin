@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "w1_n2_c2_base7",
+  "n": 2,
+  "c": 2,
+  "h": 3,
+  "w": 1,
+  "kernel_h": 1,
+  "kernel_w": 1,
+  "stride_h": 1,
+  "stride_w": 1,
+  "dilation_h": 1,
+  "dilation_w": 1,
+  "pad_top": 0,
+  "pad_left": 0,
+  "spad_base": 7,
+  "input_generator": "tb_act_value_v1"
+}

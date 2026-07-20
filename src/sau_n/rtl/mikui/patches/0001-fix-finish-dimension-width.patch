@@ -1,0 +1,17 @@
+--- a/hardware/src/sa_execute/SA_ENGINE.sv
++++ b/hardware/src/sa_execute/SA_ENGINE.sv
+@@ -112,8 +112,12 @@
+     logic       matrix_add_mode;
+     logic       single_col_mode;
+ 
+-    assign      FINISH_ROW = (($clog2(COL_NUM))'(ROW_NUM)>=row_num_i)?row_num_i:ROW_NUM;
+-    assign      FINISH_COL = (($clog2(COL_NUM))'(COL_NUM)>=col_num_i)?col_num_i:COL_NUM;
++    localparam logic [$clog2(ROW_NUM):0] ROW_NUM_VALUE = ROW_NUM;
++    localparam logic [$clog2(COL_NUM):0] COL_NUM_VALUE = COL_NUM;
++    assign      FINISH_ROW =
++        (ROW_NUM_VALUE >= row_num_i) ? row_num_i : ROW_NUM_VALUE;
++    assign      FINISH_COL =
++        (COL_NUM_VALUE >= col_num_i) ? col_num_i : COL_NUM_VALUE;
+     assign      EN = SA_en| EN_i;
+     assign      clear_mode = OS_valid[0] && ~sa_flowmode[1];
+     assign      EN_n = !EN;

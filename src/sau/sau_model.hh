@@ -3,8 +3,10 @@
 
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/statistics.hh"
@@ -12,8 +14,12 @@
 #include "sau/a_register_file.hh"
 #include "sau/address_generator.hh"
 #include "sau/array_input_scheduler.hh"
+#include "sau/csr_config.hh"
 #include "sau/memory_port.hh"
 #include "sau/result_scheduler.hh"
+#include "sau/schedule_state.hh"
+#include "sau/state_trace_writer.hh"
+#include "sau/timing_policy.hh"
 #include "sau/token_pipeline.hh"
 #include "sau/trace_writer.hh"
 #include "sau/types.hh"
@@ -62,6 +68,9 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     const Cycles commandStartCycles;  // 命令接收后延迟多少拍开始发第一笔读
     const bool calibrationMemory;
     const Cycles calibrationReadLatencyCycles;
+    const bool strictTiming;
+    const RtlTimingParameters rtlTiming;
+    const RtlStorageTiming rtlStorageTiming;
     const unsigned commandCount;
     const Cycles interCommandGapCycles;
     const Addr aCommandStride;
@@ -71,6 +80,17 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
 
     // ========== 运行时状态 ==========
     const SauCommand startupCommand;          // 启动时自动注入的 synthetic 命令
+    std::vector<ReplayedSauCommand> fixtureCommands;
+    std::optional<TimingPolicy> activeTimingPolicy;
+    std::optional<SauScheduleState> lastTracedScheduleState;
+    std::string lastTracedInputSwitch;
+    SauScheduleState traceScheduleState = SauScheduleState::Idle;
+    std::optional<Cycles> transposeCompleteCycle;
+    std::optional<Cycles> inputSwitchVisibleCycle;
+    std::optional<Cycles> inputSwitchResetVisibleCycle;
+    std::optional<Cycles> traceInstructionTransitionCycle;
+    uint32_t traceInstructionIndex = 0;
+    std::string projectedInputSwitch = "00";
     std::optional<SauCommand> activeCommand;  // 当前正在执行的命令（空 = idle）
     // 当前命令所处的 SAU 执行阶段
     Phase phase = Phase::Idle;
@@ -81,6 +101,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::optional<Cycles> nextCommandStartCycle;
     struct ScheduledReadResponse
     {
+        Cycles acceptedCycle;
         Cycles visibleCycle;
         Beat beat;
     };
@@ -90,6 +111,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::optional<ARegisterFileIn> aRegisterFile;
     std::optional<ArrayInputScheduler> arrayInputScheduler;
     std::optional<ResultScheduler> resultScheduler;
+    SauSchedule scheduleState;
     std::deque<Beat> availableB;
     TokenBuffer outputBuffer;
     ArrayPipeline arrayPipeline;
@@ -102,6 +124,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     uint64_t arrayAdmissions = 0;
     uint64_t resultsProduced = 0;
     uint64_t writesAccepted = 0;
+    unsigned externalRequestsIssuedThisCycle = 0;
     Cycles bReadCooldownCycles = Cycles(0);
     uint32_t readAcceptedTraceA = 0;
     uint32_t readAcceptedTraceB = 0;
@@ -114,6 +137,8 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::optional<Cycles> firstResultCycle;
 
     TraceWriter traceWriter;                  // CSV 事件日志输出
+    std::ofstream timingLedger;
+    StateTraceWriter stateTraceWriter;
     EventFunctionWrapper startupEvent;        // 在统计窗口开始后接收首条命令
     EventFunctionWrapper tickEvent;           // gem5 事件：每个时钟边沿触发 tick()
 
@@ -134,19 +159,48 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     unsigned outstandingReads() const;
     unsigned outstandingWrites() const;
     bool canIssueReadBeat(const Beat &beat) const;
+    Cycles activeReadVisibleLatencyCycles() const;
+    unsigned activeStorageIssueWidth() const;
+    unsigned activeBStagingBeats() const;
     void updatePhase();
     void accountCycle();
     void transitionTo(Phase newPhase);
     void checkConservation() const;
+    const TimingPolicy *timingPolicy() const;
+    Cycles activeArrayFillCycles() const;
+    Cycles activeInputSwitchVisibleDelayCycles() const;
+    Cycles activeInputSwitchResetVisibleDelayCycles() const;
+    Cycles activeTraceFlowExecuteCycles() const;
+    Cycles activeTraceFlowBoundaryCycles() const;
+    Cycles activeTraceShortDrainCycles() const;
+    Cycles activeArrayInputStartDelayCycles() const;
+    unsigned activeArrayInputBurstBeats() const;
+    Cycles activeArrayInputBurstGapCycles() const;
+    Cycles activeArrayInputFlowGapCycles(uint32_t completedFlows) const;
+    uint32_t activeArrayInputABeats() const;
+    uint32_t activeArrayInputBBeats() const;
+    unsigned activeArrayInputSkewCycles() const;
+    unsigned activeBReadStartAheadBeats() const;
+    Cycles activeResultFlowGapCycles() const;
+    Cycles activeWritebackStartDelayCycles() const;
+    Cycles activeCompletionDelayCycles() const;
+    Cycles activeCommandStartCycles() const;
+    void emitTimingLedger(const SauCommand &command);
+    void advanceScheduleProjection();
+    void scheduleTraceInstructionTransition(bool firstInstruction);
+    void emitScheduleState(std::string_view cause);
+    std::string scheduleInputSwitch() const;
     bool hasPendingWork() const;
     bool commandLocallyComplete() const;
     Cycles commandCycle() const;
     SauCommand buildCommandForIndex(uint32_t index) const;
     void submitNextCommand();
     uint32_t expectedOutputBeats() const;
-    uint32_t outputBeatsPerFlow() const;
-    uint32_t arrayInputsPerFlow() const;
+    uint32_t scheduleInstructionCount() const;
+    uint32_t outputBeatsPerInstruction() const;
+    uint32_t arrayInputsPerInstruction() const;
     bool resultFlowReady() const;
+    bool anyResidentAReady() const;
     bool instructionReadyForArrayIndex(uint32_t index) const;
     Beat makeArrayABeat(uint32_t index) const;
     void requestAccepted(const Beat &beat, bool write) override;

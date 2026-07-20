@@ -26,6 +26,7 @@ class AddressGenerator
   private:
     // 根据当前游标 stream 返回 A 或 B 的 StreamDesc。
     const StreamDesc &streamDesc() const;
+    Addr operandBAddress() const;
     // 用游标值 + StreamDesc 地址公式刷新 current。
     void updateFront();
 

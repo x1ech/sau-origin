@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 
@@ -39,8 +40,9 @@ parser.add_argument("--max-tick", type=positive_int, default=20000000000)
 parser.add_argument("--trace", default="")
 parser.add_argument(
     "--rtl-profile",
-    action="store_true",
-    help="Use the imported 64x256x256 RTL baseline command shape",
+    metavar="CSR_FIXTURE",
+    default="",
+    help="Run one RTL CSR fixture in strict timing mode",
 )
 
 parser.add_argument("--beat-bytes", type=positive_int, default=32)
@@ -111,32 +113,104 @@ parser.add_argument(
     "--calibration-read-latency-cycles",
     type=positive_int,
     default=4,
-    help="Read accepted-to-visible latency for --calibration-memory",
+    help=(
+        "Non-strict read accepted-to-visible override for "
+        "--calibration-memory; strict fixtures derive SRAM_DELAY + 1"
+    ),
+)
+parser.add_argument(
+    "--timing-ledger", default="",
+    help="CSV path for strict per-command timing derivations",
+)
+parser.add_argument(
+    "--state-trace", default="",
+    help="CSV path for the independent semantic-state debug trace",
 )
 
 args = parser.parse_args()
 
+strict_timing_options = {
+    "--beat-bytes",
+    "--read-issue-width",
+    "--write-issue-width",
+    "--input-buffer-entries",
+    "--array-fill-cycles",
+    "--array-ii-cycles",
+    "--array-input-start-delay-cycles",
+    "--array-input-skew-cycles",
+    "--b-read-start-ahead-beats",
+    "--array-input-burst-beats",
+    "--array-input-burst-gap-cycles",
+    "--array-input-flow-gap-cycles",
+    "--result-flow-gap-cycles",
+    "--writeback-start-delay-cycles",
+    "--completion-delay-cycles",
+    "--command-start-cycles",
+    "--calibration-read-latency-cycles",
+}
+
 if args.rtl_profile:
+    supplied = {
+        token.split("=", 1)[0] for token in sys.argv[1:]
+        if token.split("=", 1)[0] in strict_timing_options
+    }
+    if supplied:
+        parser.error(
+            "strict --rtl-profile derives timing from CSR/RTL and rejects "
+            "overrides: " + ", ".join(sorted(supplied))
+        )
+
+    fixture = os.path.abspath(args.rtl_profile)
+    manifest_path = os.path.join(fixture, "manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except (OSError, json.JSONDecodeError) as error:
+        parser.error(f"cannot load RTL fixture manifest {manifest_path}: {error}")
+
+    elaboration = manifest.get("elaboration_params", {})
+    required = (
+        "SA_SIZE", "REGDEPTH", "SRAM_DELAY", "ADDR_DELAY",
+        "SRAM_DATA_WIDTH",
+    )
+    missing = [name for name in required if name not in elaboration]
+    if missing:
+        parser.error("RTL fixture manifest lacks: " + ", ".join(missing))
+    if manifest.get("beat_bytes") != 32 or elaboration["SRAM_DATA_WIDTH"] != 256:
+        parser.error("strict SAU fixture must use the supported 256-bit beat")
+
+    args.rtl_profile = fixture
     args.memory_size = "1GiB"
-    args.command_count = 2
-    args.inter_command_gap_cycles = 353
-    args.a_base = 0x29120000
-    args.b_base = 0x29124000
-    args.output_base = 0x29138000
-    args.a_command_stride = 0x2000
-    args.b_command_stride = 0
-    args.output_command_stride = 0x2000
-    args.a_flow_stride = 0
-    args.b_flow_stride = 0x20
-    args.b_stride_bytes = 0x100
-    args.output_instruction_stride = 0x2000
-    args.b_read_start_ahead_beats = 24
-    args.command_start_cycles = 3
+    args.command_count = manifest["command_count"]
+    args.calibration_memory = True
+    args.rtl_sa_size = elaboration["SA_SIZE"]
+    args.rtl_register_depth = elaboration["REGDEPTH"]
+    args.rtl_sram_delay = elaboration["SRAM_DELAY"]
+    args.rtl_sram_data_width = elaboration["SRAM_DATA_WIDTH"]
+    args.rtl_mem_address_delay = elaboration["ADDR_DELAY"]
+    # Keep the generated SimObject configuration descriptive. C++ strict
+    # timing independently derives this value from rtl_sram_delay.
+    args.calibration_read_latency_cycles = args.rtl_sram_delay + 1
+else:
+    args.rtl_sa_size = 32
+    args.rtl_register_depth = 256
+    args.rtl_sram_delay = 3
+    args.rtl_sram_data_width = 256
+    args.rtl_mem_address_delay = 2
 
 trace = trace_path(args.trace)
 trace_dir = os.path.dirname(trace)
 if trace_dir:
     os.makedirs(trace_dir, exist_ok=True)
+if args.rtl_profile and not args.timing_ledger:
+    args.timing_ledger = os.path.join(trace_dir or ".", "sau_timing_ledger.csv")
+if args.rtl_profile and not args.state_trace:
+    args.state_trace = os.path.join(trace_dir or ".", "sau_state.csv")
+
+print(
+    "SAU timing mode: " +
+    ("strict CSR fixture" if args.rtl_profile else "non-strict direct-command/DSE")
+)
 
 system = System(
     clk_domain=SrcClockDomain(
@@ -183,6 +257,15 @@ system.sau = SauModel(
     command_start_cycles=args.command_start_cycles,
     calibration_memory=args.calibration_memory,
     calibration_read_latency_cycles=args.calibration_read_latency_cycles,
+    csr_fixture=args.rtl_profile,
+    strict_timing=bool(args.rtl_profile),
+    rtl_sa_size=args.rtl_sa_size,
+    rtl_register_depth=args.rtl_register_depth,
+    rtl_sram_delay=args.rtl_sram_delay,
+    rtl_sram_data_width=args.rtl_sram_data_width,
+    rtl_mem_address_delay=args.rtl_mem_address_delay,
+    timing_ledger_file=args.timing_ledger,
+    state_trace_file=args.state_trace,
     trace_file=trace,
     command_count=args.command_count,
     inter_command_gap_cycles=args.inter_command_gap_cycles,

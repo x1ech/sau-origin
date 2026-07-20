@@ -5,8 +5,11 @@
 namespace gem5::sau
 {
 
-ARegisterFileIn::ARegisterFileIn(const SauCommand &command)
+ARegisterFileIn::ARegisterFileIn(
+    const SauCommand &command, uint32_t totalArrayInputs)
     : command(command),
+      arrayInputs(totalArrayInputs == 0 ? command.workItems :
+                                            totalArrayInputs),
       loaded(static_cast<size_t>(command.operandA.beats) *
              command.instructionLoops, false)
 {
@@ -77,8 +80,7 @@ ARegisterFileIn::totalExternalLoadBeats() const
 uint64_t
 ARegisterFileIn::totalArrayInputBeats() const
 {
-    return static_cast<uint64_t>(command.operandA.beats) *
-        command.flowLoops * command.instructionLoops;
+    return arrayInputs;
 }
 
 Beat
@@ -98,10 +100,10 @@ ARegisterFileIn::arrayInputBeat(
             "operand A array input requested before preload completion");
     }
 
-    const bool last =
-        instruction + 1 == command.instructionLoops &&
-        flow + 1 == command.flowLoops &&
-        beat + 1 == command.operandA.beats;
+    if (arrayIndex >= arrayInputs) {
+        throw std::invalid_argument("operand A array index out of range");
+    }
+    const bool last = arrayIndex + 1 == arrayInputs;
 
     return {StreamKind::OperandA, 0, arrayIndex, last};
 }

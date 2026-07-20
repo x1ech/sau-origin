@@ -113,5 +113,26 @@ TEST(ArrayInputScheduler, InsertsTileAndFlowBoundaryGaps)
         std::tuple<uint64_t, char, uint32_t>{298, 'A', 288}));
 }
 
+TEST(ArrayInputScheduler, SupportsExtraAAndShortPathBoundaryGaps)
+{
+    ArrayInputScheduler scheduler(
+        288, 256, 32, 32, 32, Cycles(1), Cycles(17), Cycles(44),
+        Cycles(36));
+
+    const auto events = collectCycles(scheduler);
+    EXPECT_EQ(scheduler.totalAInputs(), 288U);
+    EXPECT_EQ(scheduler.totalBInputs(), 256U);
+    EXPECT_THAT(events, testing::Contains(
+        std::tuple<uint64_t, char, uint32_t>{32, 'B', 0}));
+    EXPECT_THAT(events, testing::Contains(
+        std::tuple<uint64_t, char, uint32_t>{81, 'B', 32}));
+    EXPECT_THAT(events, testing::Contains(
+        std::tuple<uint64_t, char, uint32_t>{157, 'B', 64}));
+    EXPECT_THAT(events, testing::Contains(
+        std::tuple<uint64_t, char, uint32_t>{225, 'B', 96}));
+    EXPECT_THAT(events, testing::Contains(
+        std::tuple<uint64_t, char, uint32_t>{528, 'A', 287}));
+}
+
 } // anonymous namespace
 } // namespace gem5::sau

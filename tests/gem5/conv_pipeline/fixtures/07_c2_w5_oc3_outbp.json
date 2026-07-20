@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "07_c2_w5_oc3_outbp",
+  "im2col": {
+    "schema_version": 1,
+    "name": "07_c2_w5_oc3_outbp_im2col",
+    "n": 1,
+    "c": 2,
+    "h": 4,
+    "w": 5,
+    "kernel_h": 3,
+    "kernel_w": 3,
+    "stride_h": 1,
+    "stride_w": 1,
+    "dilation_h": 1,
+    "dilation_w": 1,
+    "pad_top": 1,
+    "pad_left": 1,
+    "spad_base": 0,
+    "input_generator": "tb_act_value_v1"
+  },
+  "out_channels": 3,
+  "cutbit": 8,
+  "weight_generator": "tb_weight_value_v1",
+  "bias_generator": "tb_bias_value_v1"
+}

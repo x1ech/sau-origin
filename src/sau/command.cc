@@ -41,6 +41,17 @@ validateStream(const StreamDesc &stream, unsigned beatBytes)
 
 } // anonymous namespace
 
+uint32_t
+effectiveScheduleInstructions(const SauCommand &command)
+{
+    if (command.scheduleInstructions != 0) {
+        return command.scheduleInstructions;
+    }
+    return checkedProduct(
+        command.flowLoops, command.instructionLoops,
+        "SAU schedule instruction count exceeds its representation");
+}
+
 void
 validateCommand(const SauCommand &command, unsigned beatBytes)
 {
@@ -76,14 +87,22 @@ validateCommand(const SauCommand &command, unsigned beatBytes)
     }
 
     auto expectedWorkItems = checkedProduct(
-        command.operandA.beats, command.flowLoops,
+        command.operandB.beats, command.flowLoops,
         "SAU work item count exceeds its representation");
     expectedWorkItems = checkedProduct(
         expectedWorkItems, command.instructionLoops,
         "SAU work item count exceeds its representation");
     if (command.workItems != expectedWorkItems) {
         throw std::invalid_argument(
-            "SAU work item count does not match operand A");
+            "SAU work item count does not match operand B");
+    }
+
+    const uint32_t scheduleInstructions =
+        effectiveScheduleInstructions(command);
+    if (scheduleInstructions == 0 ||
+        command.workItems % scheduleInstructions != 0) {
+        throw std::invalid_argument(
+            "SAU work items must divide evenly across schedule instructions");
     }
 
     const auto expectedOutputBeats = checkedProduct(
@@ -92,6 +111,41 @@ validateCommand(const SauCommand &command, unsigned beatBytes)
     if (expectedOutputBeats > command.workItems) {
         throw std::invalid_argument(
             "SAU output beat count exceeds work items");
+    }
+    if (expectedOutputBeats % scheduleInstructions != 0) {
+        throw std::invalid_argument(
+            "SAU output beats must divide evenly across schedule instructions");
+    }
+
+    if (command.operandBAddress.enabled) {
+        const auto &program = command.operandBAddress;
+        if (program.xCount == 0 || program.yCount == 0 ||
+            program.flowCount == 0 || program.instructionCount == 0) {
+            throw std::invalid_argument(
+                "SAU nested Operand-B address counts must be nonzero");
+        }
+        auto nestedBeats = checkedProduct(
+            program.xCount, program.yCount,
+            "SAU nested Operand-B address count overflows");
+        nestedBeats = checkedProduct(
+            nestedBeats, program.flowCount,
+            "SAU nested Operand-B address count overflows");
+        nestedBeats = checkedProduct(
+            nestedBeats, program.instructionCount,
+            "SAU nested Operand-B address count overflows");
+        if (nestedBeats != expectedWorkItems) {
+            throw std::invalid_argument(
+                "SAU nested Operand-B address count does not match work");
+        }
+        const std::array<uint32_t, 4> steps = {
+            program.xStepBytes, program.yStepBytes,
+            program.flowStepBytes, program.instructionStepBytes};
+        for (const auto step : steps) {
+            if (step % beatBytes != 0) {
+                throw std::invalid_argument(
+                    "SAU nested Operand-B address step must be beat aligned");
+            }
+        }
     }
 }
 

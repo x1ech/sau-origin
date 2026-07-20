@@ -1,0 +1,9 @@
++incdir+src/sau_n/rtl/mikui/original
+src/sau_n/rtl/mikui/original/SA_pkg.sv
+src/sau_n/rtl/mikui/original/active_delay.v
+src/sau_n/rtl/mikui/original/weight_delay.v
+src/sau_n/rtl/mikui/original/DW02_mult_2_stage.v
+src/sau_n/rtl/mikui/original/SA_PE.sv
+src/sau_n/rtl/mikui/original/SA_ROW.sv
+src/sau_n/rtl/mikui/original/SA_ENGINE.sv
+src/sau_n/rtl/tb_mikui_sau_engine_step0.sv

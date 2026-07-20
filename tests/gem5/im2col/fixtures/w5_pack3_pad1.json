@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "w5_pack3_pad1_stride1",
+  "n": 1,
+  "c": 2,
+  "h": 4,
+  "w": 5,
+  "out_h": 4,
+  "out_w": 5,
+  "kernel_h": 3,
+  "kernel_w": 3,
+  "stride_h": 1,
+  "stride_w": 1,
+  "dilation_h": 1,
+  "dilation_w": 1,
+  "pad_top": 1,
+  "pad_left": 1,
+  "spad_base": 0,
+  "input_generator": "tb_act_value_v1"
+}

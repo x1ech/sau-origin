@@ -109,6 +109,39 @@ TEST(SauCommand, AcceptsReducedOutputBeatCount)
     EXPECT_NO_THROW(validateCommand(command, 32));
 }
 
+TEST(SauCommand, AcceptsBDrivenWorkItemsWithUnequalStreams)
+{
+    auto command = makeCommand();
+    command.operandA.beats = 1;
+    command.operandB.beats = 4;
+    command.output.beats = 4;
+    command.workItems = 4;
+
+    EXPECT_NO_THROW(validateCommand(command, 32));
+}
+
+TEST(SauCommand, AcceptsIndependentSchedulerInstructionExtent)
+{
+    auto command = makeCommand();
+    command.operandB.beats = 8;
+    command.flowLoops = 1;
+    command.workItems = 8;
+    command.output.beats = 8;
+    command.scheduleInstructions = 2;
+
+    EXPECT_EQ(effectiveScheduleInstructions(command), 2U);
+    EXPECT_NO_THROW(validateCommand(command, 32));
+}
+
+TEST(SauCommand, RejectsMismatchedNestedOperandBAddressExtent)
+{
+    auto command = makeCommand();
+    command.operandBAddress = {
+        true, 1, 2, 1, 1, 0, 32, 64, 128};
+
+    EXPECT_THROW(validateCommand(command, 32), std::invalid_argument);
+}
+
 TEST(SauCommand, RejectsMoreOutputBeatsThanWorkItems)
 {
     auto command = makeCommand();
@@ -120,7 +153,7 @@ TEST(SauCommand, RejectsMoreOutputBeatsThanWorkItems)
 TEST(SauCommand, RejectsWorkItemOverflow)
 {
     auto command = makeCommand();
-    command.operandA.beats = std::numeric_limits<uint32_t>::max();
+    command.operandB.beats = std::numeric_limits<uint32_t>::max();
     command.flowLoops = 2;
 
     EXPECT_THROW(validateCommand(command, 32), std::invalid_argument);

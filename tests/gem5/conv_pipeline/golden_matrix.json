@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "name": "01_c1_w1_oc1_ones",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/01_c1_w1_oc1_ones.json",
+      "output_ready_period": 1,
+      "output_ready_high_cycles": 1
+    },
+    {
+      "name": "02_c2_w5_oc3_pack",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/02_c2_w5_oc3_pack.json",
+      "output_ready_period": 1,
+      "output_ready_high_cycles": 1
+    },
+    {
+      "name": "03_c3_w16_oc16_full",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/03_c3_w16_oc16_full.json",
+      "output_ready_period": 1,
+      "output_ready_high_cycles": 1
+    },
+    {
+      "name": "04_c3_w17_oc7_dil2",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/04_c3_w17_oc7_dil2.json",
+      "output_ready_period": 1,
+      "output_ready_high_cycles": 1
+    },
+    {
+      "name": "05_n2_c4_w20_oc15_s2",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/05_n2_c4_w20_oc15_s2.json",
+      "output_ready_period": 1,
+      "output_ready_high_cycles": 1
+    },
+    {
+      "name": "06_c63_w1_oc16_maxk",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/06_c63_w1_oc16_maxk.json",
+      "output_ready_period": 1,
+      "output_ready_high_cycles": 1
+    },
+    {
+      "name": "07_c2_w5_oc3_outbp",
+      "fixture": "tests/gem5/conv_pipeline/fixtures/07_c2_w5_oc3_outbp.json",
+      "output_ready_period": 11,
+      "output_ready_high_cycles": 1
+    }
+  ]
+}

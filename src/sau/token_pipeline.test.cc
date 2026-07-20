@@ -83,6 +83,20 @@ TEST(ArrayPipeline, ResetStartsANewCommandLocalTimingEpoch)
     EXPECT_TRUE(pipeline.hasReady(Cycles(3)));
 }
 
+TEST(ArrayPipeline, CommandResetClearsOnlyCommandLocalShadowTokens)
+{
+    ArrayPipeline pipeline(Cycles(10), Cycles(2), 4);
+    pipeline.accept(1, 0, false, Cycles(0));
+    EXPECT_EQ(pipeline.inFlight(), 1U);
+
+    pipeline.resetForCommand();
+
+    EXPECT_EQ(pipeline.inFlight(), 0U);
+    EXPECT_TRUE(pipeline.canAccept(Cycles(0)));
+    pipeline.accept(2, 0, true, Cycles(0));
+    EXPECT_TRUE(pipeline.hasReady(Cycles(10)));
+}
+
 TEST(ArrayPipeline, StopsAtMaximumInFlight)
 {
     ArrayPipeline pipeline(Cycles(0), Cycles(0), 1);

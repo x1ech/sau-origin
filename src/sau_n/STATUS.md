@@ -1,10 +1,17 @@
 # Gem5 Im2Col Reference RTL 独立周期模型状态
 
-最后更新：2026-07-17
+最后更新：2026-07-19
 
 ## 当前阶段
 
-当前已完成计划冻结、Step 0 至 Step 8、VCS RTL/gem5 逐拍验收和最终文档交付。
+Im2Col 独立模型已完成计划冻结、Step 0 至 Step 8、VCS RTL/gem5 逐拍验收和最终
+文档交付。新的 Im2Col -> Mikui SAU 下游工作已完成需求收束、风险修订和Step 1
+pipeline contract/fixture/generator、Step 2独立oracle/tile mapping和Step 3纯C++
+SA数值核心、Step 4源码推导的SA周期状态和256 PE阵列以及Step 5单tile buffer和
+纯C++端到端pipeline、Step 6 gem5 SimObject/stats/运行入口以及Step 7 canonical
+trace和比较器。由于RTL golden尚未返回，下一步等待或准备Step 8 RTL golden导入，
+当前已完成Step 8 wrapper/testbench、工作站runner、来源与回传校验器以及工作站包；
+VCS运行、golden导入和严格逐拍验收仍等待工作站结果，周期锚点继续保持provisional。
 
 ```text
 PLAN revised
@@ -20,10 +27,352 @@ Step 7 RTL golden matrix passed
 RTL per-cycle validation passed
 Step 8 documentation and final acceptance complete
 Planned delivery complete
+SAU downstream requirements frozen
+SAU_PLAN revised after RTL risk review
+SAU Pre-Step 0 src/sau baseline captured
+SAU Step 0 local baseline package complete
+SAU Step 0 VCS compile/run pending
+SAU Step 1-7 development unblocked
+SAU Step 1 pipeline contract/fixture/generators complete
+SAU Step 2 independent oracle/tile mapping complete
+SAU Step 3 C++ numeric core complete
+SAU Step 4 source-derived cycle model complete, VCS calibration pending
+SAU Step 5 single-tile end-to-end C++ pipeline complete
+SAU Step 6 gem5 SimObject, stats, output, and run entry complete
+SAU Step 7 canonical trace and synthetic comparator validation complete
+SAU Step 8 local integration and workstation package complete
+SAU RTL validation pending
 ```
 
 当前可以正式声明 `RTL per-cycle validation passed`。PLAN 定义的 Step 0 至 Step 8
 均已完成，计划范围内没有未完成的实现或验收项。
+
+## SAU 下游新阶段（规划）
+
+新增并修订 `src/sau_n/SAU_PLAN.md`，目标是在现有 Im2Col 后建立 Mikui 16x16 SAU
+INT8 3x3标准卷积周期模型。当前已与用户确认：
+
+- 以 Mikui `mikui_16x16` 分支 commit `2ca8252` 的 `SA_ENGINE`/PE层次为
+  reference RTL核心；保留逐字节一致的original副本，集成黄金对象使用带有显式
+  `FINISH_ROW/FINISH_COL`位宽补丁的patched variant；
+- 第一版支持 `C=1..63`、`out_channels=1..16`，output channel不要求是16的倍数；
+- 使用单 tile buffer把有气泡的 Im2Col feed转换为连续 `K=C*9` 拍SA输入；
+- 使用确定性 signed INT8 weight和signed INT16 bias，不读取外部tensor；
+- 固定100 MHz、24-bit逐次饱和累加、可配置cutbit和INT8输出饱和；
+- 新增统一 `ConvPipelineTiming` SimObject，现有 `Im2ColTiming` 保持兼容；
+- 最终输出为 NCHW，支持周期性output backpressure；
+- 逐拍比较controller、接口和256个PE的valid activation/weight/accumulator；
+- 允许复制最小Mikui RTL并新增integration wrapper，RTL在外部VCS工作站运行；
+- 不修改并行开发的 `src/sau/`，已经保存初始status/diff/全文件SHA256基线；
+- 当前完成风险修订、Pre-Step 0证据保存、Step 0本地baseline/工作站包和Step 1
+  pipeline contract/fixture/generator实现。由于暂时拿不到VCS工作站结果，VCS不再
+  阻塞Step 1至Step 7，尚未实测的周期锚点保持provisional。
+
+静态审核发现当前 Mikui源码存在CONV模式编码的新旧注释矛盾：当前
+`SA_pkg.sv` 和当前指令生成器使用 `2'b01`，旧注释和旧benchmark出现`2'b10`。
+建模阶段按当前可执行RTL和指令生成器冻结`2'b01`，不得凭旧注释改用`2'b10`；后续
+VCS baseline用于确认该契约，若结果不同再修订受影响的模型和测试。
+
+### SAU_PLAN 风险审查修订（2026-07-17）
+
+- 静态确认 `SA_ENGINE.sv` 中 `$clog2(16)` sized cast会把常量16截断为0，原始
+  `FINISH_ROW/FINISH_COL`无法可靠控制合法的1..16尾行尾列；
+- 计划现保留`rtl/mikui/original/`原始副本，并只允许在独立integration variant中
+  通过同宽localparam修复两条FINISH赋值；original、patch、patched filelist均要求
+  provenance和SHA256；
+- 冻结候选控制协议：`ins_valid_i`单拍、`EN_i`连续K拍、配置保持到`cal_finish`，
+  `Flag_o`作为输出序列请求，`Flag_o_ready`作为engine grant，并区分内部`valid_o`
+  接受事件与下一拍注册输出；所有时序仍须Step 0 VCS baseline逐拍确认，但该确认
+  不再作为Step 1至Step 7的开发前置条件；
+- 明确物理总线映射：activation row0位于最高byte，weight/bias/output column0位于
+  最低element；wrapper在SA输入前只反转activation的16个byte；
+- 新增K567正、负standalone profile，分别强制第512和第517次MAC首次发生24-bit
+  饱和，逐次比较accumulator；
+- 明确100 MHz（10 ns）是与Im2Col统一的集成模型选定频率，RTL的200 MHz注释不构成
+  本计划的物理时序或性能承诺；
+- 新增Pre-Step 0，要求最终以路径、mode、size、SHA256和git状态逐项证明未修改
+  `src/sau/`。
+
+已在只读访问`src/sau/`的前提下保存初始证据：
+
+```text
+m5out/conv_pipeline/provenance/src_sau_baseline/
+status entries: 38
+tracked + untracked files: 49
+SHA256(evidence_sha256.txt):
+ab5b451211150f9237421222ffbf2fdf43b6ef822c7c365be71499de9e10b4ff
+```
+
+证据包含`status.txt`、working-tree/staged binary diff、file list、带mode/size/type的
+全文件SHA256 manifest及其校验清单。该目录是本地只读验收证据，不纳入源码交付。
+
+### SAU Step 0 本地基线和工作站包（2026-07-18）
+
+- 从本地`npu_lpnpu` Git object读取完整commit
+  `2ca8252ef1cac43ef843998e9e08023259ac17ee`，冻结
+  `hardware/src/sa_execute/`下8个最小RTL文件；
+- `src/sau_n/rtl/mikui/original/`的8个文件与upstream object逐字节一致，完整原路径、
+  commit/tree和SHA256记录在`provenance.json`；
+- `integration/SA_ENGINE.sv`只应用
+  `0001-fix-finish-dimension-width.patch`，source verifier可从original重建并逐字节确认
+  没有额外改动；
+- 新增original/integration两个明确filelist和共用Step 0 testbench，覆盖：
+  - `row_num_i/col_num_i=1/15/16`原始截断行为及patched tail行为；
+  - K9非对称activation/weight/bias物理lane映射；
+  - `ins_valid_i`、连续K拍`EN_i`、`Flag_o/Flag_o_ready`和输出反压；
+  - K567正/负24-bit逐次饱和及256个PE的MAC/add commit和accumulator观察；
+- 新增source/trace verifier、2项Python测试、VCS批量脚本和结果manifest生成器；
+- 本地执行source hash/唯一补丁重建检查、Python AST、2项unit test、bash语法和完整
+  31条确定性命令dry-run，全部通过；
+- 本地未发现VCS、iverilog、Verilator、slang、Surelog、verible、svlint或yosys，
+  因此RTL compile/elaboration/run仍待工作站执行；
+- 最终工作站包：
+  `/home/xch/workspace/sau_n_step0_workstation_20260718_r2.tar.gz`；
+- 工作站包SHA256：
+  `3f63304f0be075d6c800860d2980e72a57716571819b4fbb4e46de51570ae2df`；
+- archive builder已在内存中逐文件回读验证归档内容，包内另含`SHA256SUMS`和
+  `PACKAGE_METADATA.json`。VCS结果返回并通过全部14项trace验证前，不得声明
+  `SAU Step 0 VCS validation passed`或最终`RTL per-cycle validation passed`；但允许
+  根据冻结RTL源码继续Step 1至Step 7，首输入、MAC commit、bias、首输出、反压和
+  `cal_finish`等未实测周期锚点统一标记为provisional。
+
+### SAU VCS与开发流程解耦（2026-07-18）
+
+- 当前暂时无法取得VCS工作站结果，因此不把外部仿真作为开始gem5建模的阻塞条件；
+- Step 1至Step 7直接依据冻结RTL源码的组合逻辑、寄存器、nonblocking assignment和
+  流水结构实现，并用directed contract test固定源码推导出的候选周期契约；
+- VCS结果返回后先回到Step 0校准provisional周期锚点；若存在差异，只修订受影响的
+  契约、模型和测试并重新回归，不用golden trace驱动模型或迁就实现；
+- Step 8的golden导入、严格逐拍比较以及最终通过声明仍必须等待VCS结果。
+
+### SAU Step 1 pipeline contract、fixture和生成器（2026-07-18）
+
+- 新增Python `ResolvedPipelineConfig`/`DerivedPipelineConfig`，复用现有Im2Col
+  derivation并以uint64 checked arithmetic计算`K`、tile、output和useful MAC数量；
+- 新增严格nested pipeline fixture loader：外层和嵌套Im2Col对象均拒绝未知、重复、
+  缺失和错误类型字段；runtime output-ready参数禁止写入fixture；
+- canonical resolved JSON只由Python生成，包含完整resolved Im2Col子对象，并输出
+  SHA256；C++接收同一resolved字段，不重新实现第二套JSON canonicalization；
+- Python/C++均实现signed INT8 activation转换、`tb_weight_value_v1|zero|ones`和
+  `tb_bias_value_v1|zero`确定性生成器，不使用随机数；
+- Python/C++均冻结pipeline状态编码`0..6`、周期性output-ready公式、drained条件和
+  `pe_index=row*16+col` packed顺序；周期锚点显式保持provisional；
+- 新增最小fixture `step1_n1_c2_h4_w5_oc3.json`，两端共同派生锚点为
+  `K=18`、`expected_tiles=2`、`expected_outputs=60`、`expected_macs=1080`；其
+  canonical resolved SHA256为
+  `849daa80c0dcca855a518224097dbb7e952a311742e467c2c7e86918ddce1ed8`；
+- `SConscript`仅登记新增的纯C++ source和2个GTest目标；未执行gem5/scons编译；
+- 验证结果：17项Step 1 Python测试、28项既有Im2Col contract/fixture回归和7项
+  独立编译的C++ GTest全部通过，新增C++源码通过`-Wall -Wextra -Werror`；
+- 用户随后报告已完成一次gem5编译且没有报错；本状态未取得具体命令和构建日志，
+  因此只记录为用户确认的构建结果；
+- 按Pre-Step 0 manifest逐文件复核`src/sau/`路径、mode、size、SHA256和git status，
+  结果完全一致。
+
+### SAU Step 2 独立convolution oracle和tile mapping（2026-07-18）
+
+- 新增独立spatial tile mapping，分别实现`W<=16`多行packing和`W>16`连续16列
+  splitting，将每个逻辑SA row映射到唯一`(n, oh, ow)`坐标；
+- 每个tile强制有效spatial mask为从lane 0开始的canonical prefix，并在pipeline
+  fixture启动前拒绝scattered mask；全部坐标同时检查无重复、无缺失；
+- 新增`output_coordinate`和checked NCHW flat index，固定collector输出布局为
+  `output[n][oc][oh][ow]`；
+- 新增直接遍历NCHW坐标的Python convolution oracle，不调用Im2Col bank/address、
+  feed、tile mapping、SA周期模型或RTL trace；
+- oracle每次MAC后执行signed 24-bit饱和，最后单独加入signed INT16 bias，再做算术
+  右移和signed INT8饱和，同时输出最终accumulator和16-bit RTL slot；
+- 定向确认正饱和首次发生在第512次MAC、负饱和首次发生在第517次MAC，并确认饱和
+  不是sticky状态，后续反向加数可离开边界；
+- 冻结7个端到端golden matrix fixture和独立matrix manifest；output-ready仅存在于
+  matrix运行参数，不进入workload fixture；
+- 测试覆盖`W=1/5/16/17/20`、padding、stride、dilation、batch、spatial/column tail、
+  bias、cutbit、INT8饱和、output/useful MAC守恒以及全部7个profile的完整NCHW输出生成；
+- 30项`util/conv_pipeline`测试和33项既有Im2Col contract/fixture/logical-oracle回归
+  全部通过，Step 0 frozen source verifier继续通过；未执行gem5/scons编译；
+- 按Pre-Step 0 manifest再次逐文件复核`src/sau/`路径、mode、size、SHA256和git
+  status，结果完全一致。
+
+### SAU Step 3 纯C++数值核心（2026-07-19）
+
+- 新增`sau_model.hh/.cc`，集中实现signed INT8乘法、signed 24-bit逐次饱和加法、
+  无rounding算术右移、signed INT8饱和和16-bit符号扩展RTL slot；
+- 新增16x16 `SauNumericCore`和256个`SauPeNumericState`，每个PE保存最后一次有效
+  activation、weight、product、24-bit accumulator、valid和bias状态；
+- `begin -> macStep* -> addBias -> outputSnapshot`固定纯数值生命周期，bias只能在至少
+  一次MAC后加入一次；`reset/clear`清除全部PE和操作元数据；
+- row/column tail只更新有效PE，无效PE保持canonical zero，packed下标继续使用
+  `row*16+column`；
+- 当前`product`是供Step 4寄存器流水调度使用的数值stage；本步骤不引入skew、
+  multiplier cycle delay、valid传播或output backpressure；
+- 2x3独立手算向量验证正负乘法、两次MAC、不同列bias和16-bit slot；边界测试验证
+  每次24-bit加法饱和且饱和不是sticky状态；
+- C++ K567正向profile在第512次MAC首次钳位`0x7fffff`，负向profile在第517次MAC
+  首次钳位`0x800000`，后续同号MAC及bias继续保持边界；
+- Step 3的8项GTest及Step 1至Step 3合并15项纯C++ GTest全部通过，使用C++17和
+  `-Wall -Wextra -Werror`独立编译；30项pipeline Python测试、33项既有Im2Col回归和
+  Step 0 frozen source verifier继续通过；8项Step 3测试的ASan/UBSan复跑通过，受管
+  环境因ptrace限制不支持LeakSanitizer，关闭leak detection后其余sanitizer无报告；
+  未执行gem5/scons编译；
+- 按Pre-Step 0 manifest再次逐文件复核`src/sau/`路径、mode、size、SHA256和git
+  status，结果完全一致。
+
+### SAU Step 4 SA周期状态和256 PE阵列（2026-07-19）
+
+- 在`sau_model.hh/.cc`新增`SauCycleModel`，使用每拍observe/compute/commit语义实现
+  固定CONV、CNORMAL、INT8候选周期协议，并拒绝launch/input同拍和K拍输入气泡；
+- 冻结RTL `IDLE/START/WORK/STORAGE/DONE`状态编码；`DONE`按原RTL保留但当前固定协议
+  不进入该状态；
+- 根据`active_delay`、`weight_delay`、PE输入寄存器、`DW02_mult`、
+  `data_multi_tmp_reg`和`mac_en`链集中定义三个VCS待校准锚点：
+  `MAC=4+r+c`、`bias=5+r+c`、`row_result=6+r+(valid_cols-1)`；
+- 以上常量均以`Provisional*`命名，模型同时公开`cycleAnchorsProvisional=true`；当前只
+  声明源码推导完成，不声明RTL逐拍通过；
+- 每拍公开256 PE的activation、weight和24-bit accumulator，以及row-major
+  `peValid/macCommit/addCommit` 256-bit mask；`PE[0][0]`固定在bit 0；
+- 实现row/column skew、逐拍MAC/bias事件、row result、`PE_valid/OS_valid`候选脉冲、
+  `storageReady`、内部output fire、注册输出、`rowSequence`和`calFinish`；
+- output grant为0时保持输出序列位置；一次row fire后的注册输出不再受下一拍grant
+  二次握手影响，符合第8.4节候选协议；
+- 静态复核后修正顶层控制的nonblocking-assignment语义：`ins_valid_i`只锁存配置，
+  `IDLE -> START`由首拍`EN_i`驱动；新注册的`OS_valid[0]`和`cal_finish`只在下一拍
+  影响状态，`cal_finish`有效周期保持`STORAGE`，随后一拍才进入`IDLE`并清除
+  `storageReady`；
+- row/column tail之外的PE和output slot保持canonical zero；full 16x16测试确认256个PE
+  均出现MAC/add commit、16行输出完整且packed位序正确；
+- K9定向候选锚点为：launch/config cycle 0保持`IDLE`、输入cycle 1..9、首MAC
+  cycle 5、末MAC cycle 13、bias cycle 14、row result/PE finish cycle 15保持`WORK`、
+  storage ready cycle 16进入`STORAGE`、注册输出及`calFinish` cycle 17保持
+  `STORAGE`、cycle 18进入`IDLE`；这些cycle编号必须由VCS返回结果校准；
+- K567周期模型继续在第512/517次MAC首次正/负饱和；2x3 tail测试覆盖输出反压、连续
+  两行fire和下一拍注册输出；
+- Step 4的7项GTest及Step 1至Step 4合并22项纯C++ GTest全部通过；30项pipeline
+  Python测试、33项既有Im2Col回归、Step 0 source verifier和Step 4 ASan/UBSan复跑
+  全部通过；未执行gem5/scons编译。
+- 上述控制时序修正后，重新以C++17和`-Wall -Wextra -Werror`独立编译并运行22项
+  Step 1至Step 4 GTest，全部通过；30项pipeline Python测试、Step 0 source verifier
+  以及关闭leak detection的ASan/UBSan复跑均通过。按本目录编译约束未执行gem5/scons
+  编译。
+
+### SAU Step 5 单tile buffer和端到端pipeline（2026-07-19）
+
+- 新增`sau_tile_buffer.hh/.cc`，实现容量固定为`K=C*9`的单tile buffer；每个tile
+  强制按canonical k顺序收集，全部K项必须使用同一个nonempty canonical-prefix
+  spatial mask，满buffer禁止继续接收；
+- C++侧独立实现W<=16多行packing和W>16宽度splitting的tile metadata，将每个有效
+  SA row映射到唯一`(n,oh,ow)`，启动前检查全部tile的空间位置总数；
+- 新增`conv_pipeline_model.hh/.cc`，按
+  `COLLECT_TILE -> LAUNCH_SA -> STREAM_K -> WAIT_RESULT -> DRAIN_OUTPUT -> DONE`
+  old-state/next-state流程连接`Im2ColModel`和`SauCycleModel`；
+- 仅在`COLLECT_TILE`且buffer有空间时拉高Im2Col `feed_ready`；第K项收满后下一拍
+  launch，不允许空buffer旁路或在SA执行/输出期间收集下一tile；
+- `STREAM_K`连续驱动恰好K拍activation/weight，activation按signed INT8解释，weight
+  和bias由冻结generator生成；中间没有输入气泡；
+- output collector使用tile metadata和`rowSequence`写入NCHW，检查slot是canonical
+  signed INT8符号扩展，并拒绝重复、越界、缺失row和提前tile完成；
+- drained同时要求Im2Col已drained、tile buffer为空、SA回到`IDLE`、tile/output计数
+  完整且无待输出；记录`im2colDoneCycle`、`sauLastResultCycle`和`drainedCycle`；
+- 新增7项Step 5 GTest，覆盖手算C1/W1/OC1、W5 packing、W16完整阵列、W17
+  splitting+dilation、N2/W20 stride、K567、row/column tail和output ready=1/11；
+- C2/W5/OC3的60项NCHW输出同时匹配独立C++直接卷积oracle和现有Python oracle固定
+  结果；默认及反压运行均无丢失、重复，反压增加完成周期且产生output stall；
+- `SConscript`登记两个新增source和两个GTest目标；未执行gem5/scons编译；
+- Step 1至Step 5合并29项C++ GTest在C++17、`-Wall -Wextra -Werror`下全部通过，
+  ASan/UBSan复跑全部通过；30项pipeline Python测试、43项既有Im2Col Python回归和
+  Step 0 source verifier继续通过。
+- 按Pre-Step 0证据复核`src/sau/`的git status、完整路径集合以及逐文件mode、size、
+  type和SHA256，均与初始baseline一致。
+
+### SAU Step 6 gem5 SimObject、stats和运行入口（2026-07-19）
+
+- 新增`ConvPipelineTiming` ClockedObject和对应SimObject参数，统一包装Step 5纯C++
+  pipeline model；每个clock edge推进一拍，drained后写出结果、更新统计，并以固定
+  `conv pipeline drained`标准gem5 exit cause退出；
+- 新增`configs/example/conv_pipeline_timing.py`，从严格pipeline fixture映射全部
+  resolved参数，固定100 MHz，默认写入`<outdir>/conv_pipeline/trace.csv`和
+  `output.csv`，同时支持命令行覆盖路径及默认/周期性output ready；
+- 新增NCHW signed INT8十进制output writer，固定字段为`n,oc,oh,ow,value`，并在
+  写出前检查元素数量与resolved config完全一致；
+- 新增Step 6高层27字段逐拍trace，覆盖pipeline/Im2Col/SA状态、tile buffer、feed
+  handshake/data/mask、output grant/result和drained，并携带严格校验的resolved config
+  SHA256；完整256 PE packed canonical schema、严格loader和比较器按计划留到Step 7；
+- 新增计划第12节全部pipeline/SA stats，并在纯C++ model内记录tile buffer占用、
+  Im2Col/output反压、useful MAC、array active cycle及INT8正负饱和；drained继续强制
+  tile、handshake、engine input、output和useful MAC守恒；
+- `SConscript`注册`ConvPipelineTiming`、两个新增source及IO GTest，原有
+  `Im2ColTiming`文件和接口未修改；
+- 32项Step 1至Step 6 C++ GTest以C++17、`-Wall -Wextra -Werror`通过，ASan/UBSan
+  （关闭LeakSanitizer）复跑通过；33项pipeline Python测试、43项Im2Col Python回归、
+  Step 0 frozen source verifier、Python/SConscript语法检查和`git diff --check`均通过；
+- 按本目录约束未执行gem5/scons编译，因此最小fixture的真实SimObject构建、标准exit
+  event、stats.txt名称和值仍待用户手动构建运行确认；
+- 按Pre-Step 0证据复核`src/sau/`的git status、完整路径集合以及逐文件mode、size、
+  type和SHA256，均与初始baseline完全一致。
+
+### SAU Step 7 canonical trace和比较器（2026-07-19）
+
+- 将Step 6高层trace扩展为冻结的53字段canonical schema，覆盖pipeline状态和tile
+  metadata、Im2Col FIFO/feed、SA launch config/bias、连续input及row/column mask、
+  controller/output协议和三个完成标志；
+- 每拍输出256-bit `pe_valid/mac_commit/add_commit` mask、256x8-bit activation和
+  weight以及256x24-bit accumulator；`PE[row=0][col=0]`固定占最低有效element，全部
+  hex均使用`0x`前缀、固定宽度和小写字符；
+- activation/weight只在对应PE valid时保留，accumulator只在PE valid或add commit时
+  保留；无效Im2Col feed、SA config/input、PE payload和registered output统一归零，
+  因而原始RTL无效X/Z不会进入canonical trace；
+- C++ writer从cycle 0写到唯一drained cycle并在drained主动flush；新增row-ready mask、
+  SA输入快照和last-result标志，纯C++完整pipeline trace smoke共58 cycles，可被Python
+  严格loader直接接受；
+- 新增`util/conv_pipeline/compare_pipeline_traces.py`，严格检查UTF-8、LF、最终LF、
+  53字段header、连续cycle、固定SHA256、state/range、hex宽度、valid/ready关系、
+  launch config与input prefix mask、invalid normalization及唯一末拍drained；
+- comparator报告首个`cycle/field`差异；六个PE packed字段进一步按逻辑row-major顺序
+  解码并报告首个`PE[row][column]`及该element的expected/actual值；合法trace支持
+  load/write逐字节round-trip；
+- 新增7项合成trace测试，覆盖C++/Python schema一致性、round-trip、普通字段和长度
+  差异、三类PE mask及三类PE payload定位、header/cycle/hash/hex错误、无效payload、
+  控制关系、非末拍drained、CRLF和缺失最终LF；
+- Step 1至Step 7共33项C++ GTest以C++17、`-Wall -Wextra -Werror`通过，ASan/UBSan
+  （关闭LeakSanitizer）复跑通过；40项pipeline Python测试、43项Im2Col Python回归、
+  Step 0 source verifier、Python语法、行长和`git diff --check`均通过；
+- 按目录约束未执行gem5/scons编译；当前没有RTL golden，因此只能声明Step 7 trace
+  基础设施和合成差异测试通过，不能声明SAU gem5/RTL逐拍一致或RTL周期锚点已校准；
+- 按Pre-Step 0证据复核`src/sau/`的git status、完整路径集合以及逐文件mode、size、
+  type和SHA256，均与初始baseline完全一致。
+
+### SAU Step 8 RTL集成和工作站包（2026-07-19）
+
+- 新增`im2col_mikui_sau_pipeline.sv`，以单K-entry tile buffer连接冻结的
+  `gemmini_im2col_chw_gather_readable`和patched `SA_ENGINE`，按Step 5状态机驱动
+  launch、连续K拍输入、输出请求/反压及最终drained；配置和bias从launch保持到
+  `cal_finish`；
+- 新增pipeline RTL testbench，按冻结activation/weight/bias generator初始化scratchpad，
+  写出53字段canonical trace和严格NCHW output，并报告Im2Col done、SA最后结果和
+  pipeline drained三个周期锚点；256 PE observer在valid/commit条件下采集activation、
+  weight和24-bit accumulator；
+- 新增单profile RTL runner和7-profile矩阵runner；每个RTL output先逐元素匹配独立
+  Python convolution oracle，trace通过严格schema/锚点校验后才写fixture manifest；
+- 新增工作站入口，顺序执行legacy Im2Col、patched SA K567正/负饱和以及7个端到端
+  profile；结果收集器记录RTL/filelist/provenance、resolved config、simulator和全部
+  artifact SHA256，拒绝覆盖已有结果；
+- 新增Step 8来源校验器，复用Step 0 original/integration唯一补丁检查，并额外冻结
+  pipeline filelist顺序、7-profile矩阵和RTL testbench的53字段header；
+- 新增回传校验器，拒绝路径逃逸，复核source/config/simulator/artifact hash，重新运行
+  output oracle和trace校验；可在提供7组gem5结果后执行严格逐拍比较，validated golden
+  只在显式指定全新导入目录时复制；
+- 本地完整pipeline Python回归42项及Step 8工具专项3项通过；Step 8 source verifier、
+  Python语法、shell语法、确定性VCS命令dry-run、行长和`git diff --check`通过；本机
+  没有VCS、iverilog或Verilator，因此没有执行RTL compile/elaboration/run；
+- 已生成确定性工作站包
+  `/home/xch/workspace/sau_n_step8_workstation_20260719_r2.tar.gz`，SHA256为
+  `0e874d259cc74617263f1f138ef02a7d0f898081ca4e548a7c6be1039214a789`；归档包含71个
+  payload、`SHA256SUMS`和metadata，builder已逐文件回读验证；
+- 按Pre-Step 0证据复核`src/sau/`的49个文件及38条git status，路径、mode、size、
+  type、SHA256和状态全部一致。
+
+当前只能声明Step 8本地实现和工作站交接包完成。必须等VCS返回后先校准Step 0/Step 4
+provisional周期锚点，再完成7个pipeline的gem5/RTL strict per-cycle comparison和两个
+K567 profile的C++ SA/RTL accumulator strict comparison；在此之前不得声明SAU
+`RTL per-cycle validation passed`，也不导入最终golden。
 
 ## 已完成
 
@@ -561,7 +910,14 @@ RTL per-cycle validation passed
 
 ## 下一步
 
-计划范围内没有必需的下一步。当前 `src/sau_n/`、`util/im2col/`、
-`tests/gem5/im2col/` 和 `configs/example/im2col_timing.py` 仍为 Git 未跟踪内容，建议
-在确认后纳入版本控制。未来若修改 DUT、testbench、周期模型、fixture 解析或 trace
-schema，必须重新生成 provenance 并运行 7 项 RTL strict 回归。
+原 Im2Col `PLAN.md` 范围内没有必需的下一步。Im2Col `src/sau_n/` baseline已纳入
+版本控制；相关 `util/im2col/`、`tests/gem5/im2col/` 和
+`configs/example/im2col_timing.py` 当前仍未纳入版本控制，后续交付前需要单独审核。
+
+SAU Step 8本地wrapper/testbench、runner、来源/回传校验和工作站包已经完成。下一步在
+VCS工作站运行Step 8包并返回完整结果；在RTL golden返回前不执行或伪造最终逐拍验收。
+gem5构建和quick test仍由用户按本目录约束手动执行。Step 4周期锚点在VCS返回前继续
+保持provisional；取得VCS结果后先校准
+Step 0/Step 4契约，再进入Step 8 golden导入和最终严格逐拍验收。未来若修改原Im2Col DUT、
+testbench、周期模型、fixture解析或trace schema，仍必须重新生成provenance并运行
+7项RTL strict回归。

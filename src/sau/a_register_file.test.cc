@@ -51,6 +51,33 @@ TEST(ARegisterFileIn, ReportsArrayReuseMoreThanExternalReads)
     EXPECT_EQ(registerFile.totalArrayInputBeats(), 8);
 }
 
+TEST(ARegisterFileIn, TracksRtlTransposeDrainInputsSeparately)
+{
+    ARegisterFileIn registerFile(makeCommand(1, 1), 8);
+
+    EXPECT_EQ(registerFile.totalExternalLoadBeats(), 4U);
+    EXPECT_EQ(registerFile.totalArrayInputBeats(), 8U);
+}
+
+TEST(ARegisterFileIn, CountsBDrivenWorkWhenAAndBHaveDifferentLengths)
+{
+    const SauCommand command{
+        1,
+        Operation::Gemm,
+        Precision::Int8,
+        {0x1000, 32, 32, 0, 0},
+        {0x2000, 256, 32, 0, 0},
+        {0x3000, 256, 32, 0, 0},
+        1,
+        1,
+        256,
+    };
+    ARegisterFileIn registerFile(command);
+
+    EXPECT_EQ(registerFile.totalExternalLoadBeats(), 32);
+    EXPECT_EQ(registerFile.totalArrayInputBeats(), 256);
+}
+
 TEST(ARegisterFileIn, ProducesVirtualAArrayInputBeatsAfterPreload)
 {
     ARegisterFileIn registerFile(makeCommand(2, 1));

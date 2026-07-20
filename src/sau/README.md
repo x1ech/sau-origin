@@ -21,7 +21,7 @@ From the gem5 worktree, build the RISC-V optimized binary incrementally:
 scons --ignore-style build/RISCV/gem5.opt -j4
 ```
 
-## Run and compare the calibrated RTL profile
+## Run and compare a strict RTL CSR fixture
 
 The fixed-cadence calibration path uses a local deterministic read-response
 schedule. It is the only profile intended for strict cycle comparison.
@@ -30,41 +30,80 @@ schedule. It is the only profile intended for strict cycle comparison.
 ./build/RISCV/gem5.opt \
     --outdir=m5out/sau-rtl-strict \
     configs/example/sau_timing.py \
-    --rtl-profile \
-    --calibration-memory \
+    --rtl-profile tests/gem5/sau/ref/int8_gemm_64x256x256_baseline \
     --trace=m5out/sau-rtl-strict/sau.csv
 
 python3 util/sau/compare_trace.py --mode strict \
-    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
+    tests/gem5/sau/ref/int8_gemm_64x256x256_baseline/architecture.csv \
     m5out/sau-rtl-strict/sau.csv
 ```
 
 The expected result is exit cause `SAU command complete` and no output from
-the comparator. The imported profile has two commands and 18,446 trace rows.
+the comparator. Strict mode replays `csr_writes.csv`, loads named RTL
+elaboration parameters from `manifest.json`, and writes
+`sau_timing_ledger.csv` alongside the trace. It rejects all timing overrides.
+
+Strict mode models only the RTL-visible SRAM contract: one shared 256-bit
+(32-byte) read/write request port, at most one request per SAU cycle, read
+priority, ordered responses, and fixed read visibility at
+`accepted_cycle + SRAM_DELAY + 1`. Operand-A is externally preloaded before
+Operand-B requests and becomes resident in `ARegisterFileIn` before array
+execution. SRAM banks, crossbar contention, retry, and variable latency are
+intentionally reserved for non-strict system-memory runs.
+
+The verified strict control domain is int8 GEMM with `trans_mode=01` and
+`reuse_mode=01`. Five coverage shapes (32x32x32, 64x32x256, 64x256x32,
+32x256x256, and 64x256x256) were used to derive and freeze the structural
+rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
+64x256x128) then passed without fixture-specific timing adjustment. This is
+evidence for M/K/N generalization inside the tested control domain, not a
+claim that every unobserved RTL configuration is supported.
+
+All eight packages are registered as RISC-V quick tests. Each test runs both
+the normalized architecture strict comparator and the RTL-diagnostic
+semantic-state comparator:
+
+```bash
+cd tests
+./main.py run --skip-build gem5/sau
+```
+
+## Inspect semantic schedule states
+
+Strict fixture runs also write `sau_state.csv` without changing the public
+seven-column architecture trace. It records semantic-state transitions,
+their mapped RTL state family, the modeled input switch, and the transition
+cause. Compare it with the RTL diagnostic projection when debugging a timing
+divergence:
+
+```bash
+python3 util/sau/compare_state_trace.py --rtl-diagnostic \
+    tests/gem5/sau/ref/int8_gemm_64x256x256_baseline/diagnostic.csv \
+    m5out/sau-rtl-strict/sau_state.csv
+
+python3 util/sau/validate_fixture.py tests/gem5/sau/ref
+```
+
+The state comparator is intentionally stricter than the architecture trace:
+it identifies the first differing semantic state, input switch, or transition
+cause. A mismatch is diagnostic evidence, not a reason to add a profile delay.
 
 ## Run the constrained system-memory profile
 
-Without `--calibration-memory`, SAU sends requests through `SystemXBar` and
-`SimpleMemory`, so retry, latency variance, bandwidth, and outstanding limits
-can affect timing. Its trace must use causal comparison: independent request
-and response events may interleave differently from RTL while command-local
-dataflow remains checked.
+Without `--rtl-profile`, SAU is an explicitly non-strict direct-command/DSE
+run. It sends requests through `SystemXBar` and `SimpleMemory`, so retry,
+latency variance, bandwidth, and outstanding limits can affect timing.
 
 ```bash
 ./build/RISCV/gem5.opt \
     --outdir=m5out/sau-constrained \
     configs/example/sau_timing.py \
-    --rtl-profile \
     --memory-latency=20ns \
     --memory-latency-var=5ns \
     --memory-bandwidth=1GiB/s \
     --max-outstanding-reads=2 \
     --max-outstanding-writes=2 \
     --trace=m5out/sau-constrained/sau.csv
-
-python3 util/sau/compare_trace.py --mode causal \
-    tests/gem5/sau/ref/int8_gemm_64x256x256/architecture.csv \
-    m5out/sau-constrained/sau.csv
 ```
 
 ## Important timing parameters
@@ -90,6 +129,10 @@ after tokens are present; otherwise the old all-results-before-writeback rule
 would deadlock. This streaming-FIFO behavior is intentionally not suitable
 for strict RTL comparison or the current causal comparator's
 result-before-writeback dependency.
+
+All timing knobs in this section are DSE controls. Their use prints
+`non-strict direct-command/DSE`; they must not be combined with
+`--rtl-profile CSR_FIXTURE`.
 
 ## Statistics
 

@@ -53,9 +53,27 @@ ArrayPipeline::ArrayPipeline(
 }
 
 void
+ArrayPipeline::configure(Cycles fillLatency, Cycles initiationInterval)
+{
+    assert(tokens.empty());
+    assert(fillLatency != Cycles(0));
+    assert(initiationInterval != Cycles(0));
+    this->fillLatency = fillLatency;
+    this->initiationInterval = initiationInterval;
+}
+
+void
 ArrayPipeline::reset()
 {
     assert(tokens.empty());
+    hasAccepted = false;
+    nextAcceptCycle = Cycles(0);
+}
+
+void
+ArrayPipeline::resetForCommand()
+{
+    tokens.clear();
     hasAccepted = false;
     nextAcceptCycle = Cycles(0);
 }

@@ -6,9 +6,14 @@ Source("address_generator.cc")
 Source("a_register_file.cc")
 Source("array_input_scheduler.cc")
 Source("command.cc")
+Source("csr_config.cc")
+Source("csr_fixture.cc")
 Source("memory_port.cc")
 Source("result_scheduler.cc")
+Source("schedule_state.cc")
 Source("sau_model.cc")
+Source("state_trace_writer.cc")
+Source("timing_policy.cc")
 Source("token_pipeline.cc")
 Source("trace_writer.cc")
 
@@ -21,6 +26,8 @@ GTest("a_register_file.test", "a_register_file.test.cc",
 GTest("array_input_scheduler.test", "array_input_scheduler.test.cc",
       "array_input_scheduler.cc")
 GTest("command.test", "command.test.cc", "command.cc")
+GTest("csr_config.test", "csr_config.test.cc", "csr_config.cc", "command.cc",
+      "timing_policy.cc")
 GTest("memory_port.test", "memory_port.test.cc", "memory_port.cc",
       "../mem/packet.cc", "../mem/port.cc", "../mem/protocol/functional.cc",
       "../mem/protocol/timing.cc", "../sim/bufval.cc", "../sim/port.cc",
@@ -29,3 +36,5 @@ GTest("token_pipeline.test", "token_pipeline.test.cc", "token_pipeline.cc")
 GTest("trace_writer.test", "trace_writer.test.cc", "trace_writer.cc")
 GTest("result_scheduler.test", "result_scheduler.test.cc",
       "result_scheduler.cc")
+GTest("schedule_state.test", "schedule_state.test.cc", "schedule_state.cc")
+GTest("timing_policy.test", "timing_policy.test.cc", "timing_policy.cc")

@@ -56,6 +56,26 @@ struct StreamDesc
     uint32_t instructionStrideBytes = 0;
 };
 
+/**
+ * Optional nested address program for the streamed Operand-B reads.
+ *
+ * mem_addr.sv advances x, y, flow, then instruction counters.  Synthetic
+ * commands keep this disabled and continue to use StreamDesc's linear
+ * address formula.
+ */
+struct NestedAddressProgram
+{
+    bool enabled = false;
+    uint32_t xCount = 1;
+    uint32_t yCount = 1;
+    uint32_t flowCount = 1;
+    uint32_t instructionCount = 1;
+    uint32_t xStepBytes = 0;
+    uint32_t yStepBytes = 0;
+    uint32_t flowStepBytes = 0;
+    uint32_t instructionStepBytes = 0;
+};
+
 struct SauCommand
 {
     uint64_t id = 0;
@@ -66,7 +86,13 @@ struct SauCommand
     StreamDesc output;
     uint32_t flowLoops = 1;
     uint32_t instructionLoops = 1;
+    // Effective array work tokens are driven by the streaming Operand-B path.
     uint32_t workItems = 0;
+    // scheduler.sv ins_times_i is driven by vertical.ins_cycle independently
+    // of flow_times_i, which is driven by flowLoops. Zero preserves the
+    // legacy direct-command interpretation (flowLoops * instructionLoops).
+    uint32_t scheduleInstructions = 0;
+    NestedAddressProgram operandBAddress;
 };
 
 struct Beat

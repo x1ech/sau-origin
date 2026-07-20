@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "remote": "http://git.acelab.net.cn/zbn/npu_lpnpu.git",
+    "branch": "mikui_16x16",
+    "commit": "2ca8252ef1cac43ef843998e9e08023259ac17ee",
+    "tree": "36a1f92a3e8e1a6f83f911393d17fed6d1a16217",
+    "source_directory": "hardware/src/sa_execute"
+  },
+  "original_files": [
+    {
+      "path": "hardware/src/sa_execute/SA_pkg.sv",
+      "sha256": "cc75e5248f4b7b11aae335e226bac61bfbcfe73938b3b275cab04b27927ebcff"
+    },
+    {
+      "path": "hardware/src/sa_execute/SA_ENGINE.sv",
+      "sha256": "d1ee4c768b2a898952c6fdf8aefe2527163c55e23e356a8d224df32f89981ff5"
+    },
+    {
+      "path": "hardware/src/sa_execute/SA_ROW.sv",
+      "sha256": "407d123228bd742702fe9904afc7d3338487f2956deb97b5d4d4f8bc84197976"
+    },
+    {
+      "path": "hardware/src/sa_execute/SA_PE.sv",
+      "sha256": "098a5a7374095b14395d43aa31f9eabdba9a9cfbbcdfec9d8f11900733135e8d"
+    },
+    {
+      "path": "hardware/src/sa_execute/active_delay.v",
+      "sha256": "877bd335e3522396098d71ff5f422172c02569800a242c396ec57b2ebf66614f"
+    },
+    {
+      "path": "hardware/src/sa_execute/weight_delay.v",
+      "sha256": "2c16fe26479f81b8586ea2dbcab7a4498ef6e447bf39a06ecc9aa7f921c8632e"
+    },
+    {
+      "path": "hardware/src/sa_execute/DW02_mult_2_stage.v",
+      "sha256": "53a156c7888abc010a127a6b4e2d1a37cf2a0bae7b1d2c7f5b5e88cd3cf4ec44"
+    },
+    {
+      "path": "hardware/src/sa_execute/registers.svh",
+      "sha256": "532dfd1723d2936421b921235abdafcc8ca407990224992ca13575fdb620053a"
+    }
+  ],
+  "integration": {
+    "patch": "patches/0001-fix-finish-dimension-width.patch",
+    "patch_sha256": "1f9cb1690d56719766b1cc9cb5b95c7e70f902c71bd23342c632838105303477",
+    "patched_file": "integration/SA_ENGINE.sv",
+    "patched_sha256": "73c289f653d9b1cfdb306ac1e9d5684e46e9826fa177da1c8e7d0fbfdfc95e83",
+    "allowed_change": "FINISH_ROW/FINISH_COL constant-width fix only"
+  },
+  "macros": {
+    "MODULE_TEST": "undefined",
+    "FULL_PRECISION": "undefined",
+    "MAX_USE": "undefined"
+  }
+}

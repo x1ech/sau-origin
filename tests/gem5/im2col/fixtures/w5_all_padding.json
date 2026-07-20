@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "w5_all_padding_vector",
+  "n": 1,
+  "c": 1,
+  "h": 1,
+  "w": 5,
+  "out_h": 3,
+  "out_w": 5,
+  "kernel_h": 1,
+  "kernel_w": 1,
+  "stride_h": 1,
+  "stride_w": 1,
+  "dilation_h": 1,
+  "dilation_w": 1,
+  "pad_top": 10,
+  "pad_left": 10,
+  "spad_base": 0,
+  "input_generator": "tb_act_value_v1"
+}

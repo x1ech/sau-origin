@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "fixture_name": "int8_gemm_64x256x128_n_holdout",
+  "fixture_role": "holdout",
+  "precision": "int8",
+  "operation": "GEMM",
+  "matrix": {
+    "m": 64,
+    "k": 256,
+    "n": 128
+  },
+  "trans_mode": "0x1",
+  "reuse_mode": "0x1",
+  "command_count": 2,
+  "flow_loop_times": 8,
+  "cutbit": 13,
+  "sa_rows": 32,
+  "sa_cols": 32,
+  "sram_data_bits": 256,
+  "beat_bytes": 32,
+  "elaboration_params": {
+    "SA_SIZE": 32,
+    "ROW_NUM": 32,
+    "COL_NUM": 32,
+    "REGDEPTH": 256,
+    "SRAM_DELAY": 3,
+    "ADDR_DELAY": 2,
+    "SRAM_DATA_WIDTH": 256,
+    "clock_period_ns": 1.666
+  },
+  "reset_length_ns": 100,
+  "csr_start_cycle": 28914,
+  "core_start_cycle": 28914,
+  "command_accepted_count": 2,
+  "command_complete_count": 2,
+  "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
+  "npu_worktree_diff_sha256": "d7df2463318ebaa00503b6bac73c08e58a47a2de7b37bbdccd7be9ef448415c2",
+  "simulator": "VCS",
+  "simulator_version": "VCS T-2022.06_Full64",
+  "run_command": "make -C sim/vcs/script/case_yinglong sim FIRMWARE_DIR=software/benchmarks/yinglong_sau_test/build",
+  "testcase_dir": "/home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test/build",
+  "testcase_sha256": {
+    "instruction.hex": "5962da70246e068fedacf7a031881a67cb8a311ca8f44c9b0e84e318d7c7f670",
+    "memory.hex": "9452fda745f9077677bc678ef03ddc0fe8652413f133e0540c8ed7fd310ffc63",
+    "memory_mod_0.hex": "3e7afefbcecd9a364c68b72f8cf1ca866cc3015d8a7c6b2a55e43087f12a37a6",
+    "memory_mod_1.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1",
+    "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+  },
+  "architecture_row_count": 9742,
+  "diagnostic_row_count": 3521,
+  "csr_write_count": 14,
+  "fsdb_path": "sim/vcs/build/yinglong/yinglong.fsdb",
+  "artifacts_sha256": {
+    "csr_writes.csv": "26e26938ae06fef54dd1d66ac8bc0b1f7ee38e505bea4517a7c93f3b2a485a83",
+    "csr_snapshot.json": "1d4557386c7632230e6863634c791589d45b2fa3bf28a768cd80dc29baf9c540",
+    "architecture.csv": "f75022d5708917276edbc3e4936ce1920fbec703f54db24f5e7e10774060315e",
+    "diagnostic.csv": "62559786a962f05f6581bd153605b4efc8ca89334b8b58e0fc1584c99a868a99",
+    "manifest.json": "9493fdc08f75037ac1569740f1e5fff31e1b3c42393f961a4ec2717110898e75"
+  },
+  "command_start_cycles": [
+    28914,
+    30813
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "fixture": "fixtures/w1_n2_c2_base7.json",
+      "ready_period": 1,
+      "ready_high_cycles": 1
+    },
+    {
+      "fixture": "fixtures/w5_pack3_pad1.json",
+      "ready_period": 1,
+      "ready_high_cycles": 1
+    },
+    {
+      "fixture": "fixtures/w16_explicit_tail.json",
+      "ready_period": 1,
+      "ready_high_cycles": 1
+    },
+    {
+      "fixture": "fixtures/w17_dilation_tail.json",
+      "ready_period": 1,
+      "ready_high_cycles": 1
+    },
+    {
+      "fixture": "fixtures/w20_stride2_conflict.json",
+      "ready_period": 1,
+      "ready_high_cycles": 1
+    },
+    {
+      "fixture": "fixtures/w5_all_padding.json",
+      "ready_period": 1,
+      "ready_high_cycles": 1
+    },
+    {
+      "fixture": "fixtures/w5_pack3_pad1.json",
+      "ready_period": 11,
+      "ready_high_cycles": 1
+    }
+  ]
+}

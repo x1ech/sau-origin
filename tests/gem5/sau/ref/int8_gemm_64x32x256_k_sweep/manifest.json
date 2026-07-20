@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "fixture_name": "int8_gemm_64x32x256_k_sweep",
+  "fixture_role": "coverage",
+  "sweep_dimension": "K (32 vs baseline 256), M=64 N=256 held constant",
+  "precision": "int8",
+  "operation": "GEMM",
+  "matrix": {
+    "m": 64,
+    "k": 32,
+    "n": 256
+  },
+  "trans_mode": "0x1",
+  "reuse_mode": "0x1",
+  "command_count": 2,
+  "flow_loop_times": 1,
+  "cutbit": 8,
+  "sa_rows": 32,
+  "sa_cols": 32,
+  "sram_data_bits": 256,
+  "beat_bytes": 32,
+  "elaboration_params": {
+    "SA_SIZE": 32,
+    "ROW_NUM": 32,
+    "COL_NUM": 32,
+    "REGDEPTH": 256,
+    "SRAM_DELAY": 3,
+    "ADDR_DELAY": 2,
+    "SRAM_DATA_WIDTH": 256,
+    "clock_period_ns": 1.666
+  },
+  "reset_length_ns": 100,
+  "command_start_cycles": [
+    28914,
+    30163
+  ],
+  "command_start_rows": [
+    1,
+    8
+  ],
+  "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
+  "npu_worktree_diff_sha256": "f98bffb30d49d1f1fc21ae11f60c8a06b56b0aea077d7d68bf9dbd553169e494",
+  "simulator": "VCS",
+  "simulator_version": "VCS T-2022.06_Full64",
+  "run_command": "make -C sim/vcs/script/case_yinglong sim FIRMWARE_DIR=software/benchmarks/yinglong_sau_test/build",
+  "fsdb_path": "sim/vcs/build/yinglong/yinglong.fsdb",
+  "testcase_dir": "/home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test/build",
+  "testcase_sha256": {
+    "instruction.hex": "020cc01b308725d3e4680fcf457323eb87230d7b7d943843a17b980cedc5f0d9",
+    "memory.hex": "92338f5701fba0bffe07fbc08b92505a8b6b7162b3548ecb5e7096444bc21f03",
+    "memory_mod_0.hex": "51a837165f26a8b1875979d857a7c224afc767f8a3e93b2107f83230d7c1eb18",
+    "memory_mod_1.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1",
+    "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+  },
+  "architecture_row_count": 3278,
+  "diagnostic_row_count": 2221,
+  "csr_write_count": 14,
+  "artifacts_sha256": {
+    "csr_writes.csv": "c9d0b14ac344a8f53d41e10bd94b940041d11c4226cfadc5299c6dcb02f1bb2c",
+    "csr_snapshot.json": "4ee1cfe7e4834fb087d6c397e0522eaea28e5965bbd848ae47cccf0b745e8e98",
+    "architecture.csv": "ae5fd2a6c2da165ce2a1e71628e01a54312902b551186940abbf5dc67dc5cbad",
+    "diagnostic.csv": "0b3a5721e2a6983c352dfd3469b85cd484c6f25d9747bbad49e81184a554cbba",
+    "manifest.json": "9a9df6c1544174ae64e1f13f5233da7b522d7bafd8bd53cd0d9bead5860345a1"
+  }
+}

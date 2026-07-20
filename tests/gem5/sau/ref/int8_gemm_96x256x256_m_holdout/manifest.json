@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "fixture_name": "int8_gemm_96x256x256_m_holdout",
+  "fixture_role": "holdout",
+  "precision": "int8",
+  "operation": "GEMM",
+  "matrix": {
+    "m": 96,
+    "k": 256,
+    "n": 256
+  },
+  "trans_mode": "0x1",
+  "reuse_mode": "0x1",
+  "command_count": 3,
+  "flow_loop_times": 8,
+  "cutbit": 13,
+  "sa_rows": 32,
+  "sa_cols": 32,
+  "sram_data_bits": 256,
+  "beat_bytes": 32,
+  "elaboration_params": {
+    "SA_SIZE": 32,
+    "ROW_NUM": 32,
+    "COL_NUM": 32,
+    "REGDEPTH": 256,
+    "SRAM_DELAY": 3,
+    "ADDR_DELAY": 2,
+    "SRAM_DATA_WIDTH": 256,
+    "clock_period_ns": 1.666
+  },
+  "reset_length_ns": 100,
+  "csr_start_cycle": 28914,
+  "core_start_cycle": 28914,
+  "command_accepted_count": 3,
+  "command_complete_count": 3,
+  "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
+  "npu_worktree_diff_sha256": "c5580716da47ece55011da978c412d4556243806600dde218ed1976b1b11960e",
+  "simulator": "VCS",
+  "simulator_version": "VCS T-2022.06_Full64",
+  "run_command": "make -C sim/vcs/script/case_yinglong sim FIRMWARE_DIR=software/benchmarks/yinglong_sau_test/build",
+  "testcase_dir": "/home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test/build",
+  "testcase_sha256": {
+    "instruction.hex": "e5177b8e79d52a4d395d1ef8542a03116ad5e7d2a3617c154b4631ec4e90418a",
+    "memory.hex": "65cb2b6dc13d2f91160b716018da6b4993570eba5514ea6e1290b653c96ee268",
+    "memory_mod_0.hex": "cc2d846b3bc74a729241c7029c695b31169519bfaa698fc7408214fac845a876",
+    "memory_mod_1.hex": "1aff7939e992d2a6b574772a67a56cd14adfed817738ab232c5750b670cfe15b",
+    "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+  },
+  "architecture_row_count": 27669,
+  "diagnostic_row_count": 8996,
+  "csr_write_count": 21,
+  "fsdb_path": "sim/vcs/build/yinglong/yinglong.fsdb",
+  "artifacts_sha256": {
+    "csr_writes.csv": "9eec6316ef8a40e883983740630c18818487d671e6b34e23c9d4cfffe299bfda",
+    "csr_snapshot.json": "f817d23929fba23f25b5b8dd7828b2a09bbd6421e0e8b011007801e8e114c0b9",
+    "architecture.csv": "698fdda125ee8a641299bfa1f533de8ca37ab88eb86825373f92e39d9ff988d5",
+    "diagnostic.csv": "2789960708697f6ca094f036848b1899bd308158a77ac64ab916117dec80460c",
+    "manifest.json": "4a10bdeb12a3b54c09e5a21f417e79b8c117f86e3fad473de07e570f53529a39"
+  },
+  "command_start_cycles": [
+    28914,
+    32005,
+    35096
+  ],
+  "command_start_rows": [
+    1,
+    8,
+    15
+  ],
+  "sweep_dimension": "M (96 vs baseline 64), K=256 N=256 held constant"
+}

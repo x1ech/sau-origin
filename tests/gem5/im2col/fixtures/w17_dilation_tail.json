@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "w17_dilation2_pad1_tail",
+  "n": 1,
+  "c": 1,
+  "h": 3,
+  "w": 17,
+  "kernel_h": 2,
+  "kernel_w": 2,
+  "stride_h": 1,
+  "stride_w": 1,
+  "dilation_h": 2,
+  "dilation_w": 2,
+  "pad_top": 1,
+  "pad_left": 1,
+  "spad_base": 0,
+  "input_generator": "tb_act_value_v1"
+}

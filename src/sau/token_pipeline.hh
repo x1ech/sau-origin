@@ -39,8 +39,15 @@ class ArrayPipeline
     ArrayPipeline(Cycles fillLatency, Cycles initiationInterval,
                   size_t maxInFlight);
 
+    // A strict CSR command may change the RTL-derived fill latency.  This is
+    // legal only at a drained command boundary.
+    void configure(Cycles fillLatency, Cycles initiationInterval);
     // Start a command-local timing epoch after the previous command drains.
     void reset();
+    // Begin a new architecturally completed command. Shadow capacity tokens
+    // do not cross command boundaries even when their nominal ready cycle is
+    // later than the command's result/writeback closure.
+    void resetForCommand();
     bool canAccept(Cycles now) const;                                  // mit-in-flight 未满 && II 已过
     void accept(uint64_t commandId, uint32_t index, bool last, Cycles now);// 入队，记录 readyCycle = now + fillLatency
     bool canAcceptAdditional() const;                                  // 同拍附加输入，不消耗 II
@@ -52,8 +59,8 @@ class ArrayPipeline
     size_t inFlight() const;                                           // 阵列内剩余未出 token 数
 
   private:
-    const Cycles fillLatency;
-    const Cycles initiationInterval;
+    Cycles fillLatency;
+    Cycles initiationInterval;
     const size_t maxInFlight;
     std::deque<PipelineToken> tokens;
     bool hasAccepted = false;

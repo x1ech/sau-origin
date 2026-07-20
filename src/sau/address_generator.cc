@@ -87,6 +87,36 @@ AddressGenerator::streamDesc() const
         command.operandB : command.operandA;
 }
 
+Addr
+AddressGenerator::operandBAddress() const
+{
+    const auto &program = command.operandBAddress;
+    if (!program.enabled) {
+        return command.operandB.base +
+            static_cast<Addr>(instruction) *
+                command.operandB.instructionStrideBytes +
+            static_cast<Addr>(flow) * command.operandB.flowStrideBytes +
+            static_cast<Addr>(beat) * command.operandB.strideBytes;
+    }
+
+    uint64_t index =
+        (static_cast<uint64_t>(instruction) * command.flowLoops + flow) *
+            command.operandB.beats + beat;
+    const uint32_t x = index % program.xCount;
+    index /= program.xCount;
+    const uint32_t y = index % program.yCount;
+    index /= program.yCount;
+    const uint32_t nestedFlow = index % program.flowCount;
+    index /= program.flowCount;
+    const uint32_t nestedInstruction = index % program.instructionCount;
+
+    return command.operandB.base +
+        static_cast<Addr>(x) * program.xStepBytes +
+        static_cast<Addr>(y) * program.yStepBytes +
+        static_cast<Addr>(nestedFlow) * program.flowStepBytes +
+        static_cast<Addr>(nestedInstruction) * program.instructionStepBytes;
+}
+
 void
 AddressGenerator::updateFront()
 {
@@ -97,13 +127,11 @@ AddressGenerator::updateFront()
     //
     // A preload 不随 flow 变化；B stream 使用真实 flow 游标。
     const auto &desc = streamDesc();
-    const uint32_t streamFlow =
-        stream == StreamKind::OperandB ? flow : 0;
-    const Addr address =
+    const Addr address = stream == StreamKind::OperandB ?
+        operandBAddress() :
         desc.base +
-        static_cast<Addr>(instruction) * desc.instructionStrideBytes +
-        static_cast<Addr>(streamFlow) * desc.flowStrideBytes +
-        static_cast<Addr>(beat) * desc.strideBytes;
+            static_cast<Addr>(instruction) * desc.instructionStrideBytes +
+            static_cast<Addr>(beat) * desc.strideBytes;
     current = {
         stream,
         address,

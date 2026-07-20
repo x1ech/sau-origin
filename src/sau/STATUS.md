@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-10
+Last updated: 2026-07-15
 
 ## Goal
 
@@ -20,7 +20,7 @@ Design and implementation references:
 ## Current State
 
 - Current stage: Tasks 1 through 11 implementation and validation complete.
-  Final milestone commit `50d42ef51c` is pushed to
+  Final milestone commits `50d42ef51c` and `f303ee71c5` are pushed to
   `sau-origin/feature/sau-command-types`. The standalone model can
   now emit the imported RTL baseline's two-command shape, addresses, row
   count, event counts, fixed read/write accepted cadence, and causal event
@@ -63,9 +63,159 @@ Design and implementation references:
   a statistics-window fix for the first synthetic command, DSE monotonicity
   checks for array/FIFO capacity, and `src/sau/README.md`. The final strict,
   constrained causal, and four DSE simulations passed on 2026-07-10.
-- The current direct-command model assumes the target operator uses the RTL
-  `register_file_in` path; CSR decode of reuse/control fields is not yet
-  modeled.
+- Current PLAN2 milestone: Step 1 CSR/decode is verified by the focused
+  `csr_config.test` (7/7 passed). Step 2's semantic ATB/reuse-A schedule
+  state passed its focused tests and the legacy direct-command strict
+  regression on 2026-07-14: both traces have 18,446 data rows and strict
+  comparison exits successfully. PLAN2 Step 3 is verified on 2026-07-14:
+  `timing_policy.test` passed 3/3, `csr_config.test` passed 7/7, and strict
+  comparison of the baseline CSR fixture passed with 18,446 data rows.
+  Strict `--rtl-profile CSR_FIXTURE` replays
+  `csr_writes.csv`, loads named RTL elaboration parameters from the manifest,
+  derives scheduler timing through `timing_policy.{hh,cc}`, emits a
+  per-command CSV ledger, and rejects strict timing overrides. The direct
+  command controls remain explicitly non-strict DSE controls. Step 5 later
+  promoted five coverage fixtures and validated three hold-outs after formula
+  freeze; the hold-outs remained excluded from timing adjustment.
+- PLAN2 Step 4 instrumentation is built and exercised on 2026-07-15:
+  `schedule_state.test` passed 5/5; `sau_state.csv`
+  records semantic schedule transitions independently of `architecture.csv`;
+  `compare_state_trace.py` normalizes RTL `diagnostic.csv` and pinpoints the
+  first state/switch/cause mismatch; `validate_fixture.py` validates the eight
+  PLAN2 fixture packages and their SHA256 contracts. Python comparator tests,
+  fixture validation, and the baseline architecture strict regression pass.
+  The original command-1 mismatches at cycles 258 and 290 are fixed and the
+  focused C++ tests plus baseline architecture strict comparison pass. The
+  Step 4 is verified on the baseline fixture. The debug projection separates
+  runtime execution eligibility from scheduler-observable trace state, aligns
+  the named `data_last` window, `TRANSPOSE_CLIP` `SA_SIZE` duration, `D_OUT`
+  edge, and final `REGISTER_UNLOAD` switch reset. The latter derives from
+  `sa_feeder.result_last/update_finished`, scheduler state edges, and the
+  feeder switch pipeline. On 2026-07-15, `timing_policy.test` passed 3/3;
+  baseline architecture strict and state strict comparators both passed with
+  18,446 architecture data rows and 56 state transitions. Coverage state
+  strict comparison remains required before fixture promotion.
+- PLAN2 Step 4.5 storage-contract implementation is verified on
+  2026-07-15. `RtlStorageTiming` derives the supported 32-byte beat and fixed
+  read-visible latency from `SRAM_DATA_WIDTH` and `SRAM_DELAY + 1`; strict
+  timing no longer consumes the standalone calibration-latency parameter.
+  Strict requests share one issue slot with read-first scheduling and runtime
+  checks for single issue, ordered fixed-latency responses, and A-preload
+  request ordering. Strict Operand-B requests retain the RTL's no-ready fixed
+  cadence and assert the returned-token staging bound derived from the named
+  SA row/read-ahead window. Non-strict timing memory instead reserves capacity
+  for both returned and in-flight reads using `input_buffer_entries`, allowing
+  that path to apply backpressure without changing strict cycles.
+  `validate_fixture.py` now checks the same storage contract against every
+  architecture trace. It validated 20,352 reads across all eight PLAN2
+  packages; Python tests passed 18/18, `timing_policy.test` passed 4/4, and
+  `csr_config.test` passed 7/7. The baseline strict simulation completed with
+  18,446 architecture data rows and 56 state transitions; both comparators
+  returned success. Strict rejected a read-latency override, while a
+  non-strict 5-cycle override completed with both observed reads at 5 cycles.
+- PLAN2 Step 5 fixed-memory convergence completed on 2026-07-15. The model
+  preserves `scheduler.flow_times_i = flow_loop_times` separately from
+  `scheduler.ins_times_i = vertical.ins_cycle`, generates nested
+  x/y/flow/instruction B addresses, supports asymmetric A/B array-input
+  extents, and derives short-D_OUT, result gaps, input-switch reset, early
+  `REGISTER_UNLOAD`, writeback, and command-boundary cleanup from named RTL
+  structure. Small, K, N, M, and baseline coverage all passed architecture
+  and state strict comparison; formulas were then frozen before M96, K128,
+  and N128 hold-out validation. All three hold-outs passed architecture and
+  state strict comparison as well, for 16 successful final comparators over
+  eight fixtures. No fixture name, test ID, command ID, matrix-size branch,
+  or hold-out timing override was introduced.
+- K128 initially exposed a state-only generalization defect while its
+  architecture trace already matched. The old `REUSE_LOAD` duration used
+  `inputBeatsPerInstruction - BReadAhead`, which agreed with baseline only
+  because `flow_times_i` and `SA_SIZE - BReadAhead` were both eight. Direct
+  inspection of `scheduler.sv`'s `flow_times_cnt` and `data_last` guards gives
+  the generic expression `inputBeatsPerInstruction - SA_SIZE + flow_times_i`.
+  This derivation is now a named `TimingPolicy::flowExecuteCycles` ledger
+  term and is covered by a 100-cycle K128-shape unit assertion. After the
+  structural correction, all five frozen coverage fixtures and all three
+  hold-outs reran without differences.
+- `tests/gem5/sau/test_sau.py` now registers all eight packages as RISCV quick
+  strict suites. Its custom verifier runs the existing architecture strict
+  comparator and RTL-diagnostic semantic-state comparator, rather than
+  directly diffing unnormalized CSV files.
+- Final Step 5 verification used the developer-built 2026-07-15 binary. Eight
+  focused C++ executables passed 58 tests total: address generator 4, A
+  register file 6, array-input scheduler 4, command 18, CSR config 7,
+  schedule state 5, timing policy 6, and token pipeline 8. Python utility
+  tests passed 18/18; all fixture SHA256/schema checks and `git diff --check`
+  passed. The final eight gem5 runs all exited through `SAU command complete`,
+  and their eight architecture plus eight state strict comparisons returned
+  success. The gem5 test framework also executed the small strict suite and
+  passed its simulation, exit-regex, and custom strict-verifier checks 3/3.
+- PLAN2 now inserts Step 5.5 before timing-memory/DSE. Eight-fixture equality
+  is treated as evidence, not proof that every RTL-accepted CSR is predicted.
+  The next implementation must audit the complete CSR-to-command-done RTL
+  timing chain and replace strict aggregate end-cycle scheduling with a
+  per-tick timing skeleton driven by the RTL counters, valid/last signals,
+  register delay chains, and actual handshakes. Existing CSR replay is the
+  only required input path; no CPU model, M/K/N-to-CSR generator, or extra
+  simulation mode is planned. Golden traces remain regression oracles only.
+- Step 5.5 Phase A source audit now uses the current files under
+  `/home/xch/workspace/npu_lpnpu` as the authoritative RTL baseline without
+  depending on that repository's commit state. The CSR-to-command-finish
+  chain, fixed elaboration values, counters, valid/last paths, and output
+  write pipeline are recorded in `src/sau/RTL_TIMING_PROVENANCE.md` with file
+  hashes. The audit found a material baseline change: scheduler D_OUT exit is
+  now driven by `update_finished/update_finished_q`, while output unload is
+  gated by `result_accum_done` and terminates through explicit two-stage data
+  plus four-stage finish pipelines. Therefore the Step 5 short-path,
+  early-unload, and completion aggregates must not be carried into the
+  per-tick skeleton. The RTL owner confirmed that the existing eight-fixture
+  waveform exports were captured from this latest RTL line, so they remain
+  the strict acceptance oracle. Their diagnostic traces already expose the
+  relevant start/state, memory-last, result-last, write, and command-done
+  boundary edges; no new RTL simulation is required before implementation.
+  Runtime C++ is still intentionally unchanged at the end of Phase A. If the
+  original FSDB is available later, `npi_fsdb_probe` will inspect the
+  unexported internal counters and update/result-accumulation pulses.
+- Step 5.5 Phase B adds an isolated `RtlSchedulerSkeleton` to the existing
+  `schedule_state` source and test target. It models the CSR start register,
+  registered scheduler instruction-valid path, core/instruction states,
+  transpose/flow/instruction counters, input switch,
+  `update_finished_q`, D_OUT guards, and write-finished completion with
+  old-state/commit-at-edge semantics. It has no fixture, matrix-shape, golden
+  cycle, or aggregate end-cycle input and is not yet connected to `SauModel`,
+  so existing runtime output is unchanged. `RtlResidentLoadSkeleton` now also
+  reproduces `register_addr.sv`'s x/y/channel loop and registered request
+  valid/last signals. Its coupled scheduler test derives the baseline's 256
+  request cycles and command-relative cycle-258 TRANSPOSE_LOAD edge directly
+  from CSR extents. Phase C now also adds an isolated
+  `RtlStreamLoadSkeleton` for `mem_addr.sv`'s streamed x/y/flow/instruction
+  counters, registered valid/last, delayed retrigger, and combinational
+  `load_done`. All eight current CSR snapshots share the explicitly supported
+  x=1/y=32 vertical shape; other shapes are rejected until independently
+  validated. Three streamed-load tests cover a 32-read single burst, the
+  33-edge two-flow retrigger cadence, and unsupported-shape rejection. The
+  developer-built schedule-state target passed all 13 tests on 2026-07-15.
+  A fourteenth test couples the scheduler, resident counter, and streamed
+  counter using one shared pre-edge snapshot and checks the baseline's first
+  instruction state edges at relative cycles 2, 258, 290, 521, and 554. That
+  coupled test passed together with the other 13 tests in the developer-built
+  binary on 2026-07-15, closing the per-tick start-to-first-D_OUT control chain.
+  The next isolated increment adds `RtlExecuteUpdateSkeleton`, which counts
+  actual SA enable edges through the RTL's internal-finish and first-macro-row
+  finish registers, then reproduces the update FSM distinction between
+  non-final execute-done and final result-last. Three new focused tests cover
+  enable bubbles and finish latency, final-result waiting, and unsupported
+  control rejection. The developer-built target passed all 17 tests on
+  2026-07-15. Feeder-derived `sa_en_i` and the result serializer remain
+  intentionally outside this isolated producer.
+  Coupling is currently paused on a precise observability gap: reconstructing
+  `sa_en_i` from exported `input_switch_f` and A/B valid fields yields 246/247
+  enable edges at the baseline's first D_OUT entry/exit, while RTL source
+  requires 256 enabled counter increments. The 256th reconstructed edge is
+  nine cycles after exit. No correction constant has been added. A targeted
+  baseline trace of internal feeder enable, calc counter, execute-finish, and
+  update signals is required before this producer is connected.
+- The non-strict direct-command model still assumes the target operator uses
+  the RTL `register_file_in` path; strict fixture runs replay the supported
+  CSR reuse/control fields instead.
 - First milestone scope: direct command injection, int8 GEMM, and 32-byte
   timing-memory beats.
 - The memory contract was corrected on 2026-07-03 from a legacy 128-bit
@@ -87,6 +237,28 @@ Design and implementation references:
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
+| PLAN2. CSR-driven Int8 GEMM RTL alignment | Steps 1–5 verified | Step 5 separates RTL `flow_times_i` from `ins_times_i`, adds nested vertical B addresses, asymmetric A/B array inputs, structural short/normal FSM timing, and command-local shadow-pipeline cleanup. Five coverage fixtures passed architecture/state strict comparison before formula freeze; three hold-outs then passed without fixture-specific adjustment. All eight are registered in the gem5 quick strict suite. |
+
+## PLAN2 RTL Golden Fixture Inventory
+
+All packages use the fixed PLAN2 control contract: int8 GEMM,
+`trans_mode=01`, `reuse_mode=01`.
+
+| Role | Fixture | M × K × N |
+| --- | --- | --- |
+| Coverage | `int8_gemm_32x32x32_single_flow` | 32 × 32 × 32 |
+| Coverage | `int8_gemm_32x256x256_m_sweep` | 32 × 256 × 256 |
+| Coverage | `int8_gemm_64x32x256_k_sweep` | 64 × 32 × 256 |
+| Coverage | `int8_gemm_64x256x32_n_sweep` | 64 × 256 × 32 |
+| Coverage | `int8_gemm_64x256x256_baseline` | 64 × 256 × 256 |
+| Hold-out | `int8_gemm_96x256x256_m_holdout` | 96 × 256 × 256 |
+| Hold-out | `int8_gemm_64x128x256_k_holdout` | 64 × 128 × 256 |
+| Hold-out | `int8_gemm_64x256x128_n_holdout` | 64 × 256 × 128 |
+
+Package validation checked SHA256 integrity, CSR/snapshot correspondence,
+command accept/complete closure, and event-count consistency. These fixtures
+provide evidence for M/K/N generalization but do not by themselves prove every
+unobserved RTL-accepted configuration.
 
 ## Implemented Components
 
@@ -574,11 +746,19 @@ Results:
   installed.
 - Current tests establish deterministic component behavior, trace comparison
   behavior, compile-time integration of the scheduler, standalone completion
-  under fixed/constrained memory, and strict RTL cycle alignment for the
-  imported baseline. They do not generalize the calibrated timing values to
-  other matrix shapes without additional RTL traces.
+  under fixed/constrained memory, and strict RTL cycle alignment for five
+  coverage plus three independent M/K/N hold-out shapes. This supports the
+  tested CSR/control domain but does not claim every unobserved RTL-accepted
+  configuration.
 
 ## Next Steps
 
-1. Begin the next independently scoped plan: CSR decode and mode-derived
-   command generation.
+1. Build the Step 5.5 timing-provenance table from RTL source and classify
+   every strict delay as source-proven, unresolved, or aggregate/empirical.
+2. Replace strict aggregate duration scheduling with per-tick RTL counters,
+   transition guards, and delay/token pipelines; emit actual per-stage and
+   total command-cycle summaries.
+3. Keep all eight fixed-memory strict fixtures passing during the migration;
+   request only targeted RTL instrumentation for genuinely unresolved signal
+   edges. After Step 5.5, resume timing-memory causal, backpressure, DSE, and
+   legacy direct-command regression.

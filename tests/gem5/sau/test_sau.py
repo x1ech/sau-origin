@@ -1,15 +1,78 @@
+import os
 import re
+import subprocess
+import sys
 
 from testlib import (
     config,
     constants,
     gem5_verify_config,
     joinpath,
+    test_util,
     verifier,
 )
 
 
 exit_regex = re.compile(r"SAU timing simulation exited: SAU command complete")
+
+
+class VerifySauStrictTraces(verifier.Verifier):
+    """Compare SAU architecture and semantic-state traces against RTL."""
+
+    def __init__(self, rtl_profile):
+        super().__init__()
+        self.rtl_profile = rtl_profile
+
+    def test(self, params):
+        tempdir = params.fixtures[constants.tempdir_fixture_name].path
+        comparisons = (
+            (
+                "architecture",
+                joinpath(config.base_dir, "util", "sau", "compare_trace.py"),
+                (
+                    "--mode",
+                    "strict",
+                    joinpath(self.rtl_profile, "architecture.csv"),
+                    joinpath(tempdir, "sau.csv"),
+                ),
+            ),
+            (
+                "semantic state",
+                joinpath(
+                    config.base_dir,
+                    "util",
+                    "sau",
+                    "compare_state_trace.py",
+                ),
+                (
+                    "--rtl-diagnostic",
+                    joinpath(self.rtl_profile, "diagnostic.csv"),
+                    joinpath(tempdir, "sau_state.csv"),
+                    "--max-errors",
+                    "20",
+                ),
+            ),
+        )
+
+        for label, comparator, arguments in comparisons:
+            result = subprocess.run(
+                (sys.executable, comparator, *arguments),
+                cwd=config.base_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                output = "\n".join(
+                    part.rstrip()
+                    for part in (result.stdout, result.stderr)
+                    if part
+                )
+                test_util.fail(
+                    f"SAU {label} strict comparison failed for "
+                    f"{os.path.basename(self.rtl_profile)}:\n{output}\n"
+                    f"See {tempdir} for full results"
+                )
 
 
 def verify_sau_config(name, config_args):
@@ -24,6 +87,39 @@ def verify_sau_config(name, config_args):
         valid_isas=(constants.riscv_tag,),
         length=constants.quick_tag,
     )
+
+
+def verify_sau_rtl_profile(name):
+    rtl_profile = joinpath(
+        config.base_dir, "tests", "gem5", "sau", "ref", name
+    )
+    gem5_verify_config(
+        name=f"sau-strict-{name}",
+        fixtures=(),
+        verifiers=(
+            verifier.MatchRegex(exit_regex),
+            VerifySauStrictTraces(rtl_profile),
+        ),
+        config=joinpath(
+            config.base_dir, "configs", "example", "sau_timing.py"
+        ),
+        config_args=[f"--rtl-profile={rtl_profile}"],
+        valid_isas=(constants.riscv_tag,),
+        length=constants.quick_tag,
+    )
+
+
+for rtl_profile in (
+    "int8_gemm_32x32x32_single_flow",
+    "int8_gemm_64x32x256_k_sweep",
+    "int8_gemm_64x256x32_n_sweep",
+    "int8_gemm_32x256x256_m_sweep",
+    "int8_gemm_64x256x256_baseline",
+    "int8_gemm_96x256x256_m_holdout",
+    "int8_gemm_64x128x256_k_holdout",
+    "int8_gemm_64x256x128_n_holdout",
+):
+    verify_sau_rtl_profile(rtl_profile)
 
 
 verify_sau_config(
