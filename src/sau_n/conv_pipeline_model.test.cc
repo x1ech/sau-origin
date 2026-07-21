@@ -132,10 +132,16 @@ pythonOracleAnchor()
 }
 
 uint64_t
-runToDrained(ConvPipelineModel &model, bool *sawIm2ColBackpressure = nullptr)
+runToDrained(
+    ConvPipelineModel &model, bool *sawIm2ColBackpressure = nullptr,
+    uint64_t *observedCollectTileCycles = nullptr)
 {
     for (uint64_t attempts = 0; attempts < 200000; ++attempts) {
         const auto cycle = model.tick();
+        if (observedCollectTileCycles &&
+            cycle.state == PipelineState::CollectTile) {
+            ++*observedCollectTileCycles;
+        }
         if (sawIm2ColBackpressure && cycle.im2col.feedValid &&
             !cycle.im2col.feedReady) {
             *sawIm2ColBackpressure = true;
@@ -166,10 +172,15 @@ TEST(ConvPipelineModel, OneTileHandComputedOutputAndConservation)
     config.biasGenerator = "zero";
 
     ConvPipelineModel model(config);
-    const uint64_t drained = runToDrained(model);
+    uint64_t observedCollectTileCycles = 0;
+    const uint64_t drained =
+        runToDrained(model, nullptr, &observedCollectTileCycles);
 
     EXPECT_EQ(model.outputs(), (std::vector<int8_t>{9, 24, 23}));
     EXPECT_EQ(model.stats().tilesCollected, uint64_t{1});
+    EXPECT_EQ(
+        model.stats().collectTileCycles, observedCollectTileCycles);
+    EXPECT_LT(model.stats().collectTileCycles, drained + 1);
     EXPECT_EQ(model.stats().tilesLaunched, uint64_t{1});
     EXPECT_EQ(model.stats().tilesCompleted, uint64_t{1});
     EXPECT_EQ(model.stats().activationHandshakes, uint64_t{9});

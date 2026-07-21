@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "name": "03_c3_w16_oc16_full",
+  "name": "08_n1_c16_h16_w32_oc16",
   "im2col": {
     "schema_version": 1,
-    "name": "03_c3_w16_oc16_full_im2col",
+    "name": "08_n1_c16_h16_w32_oc16_im2col",
     "n": 1,
-    "c": 3,
-    "h": 3,
-    "w": 16,
+    "c": 16,
+    "h": 16,
+    "w": 32,
     "kernel_h": 3,
     "kernel_w": 3,
     "stride_h": 1,
@@ -20,7 +20,7 @@
     "input_generator": "tb_act_value_v1"
   },
   "out_channels": 16,
-  "cutbit": 12,
+  "cutbit": 8,
   "weight_generator": "tb_weight_value_v1",
   "bias_generator": "tb_bias_value_v1"
 }

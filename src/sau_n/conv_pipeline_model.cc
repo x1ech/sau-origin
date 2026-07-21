@@ -212,6 +212,10 @@ ConvPipelineModel::tick()
         throw std::logic_error("cannot tick a drained pipeline");
     }
     const PipelineState oldState = pipelineState;
+    if (oldState == PipelineState::CollectTile) {
+        counters.collectTileCycles = checkedAdd(
+            counters.collectTileCycles, 1, "CollectTile cycle count");
+    }
     ConvPipelineCycle observation;
     observation.cycle = cycleNumber;
     observation.state = oldState;

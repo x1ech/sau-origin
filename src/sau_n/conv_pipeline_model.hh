@@ -15,6 +15,7 @@ namespace gem5::sau_n
 
 struct ConvPipelineModelStats
 {
+    uint64_t collectTileCycles = 0;
     uint64_t tilesCollected = 0;
     uint64_t tilesLaunched = 0;
     uint64_t tilesCompleted = 0;

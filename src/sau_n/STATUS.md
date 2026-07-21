@@ -950,3 +950,41 @@ RTL per-cycle validation passed
 交付包均已完成，当前没有必需的剩余步骤。未来若修改 Im2Col DUT、项目自有阵列、
 testbench、周期模型、fixture 解析或 trace schema，必须重新生成 provenance 并运行
 七项 RTL strict 回归。
+
+### 用户 workload fixture（2026-07-20）
+
+- 新增 `tests/gem5/conv_pipeline/fixtures/08_n1_c16_h16_w32_oc16.json`；
+- 配置为 N1/C16/H16/W32/OC16、3x3、stride 1、dilation 1、padding 1、cutbit 8；
+- 该 fixture 用于独立 gem5 运行，未加入已冻结的七项 RTL golden matrix。
+
+### 融合流水线 CollectTile 周期统计（2026-07-20）
+
+- `ConvPipelineModelStats` 新增 `collectTileCycles`，按每拍开始时的
+  `PipelineState::CollectTile` 累计，与 `trace.csv` 的 `pipeline_state=1` 口径一致；
+- `convPipeline` stats 组新增：
+  - `collectTileCycles`：处于 `CollectTile` 状态的周期数；
+  - `nonCollectCycles`：`totalCycles - collectTileCycles`；
+- 增加模型测试，将内部计数与逐拍 observation 独立计数比较；
+- 已执行 `git diff --check` 和相关源码静态检查；根据 `src/sau_n/AGENTS.md` 的
+  编译约束，未主动重新编译 gem5，新增 stats 尚待开发者增量编译后运行确认。
+
+### Im2Col 流水化探索计划（2026-07-21）
+
+- 新增 `src/sau_n/IM2COL_PIPELINE_PLAN.md`，用于规划 gem5 架构探索；
+- 目标是在保留旧 RTL 等价模型的前提下，新增三级弹性 Im2Col、深度 4 FIFO 和支持
+  输入气泡的直接 PE 流式路径；
+- 第一版范围冻结为 3x3、dilation 1、统一 stride 1/2、统一 padding 0/1、OC 1..16，
+  并保持 16 个单端口 bank 和组合 Scratchpad 响应；
+- 目标 fixture 保持
+  `tests/gem5/conv_pipeline/fixtures/08_n1_c16_h16_w32_oc16.json`，性能门槛为
+  `totalCycles < 12000` 且无冲突稳态 `II=1`，数值输出必须逐字节一致；
+- 计划审查后已冻结 streaming consumer 的 `pe_ready/input_fire`：PE ready 只在
+  `ACCEPT_K` 状态有效，FIFO pop、weight 选择、SA 输入、MAC 调度和 `accepted_k`
+  统一由同一个 `input_fire` 控制；
+- `SauCycleModel` 计划增加默认 strict、显式 elastic 的输入协议模式；旧
+  `ConvPipelineModel` 固定使用 strict 模式并保留气泡异常，新 streaming 入口才启用
+  elastic 模式，避免改变已通过 RTL 严格验证的旧路径；
+- 已补充 S0/S1/S2 同拍弹性推进公式、无符号 padding 下溢保护、单端口 bank 最少读取
+  轮数公式，以及 `conflictFreeOutputII` 的整数计数验收口径；
+- 当前仅完成需求收敛和实施计划，尚未修改模型、构建文件或 RTL，也未执行编译或
+  性能验证。

@@ -98,6 +98,9 @@ ConvPipelineTiming::updateFinalStats()
     pipelineStats.sauLastResultCycle = lastResult;
     pipelineStats.drainedCycle = drained;
     pipelineStats.totalCycles = totalCycles;
+    pipelineStats.collectTileCycles = modelStats.collectTileCycles;
+    pipelineStats.nonCollectCycles =
+        totalCycles - modelStats.collectTileCycles;
     pipelineStats.postIm2colDrainCycles = drained - im2colDone;
 
     sauStats.tilesCollected = modelStats.tilesCollected;
@@ -137,6 +140,10 @@ ConvPipelineTiming::PipelineStats::PipelineStats(
                "Cycle in which every pipeline drain condition holds"),
       ADD_STAT(totalCycles, statistics::units::Cycle::get(),
                "Inclusive cycle count through pipeline drained"),
+      ADD_STAT(collectTileCycles, statistics::units::Cycle::get(),
+               "Cycles with the pipeline in CollectTile state"),
+      ADD_STAT(nonCollectCycles, statistics::units::Cycle::get(),
+               "Total pipeline cycles excluding CollectTile state"),
       ADD_STAT(postIm2colDrainCycles, statistics::units::Cycle::get(),
                "Cycles from Im2Col done through pipeline drained")
 {

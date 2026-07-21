@@ -30,6 +30,8 @@ class ConvPipelineTiming : public ClockedObject
         statistics::Scalar sauLastResultCycle;
         statistics::Scalar drainedCycle;
         statistics::Scalar totalCycles;
+        statistics::Scalar collectTileCycles;
+        statistics::Scalar nonCollectCycles;
         statistics::Scalar postIm2colDrainCycles;
     } pipelineStats;
 
