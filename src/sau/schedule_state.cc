@@ -337,6 +337,462 @@ RtlExecuteUpdateSkeleton::tick(const RtlExecuteUpdateInputs &inputs)
     updateState = nextUpdateState;
 }
 
+bool
+RtlSaEnableSkeleton::saEnable(const RtlSaEnableInputs &inputs) const
+{
+    const bool executeInputSelected =
+        inputs.inputSwitch == 0x1 || inputs.inputSwitch == 0x2;
+    return executeInputSelected && inputEnableDelayReg;
+}
+
+void
+RtlSaEnableSkeleton::tick(const RtlSaEnableInputs &inputs)
+{
+    // sa_feeder.EN_i is combinational A-valid OR B-valid. EN_i_d samples it
+    // at this edge; SA_ENGINE has already sampled the old sa_en_i value.
+    inputEnableDelayReg = inputs.dataAValid || inputs.dataBValid;
+}
+
+RtlResultSerializerSkeleton::RtlResultSerializerSkeleton(
+    const RtlResultSerializerConfig &config_) : config(config_)
+{
+    if (config.saSize != 32 || config.peRowNum != 4 ||
+        config.peColNum != 4) {
+        throw std::invalid_argument(
+            "unsupported RTL result serializer geometry");
+    }
+
+    const uint32_t macroColumns = config.saSize / config.peColNum;
+    finishToMacroPipeline.assign(macroColumns, false);
+}
+
+void
+RtlResultSerializerSkeleton::tick(
+    const RtlResultSerializerInputs &inputs)
+{
+    // Every expression is evaluated from the pre-edge register snapshot.
+    const bool rowScoreValidT = macroStreamingReg;
+    const bool engineStorageReadyBeforeEdge = engineStorageReadyReg;
+    const bool outputStartBeforeEdge = outputStartReg;
+    const bool calFinishT =
+        rowScoreValidT && globalRowCount == config.saSize - 1;
+    const bool storageReadyStart =
+        !engineStorageReadyDelayReg && engineStorageReadyReg;
+    const bool serialStart =
+        (storageReadyStart || outputPendingReg) &&
+        transposerInputReadyReg && !serialActiveReg;
+    const bool resultLastT = resultGateReg && transposerLastReg;
+    const bool transposerReadEnable =
+        transposerReadyOutReg && serialActiveReg && !resultLastT;
+    const bool transposerInputLast =
+        transposerInputCount == config.saSize - 1;
+    const bool transposerOutputLast =
+        transposerOutputCount == config.saSize - 1;
+    const bool resultValidT = resultGateReg && transposerValidReg;
+
+    const bool nextFirstMacroValid = finishToMacroPipeline.back();
+    for (uint32_t index = finishToMacroPipeline.size() - 1;
+         index > 0; --index) {
+        finishToMacroPipeline[index] = finishToMacroPipeline[index - 1];
+    }
+    finishToMacroPipeline[0] = inputs.internalFinish;
+
+    // SA_ENGINE.storage_ready is set by macro_valid_out[0] and cleared by the
+    // final streamed row. Both guards sample their old values at this edge.
+    if (calFinishT) {
+        engineStorageReadyReg = false;
+    } else if (firstMacroValidReg) {
+        engineStorageReadyReg = true;
+    }
+    engineStorageReadyDelayReg = engineStorageReadyBeforeEdge;
+
+    if (serialStart) {
+        outputPendingReg = false;
+    } else if (storageReadyStart) {
+        outputPendingReg = true;
+    }
+    if (resultLastT) {
+        serialActiveReg = false;
+        resultGateReg = false;
+    } else {
+        if (serialStart) {
+            serialActiveReg = true;
+            resultGateReg = true;
+        } else if (calFinishReg) {
+            resultGateReg = true;
+        }
+    }
+
+    if (calFinishT) {
+        outputStartReg = false;
+    } else if (serialStart) {
+        outputStartReg = true;
+    }
+
+    const bool macroResultAvailable =
+        macroResultPendingReg || firstMacroValidReg;
+    if (!macroStreamingReg && macroResultAvailable &&
+        outputStartBeforeEdge) {
+        macroStreamingReg = true;
+        macroResultPendingReg = false;
+        macroStreamCount = 0;
+    } else if (macroStreamingReg) {
+        if (macroStreamCount == config.saSize - 1) {
+            macroStreamingReg = false;
+            macroStreamCount = 0;
+        } else {
+            ++macroStreamCount;
+        }
+    } else if (firstMacroValidReg) {
+        macroResultPendingReg = true;
+    }
+
+    if (rowScoreValidT) {
+        if (globalRowCount == config.saSize - 1) {
+            globalRowCount = 0;
+        } else {
+            ++globalRowCount;
+        }
+    }
+
+    const bool transposerInputEnable = rowScoreValidReg;
+    if (transposerReadEnable && transposerOutputLast) {
+        transposerInputReadyReg = true;
+        transposerReadyOutReg = false;
+    } else if (transposerInputEnable && transposerInputLast) {
+        transposerInputReadyReg = false;
+        transposerReadyOutReg = true;
+    }
+
+    if (transposerInputEnable) {
+        transposerInputCount = transposerInputLast ?
+            0 : transposerInputCount + 1;
+    }
+    if (transposerReadEnable) {
+        transposerOutputCount = transposerOutputLast ?
+            0 : transposerOutputCount + 1;
+    }
+
+    transposerValidReg = transposerReadEnable;
+    transposerLastReg = transposerReadEnable && transposerOutputLast;
+    resultValidReg = resultValidT;
+    resultLastReg = resultLastT;
+    rowScoreValidReg = rowScoreValidT;
+    calFinishReg = calFinishT;
+    firstMacroValidReg = nextFirstMacroValid;
+}
+
+RtlOutputWritebackSkeleton::RtlOutputWritebackSkeleton(
+    const RtlOutputWritebackConfig &config_)
+    : config(config_),
+      outputAddress({config_.outputXBurst, config_.outputYCycles,
+                     config_.outputCCycles})
+{
+    if (config.internalXBurst == 0 || config.internalXBurst > 64 ||
+        config.internalYBurst == 0 || config.internalYBurst > 64 ||
+        config.internalFlowBurst == 0 || config.internalFlowBurst > 64 ||
+        config.internalInstructionBurst == 0 ||
+        config.internalInstructionBurst > 64) {
+        throw std::invalid_argument(
+            "invalid RTL result-accumulation dimensions");
+    }
+}
+
+void
+RtlOutputWritebackSkeleton::tick(
+    const RtlOutputWritebackInputs &inputs)
+{
+    // All guards and pipeline inputs use the pre-edge register snapshot.
+    const bool endX = resultXCounter == config.internalXBurst - 1;
+    const bool endY = resultYCounter == config.internalYBurst - 1;
+    const bool endFlow =
+        resultFlowCounter == config.internalFlowBurst - 1;
+    const bool endInstruction =
+        resultInstructionCounter == config.internalInstructionBurst - 1;
+    const bool resultEnd = endX && endY && endFlow && endInstruction;
+    const bool resultDoneSet = inputs.resultValid && resultEnd;
+    const bool registerOutRequest =
+        inputs.coreState == RtlCoreState::RegisterUnload &&
+        resultAccumDoneReg;
+    const bool registerOutStart =
+        registerOutStateReg && !registerOutStateDelayReg;
+    const bool addressValid = outputAddress.requestValid();
+    const bool addressLast = outputAddress.requestLast();
+    const bool writeLastBeforeEdge = writeLastDelay2Reg;
+
+    if (inputs.resultValid) {
+        if (!endX) {
+            ++resultXCounter;
+        } else if (!endY) {
+            resultXCounter = 0;
+            ++resultYCounter;
+        } else if (!endFlow) {
+            resultXCounter = 0;
+            resultYCounter = 0;
+            ++resultFlowCounter;
+        } else if (!endInstruction) {
+            resultXCounter = 0;
+            resultYCounter = 0;
+            resultFlowCounter = 0;
+            ++resultInstructionCounter;
+        } else {
+            resultXCounter = 0;
+            resultYCounter = 0;
+            resultFlowCounter = 0;
+            resultInstructionCounter = 0;
+        }
+    }
+
+    // FFLARNC clears the sticky completion flag when the scheduler returns
+    // to IDLE; otherwise the final accepted result token sets it.
+    if (inputs.coreState == RtlCoreState::Idle) {
+        resultAccumDoneReg = false;
+    } else if (resultDoneSet) {
+        resultAccumDoneReg = true;
+    }
+
+    outputAddress.tick(registerOutStart);
+    registerOutStateDelayReg = registerOutStateReg;
+    registerOutStateReg = registerOutRequest;
+
+    writeValidDelay2Reg = writeValidDelay1Reg;
+    writeValidDelay1Reg = addressValid;
+    writeLastDelay2Reg = writeLastDelay1Reg;
+    writeLastDelay1Reg = addressLast;
+    writeDoneDelay4Reg = writeDoneDelay3Reg;
+    writeDoneDelay3Reg = writeDoneDelay2Reg;
+    writeDoneDelay2Reg = writeDoneDelay1Reg;
+    writeDoneDelay1Reg = writeLastBeforeEdge;
+}
+
+void
+RtlSramWriteTransportSkeleton::tick(
+    const RtlSramWriteTransportInputs &inputs)
+{
+    // The shared-memory macro samples the old registered crossbar output at
+    // this edge. Expose that physical write event after the commit.
+    memoryWriteAcceptedReg = crossbarSlaveValidReg;
+    memoryWriteLastReg =
+        crossbarSlaveValidReg && crossbarSlaveLastReg;
+
+    // crossbar_mi.crossbar_logic registers the selected master request only
+    // while the accelerator owns the bus in ACTIVE.
+    if (state == State::Active) {
+        crossbarSlaveValidReg = memCtrlWriteValidReg;
+        crossbarSlaveLastReg =
+            memCtrlWriteValidReg && memCtrlWriteLastReg;
+    } else {
+        crossbarSlaveValidReg = false;
+        crossbarSlaveLastReg = false;
+    }
+
+    // mem_ctrl's write branch is one register between register_file_out and
+    // sau_sram_enable/wstrb. The native interface has no ready/backpressure.
+    memCtrlWriteValidReg = inputs.nativeWriteValid;
+    memCtrlWriteLastReg =
+        inputs.nativeWriteValid && inputs.nativeWriteLast;
+
+    State nextState = state;
+    switch (state) {
+      case State::Idle:
+        if (inputs.crossbarStart) {
+            nextState = State::Active;
+        } else if (inputs.dbusRequest) {
+            nextState = State::RvActive;
+        }
+        break;
+      case State::Active:
+        if (inputs.crossbarDone) {
+            nextState = State::Idle;
+        }
+        break;
+      case State::RvActive:
+        if (inputs.crossbarStart) {
+            nextState = State::Active;
+        } else if (!inputs.dbusRequest) {
+            nextState = State::Idle;
+        }
+        break;
+    }
+    state = nextState;
+}
+
+RtlResidentFillSkeleton::RtlResidentFillSkeleton(
+    const RtlResidentFillConfig &config_) : config(config_)
+{
+    if (config.sramDelay == 0) {
+        throw std::invalid_argument("invalid RTL resident-fill SRAM delay");
+    }
+
+    // mem_ctrl.STATE_DELAY = SRAM_DELAY + 1. register_file_in.PAD_DELAY
+    // additionally includes MEMCTRL_DELAY=2, ADDR_DELAY=1, and one final
+    // alignment edge.
+    memoryValidPipeline.assign(config.sramDelay + 1, false);
+    memoryLastPipeline.assign(config.sramDelay + 1, false);
+    coreStatePipeline.assign(config.sramDelay + 4, RtlCoreState::Idle);
+}
+
+void
+RtlResidentFillSkeleton::tick(const RtlResidentFillInputs &inputs)
+{
+    const uint32_t coreStateIndex = coreStatePipeline.size() - 2;
+    const bool fillEnable =
+        registerFileInputValidReg &&
+        coreStatePipeline[coreStateIndex] == RtlCoreState::RegisterLoad;
+
+    // Each consumer samples the producer's old registered output. The final
+    // assignment is stream_padding_shifter.valid_o, which is also the input
+    // RF SRAM write enable in the validated no-padding matmul path.
+    residentWriteValidReg = fillEnable;
+    registerFileInputValidReg = memoryDataValidReg;
+    memoryDataValidReg = memoryValidPipeline.back();
+    memoryDataLastReg = memoryLastPipeline.back();
+
+    for (uint32_t index = memoryValidPipeline.size() - 1;
+         index > 0; --index) {
+        memoryValidPipeline[index] = memoryValidPipeline[index - 1];
+        memoryLastPipeline[index] = memoryLastPipeline[index - 1];
+    }
+    memoryValidPipeline[0] = inputs.readRequestValid;
+    memoryLastPipeline[0] =
+        inputs.readRequestValid && inputs.readRequestLast;
+
+    for (uint32_t index = coreStatePipeline.size() - 1;
+         index > 0; --index) {
+        coreStatePipeline[index] = coreStatePipeline[index - 1];
+    }
+    coreStatePipeline[0] = inputs.coreState;
+}
+
+RtlInputFeederSkeleton::RtlInputFeederSkeleton(
+    const RtlInputFeederConfig &config_) : config(config_)
+{
+    if (config.xBurst == 0 || config.xBurst > 64 ||
+        config.yBurst == 0 || config.yBurst > 64 ||
+        config.flowBurst == 0 || config.flowBurst > 64 ||
+        config.instructionBurst == 0 ||
+        config.instructionBurst > 64 || config.saSize == 0 ||
+        config.saSize > 64 || config.sramDelay == 0 ||
+        config.addressDelay == 0 || config.memoryControlDelay == 0 ||
+        config.registerDelay == 0) {
+        throw std::invalid_argument("invalid RTL input-feeder configuration");
+    }
+
+    const uint32_t stateDelay = config.sramDelay + config.addressDelay +
+        config.memoryControlDelay;
+    coreStatePipeline.assign(stateDelay, RtlCoreState::Idle);
+    inputSwitchPipeline.assign(stateDelay, 0);
+    outputInputSwitchPipeline.assign(config.registerDelay, 0);
+    memoryValidPipeline.assign(config.registerDelay, false);
+}
+
+void
+RtlInputFeederSkeleton::tick(const RtlInputFeederInputs &inputs)
+{
+    // All producers and consumers below use the same pre-edge snapshot. This
+    // is important at the 266/267 RF boundary and at the 302/303 SA-enable
+    // boundary: a value made visible by this commit is sampled next edge.
+    const RtlCoreState delayedCoreState = coreStatePipeline.back();
+    const bool enteredTransposeLoad =
+        delayedCoreState == RtlCoreState::TransposeLoad &&
+        delayedCoreStateReg != RtlCoreState::TransposeLoad;
+    const bool memoryDataStart =
+        inputs.memoryDataValid && !memoryDataValidReg;
+    const bool readTrigger =
+        reuseLoadStateReg && (enteredTransposeLoad || memoryDataStart);
+
+    const bool readActive =
+        (readState == ReadState::Idle && readEnableReg) ||
+        readState == ReadState::Burst;
+    const bool endX = xCounter == config.xBurst - 1;
+    const bool endY = yCounter == config.yBurst - 1;
+    const bool endFlow = flowCounter == config.flowBurst - 1;
+    const bool endInstruction =
+        instructionCounter == config.instructionBurst - 1;
+    const bool readLast = readActive && endX && endY;
+
+    ReadState nextReadState = readState;
+    if (readActive) {
+        if (!endX) {
+            ++xCounter;
+            nextReadState = ReadState::Burst;
+        } else if (!endY) {
+            xCounter = 0;
+            ++yCounter;
+            nextReadState = ReadState::Burst;
+        } else {
+            xCounter = 0;
+            yCounter = 0;
+            nextReadState = ReadState::Idle;
+            if (!endFlow) {
+                ++flowCounter;
+            } else if (!endInstruction) {
+                flowCounter = 0;
+                ++instructionCounter;
+            } else {
+                flowCounter = 0;
+                instructionCounter = 0;
+            }
+        }
+    }
+
+    // conv_kernal=0 is the validated bypass path. shift_register registers
+    // RF valid once, then shift_data_cnt_valid holds a 32-token SA window;
+    // feeder adds the final data_A_valid_o register.
+    const bool shiftCountValid =
+        shiftDataCounter != 0 || shiftDataValidReg;
+    const bool shiftCountClear =
+        shiftDataCounter == config.saSize - 1;
+    if (shiftCountClear) {
+        shiftDataCounter = 0;
+    } else if (shiftCountValid) {
+        ++shiftDataCounter;
+    }
+
+    dataAValidReg = shiftCountValid;
+    shiftDataValidReg = readValidReg;
+    readValidReg = readActive;
+    readLastReg = readLast;
+    readState = nextReadState;
+    readEnableReg = readTrigger;
+
+    // The fixed ATB/reuse-A path streams B through EN_i_d, REGISTER_DELAY,
+    // and the final data_B_valid_o register once the delayed scheduler state
+    // has entered the execute family.
+    dataBValidReg = reuseLoadStateReg && memoryValidPipeline.back();
+    for (uint32_t index = memoryValidPipeline.size() - 1;
+         index > 0; --index) {
+        memoryValidPipeline[index] = memoryValidPipeline[index - 1];
+    }
+    memoryValidPipeline[0] = memoryDataValidReg;
+    memoryDataValidReg = inputs.memoryDataValid;
+
+    outputInputSwitchReg = outputInputSwitchPipeline.back();
+    for (uint32_t index = outputInputSwitchPipeline.size() - 1;
+         index > 0; --index) {
+        outputInputSwitchPipeline[index] =
+            outputInputSwitchPipeline[index - 1];
+    }
+    outputInputSwitchPipeline[0] = inputSwitchDelayReg;
+    inputSwitchDelayReg = inputSwitchPipeline.back();
+
+    delayedCoreStateReg = delayedCoreState;
+    reuseLoadStateReg =
+        coreStatePipeline[coreStatePipeline.size() - 2] ==
+            RtlCoreState::ReuseLoad ||
+        coreStatePipeline[coreStatePipeline.size() - 2] ==
+            RtlCoreState::TransposeLoad ||
+        coreStatePipeline[coreStatePipeline.size() - 2] ==
+            RtlCoreState::TransposeClip;
+    for (uint32_t index = coreStatePipeline.size() - 1;
+         index > 0; --index) {
+        coreStatePipeline[index] = coreStatePipeline[index - 1];
+        inputSwitchPipeline[index] = inputSwitchPipeline[index - 1];
+    }
+    coreStatePipeline[0] = inputs.coreState;
+    inputSwitchPipeline[0] = inputs.inputSwitch;
+}
+
 RtlSchedulerSkeleton::RtlSchedulerSkeleton(
     const RtlSchedulerConfig &config_) : config(config_)
 {
@@ -373,8 +829,7 @@ RtlSchedulerSkeleton::tick(const RtlSchedulerInputs &inputs)
 
     const bool dOutConditionA = lastInstructionReg ?
         inputs.updateFinished :
-        (!config.shiftMode && !keepMode &&
-         (inputs.updateFinished || updateFinishedQ));
+        (!config.shiftMode && config.flowTimes != 1 && !keepMode);
     const bool dOutConditionB =
         inputs.updateFinished || inputs.writeFinished;
     const bool dOutCondition = dOutConditionA || dOutConditionB;
@@ -537,11 +992,6 @@ RtlSchedulerSkeleton::tick(const RtlSchedulerInputs &inputs)
         transposeCounter = 0;
     } else if (core == RtlCoreState::TransposeLoad) {
         ++transposeCounter;
-    }
-    if (flowEnd) {
-        updateFinishedQ = false;
-    } else if (inputs.updateFinished) {
-        updateFinishedQ = true;
     }
     if (instructionClear) {
         instructionCounter = 0;

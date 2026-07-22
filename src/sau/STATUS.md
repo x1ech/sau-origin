@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-15
+Last updated: 2026-07-22
 
 ## Goal
 
@@ -9,6 +9,100 @@ gem5 for system-level performance analysis and design-space exploration.
 The model targets architecture-relevant cycle timing rather than RTL
 register-level equivalence, and the first milestone does not perform
 arithmetic computation.
+
+## Session Handoff Checkpoint — 2026-07-22
+
+Read this section first when resuming Step 5.5 in a new session.
+
+- Authoritative RTL source: `/home/xch/work/npu_lpnpu`.
+- Authoritative passing simulation artifact:
+  `/home/xch/work/npu_lpnpu/sim/vcs/build/yinglong/yinglong.fsdb`, generated
+  by the passing 64x256x256 matmul run.
+- gem5 worktree:
+  `/home/xch/work/sau_n_gem5/sau_origin_feature_sau_command_types_b9fbc18_20260720`.
+- Focused target status: the last developer rebuild of
+  `build/ALL/sau/schedule_state.test.opt` passed **27/27 tests** after adding
+  `RtlResidentFillSkeleton`. `RtlInputFeederSkeleton` and three additional
+  tests are now implemented, but this new increment still awaits the next
+  developer rebuild.
+- Static status: `git diff --check` passes. Codex did not run the gem5 build;
+  builds are developer-owned per `src/sau/AGENTS.md`.
+- The worktree intentionally contains uncommitted Step 5.5 changes and a
+  user-owned modification to `src/sau/AGENTS.md`. Preserve them; do not reset,
+  checkout, or overwrite unrelated changes.
+
+Focused rebuild command, if the next increment changes `schedule_state`:
+
+```bash
+cd /home/xch/work/sau_n_gem5/sau_origin_feature_sau_command_types_b9fbc18_20260720
+scons build/ALL/sau/schedule_state.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/schedule_state.test.opt
+```
+
+Implemented and focused-test verified in `schedule_state.{hh,cc}`:
+
+1. `RtlSchedulerSkeleton` — start registers, states, transpose/flow/ins
+   counters, current D_OUT guards, switch and command completion.
+2. `RtlResidentLoadSkeleton` — resident `register_addr` x/y/c requests.
+3. `RtlStreamLoadSkeleton` — streamed x/y/flow/ins address and load-done
+   control for the validated x=1/y=32 matmul shape.
+4. `RtlExecuteUpdateSkeleton` and `RtlSaEnableSkeleton` — accepted SA-enable
+   counting, finish/update registers and pre-edge enable sampling.
+5. `RtlResultSerializerSkeleton` — macro finish, 32-row stream, output
+   transposer and final result valid/last.
+6. `RtlOutputWritebackSkeleton` — result accumulation, unload launch,
+   256-beat output address stream and native write-finished chain.
+7. `RtlSramWriteTransportSkeleton` — registered mem_ctrl/crossbar/TCDM write
+   transport with 256-token conservation.
+8. `RtlResidentFillSkeleton` — resident mem_ctrl visibility, feeder input-RF
+   write valid and padding-shifter/input-SRAM tail drain.
+9. `RtlInputFeederSkeleton` — input-RF read counters, feeder A/B-valid and
+   input-switch pipelines through the SA-enable observation boundary. Static
+   checks pass; focused build verification is pending.
+
+Current boundary: these are still isolated timing components. They are **not
+connected to `SauModel::tick()`**, so strict runtime still uses old aggregate
+timing policy. Step 5.5 is therefore not complete.
+
+The latest implementation adds the input-RF read/feeder coupling from the
+already exported current-FSDB edges:
+
+```text
+register_file_rden   266
+register_file_rvalid 267
+data_A_valid         269
+next RF rden         298
+data_B_valid         301
+input_switch_f=01    302
+sa_en_i=1            302
+first SA sample      303
+```
+
+The new skeleton models `register_file_in` read counters/valid, feeder
+`REGISTER_DELAY=2` plus final A/B valid FF, and feeds the existing
+`RtlSaEnableSkeleton` using shared pre-edge snapshots. Its focused tests check
+the complete 266/267/269/298/301/302/303 boundary. The immediate handoff is to
+run the developer-owned focused rebuild. If it passes, connect all verified
+producers into one CSR-to-command-done driver, then replace aggregate strict
+runtime scheduling and generate the stage ledger.
+
+Relevant raw exports under `/home/xch/work/npu_lpnpu/tmp`:
+
+```text
+step5_5_first_command.csv
+step5_5_second_command.csv
+step5_5_result_serializer.csv
+step5_5_output_config.csv
+step5_5_output_writeback.csv
+step5_5_crossbar_write.csv
+step5_5_input_frontend.csv
+```
+
+Do not use the old eight fixture traces as golden. They correspond to a
+retired RTL implementation and have been removed from quick strict
+registration. Fresh current-RTL traces are required only for final
+independent acceptance after runtime integration.
 
 Design and implementation references:
 
@@ -26,7 +120,7 @@ Design and implementation references:
   count, event counts, fixed read/write accepted cadence, and causal event
   order before strict cycle calibration.
 - Active branch: `feature/sau-command-types`
-- Worktree: `/home/xch/workspace/gem5/.worktrees/sau-command-types`
+- Worktree: `/home/xch/work/sau_n_gem5/sau_origin_feature_sau_command_types_b9fbc18_20260720`
 - Development remote: `sau-origin`
 - Latest completed milestone: `SauModel` now schedules external reads,
   RTL-style `register_file_in` reuse for Operand-A, B streaming, array timing,
@@ -148,37 +242,35 @@ Design and implementation references:
   and their eight architecture plus eight state strict comparisons returned
   success. The gem5 test framework also executed the small strict suite and
   passed its simulation, exit-regex, and custom strict-verifier checks 3/3.
-- PLAN2 now inserts Step 5.5 before timing-memory/DSE. Eight-fixture equality
-  is treated as evidence, not proof that every RTL-accepted CSR is predicted.
+- PLAN2 now inserts Step 5.5 before timing-memory/DSE. The old eight-fixture
+  equality is historical only and is no longer evidence for the current RTL.
   The next implementation must audit the complete CSR-to-command-done RTL
   timing chain and replace strict aggregate end-cycle scheduling with a
   per-tick timing skeleton driven by the RTL counters, valid/last signals,
   register delay chains, and actual handshakes. Existing CSR replay is the
   only required input path; no CPU model, M/K/N-to-CSR generator, or extra
-  simulation mode is planned. Golden traces remain regression oracles only.
-- Step 5.5 Phase A source audit now uses the current files under
-  `/home/xch/workspace/npu_lpnpu` as the authoritative RTL baseline without
+  simulation mode is planned. New golden traces must be recaptured; the old
+  traces are neither regression oracles nor completion criteria.
+- Step 5.5 Phase A now uses the current files under
+  `/home/xch/work/npu_lpnpu` and the passing `yinglong` waveform as the
+  authoritative RTL baseline without
   depending on that repository's commit state. The CSR-to-command-finish
   chain, fixed elaboration values, counters, valid/last paths, and output
   write pipeline are recorded in `src/sau/RTL_TIMING_PROVENANCE.md` with file
-  hashes. The audit found a material baseline change: scheduler D_OUT exit is
-  now driven by `update_finished/update_finished_q`, while output unload is
+  hashes. The retired 2026-07-15 audit found a different scheduler D_OUT
+  implementation driven by `update_finished/update_finished_q`, while output unload was
   gated by `result_accum_done` and terminates through explicit two-stage data
   plus four-stage finish pipelines. Therefore the Step 5 short-path,
   early-unload, and completion aggregates must not be carried into the
-  per-tick skeleton. The RTL owner confirmed that the existing eight-fixture
-  waveform exports were captured from this latest RTL line, so they remain
-  the strict acceptance oracle. Their diagnostic traces already expose the
-  relevant start/state, memory-last, result-last, write, and command-done
-  boundary edges; no new RTL simulation is required before implementation.
-  Runtime C++ is still intentionally unchanged at the end of Phase A. If the
-  original FSDB is available later, `npi_fsdb_probe` will inspect the
-  unexported internal counters and update/result-accumulation pulses.
+  per-tick skeleton. The current source and 2026-07-22 FSDB instead prove an
+  immediate non-final D_OUT guard and contain no `update_finished_q`. The old
+  eight fixture exports are retired; fresh packages are required before strict
+  acceptance can resume.
 - Step 5.5 Phase B adds an isolated `RtlSchedulerSkeleton` to the existing
   `schedule_state` source and test target. It models the CSR start register,
   registered scheduler instruction-valid path, core/instruction states,
-  transpose/flow/instruction counters, input switch,
-  `update_finished_q`, D_OUT guards, and write-finished completion with
+  transpose/flow/instruction counters, input switch, current-RTL D_OUT guards,
+  and write-finished completion with
   old-state/commit-at-edge semantics. It has no fixture, matrix-shape, golden
   cycle, or aggregate end-cycle input and is not yet connected to `SauModel`,
   so existing runtime output is unchanged. `RtlResidentLoadSkeleton` now also
@@ -213,6 +305,70 @@ Design and implementation references:
   nine cycles after exit. No correction constant has been added. A targeted
   baseline trace of internal feeder enable, calc counter, execute-finish, and
   update signals is required before this producer is connected.
+- The targeted 64x256x256 internal trace was captured on 2026-07-22 from the
+  passing `/home/xch/work/npu_lpnpu/sim/vcs/build/yinglong/simv` artifact.
+  Both commands show the same edge chain: `sa_en_i` becomes visible at
+  relative edge 302, the SA counter first consumes it at 303, first `D_OUT`
+  enters/exits at 554/555 with post-edge `calc_cnt=245/246`, the 256th accepted
+  enable raises `internal_finish_pulse` at 565, and finish/update propagate at
+  566/567/568. This resolves the apparent 246/247-versus-256 discrepancy
+  without a correction constant; the feeder enable pipeline must preserve
+  pre-edge sampling and can overlap scheduler progress. The trace also exposes
+  a separate provenance conflict: this compiled RTL has no
+  `scheduler_inst.update_finished_q`, uses an immediate non-final,
+  non-shift/non-keep D_OUT guard when `flow_times_i != 1`, and differs in five
+  audited source hashes from the 2026-07-15 snapshot. The user selected this
+  passing snapshot as authoritative. `RtlSchedulerSkeleton` now uses its guard,
+  and the new isolated `RtlSaEnableSkeleton` is coupled to the execute skeleton
+  in a focused pre-edge/bubble test. Runtime remains unchanged pending compile
+  verification and newly captured acceptance packages. Full edge/source
+  details are recorded in `RTL_TIMING_PROVENANCE.md`.
+- The first developer rebuild of the current-baseline schedule-state target
+  exposed only a focused-test bookkeeping bug: the expected post-D_OUT
+  `REUSE_LOAD=555` transition overwrote the first `REUSE_LOAD=290` observation.
+  After retaining only the first observation, the developer rebuilt and all
+  18 schedule-state tests passed on 2026-07-22, including the current-RTL
+  554/555 scheduler overlap and feeder-to-execute pre-edge/bubble test.
+- The next isolated increment adds `RtlResultSerializerSkeleton` for the fixed
+  32x32 SA and 4x4 PE macros. It carries the internal-finish token through the
+  eight-column macro delay, 32-row SA_ROW stream, storage/output-start
+  registers, 32-beat output transposer, and final valid/last registers. The
+  focused expectations reproduce current-FSDB edges 565/574/575/578/610/611/
+  612/642/643/644 and exactly 32 result-valid cycles. The final-instruction
+  execute test now consumes the serializer's result-last pulse and expects
+  update-finished one edge later. The developer rebuilt the source target and
+  all 20 focused tests passed on 2026-07-22. Runtime `SauModel` is still
+  unchanged.
+- The output/writeback trace from the same passing command confirms the RTL
+  CSR extents `1x32x1x8` for result accumulation and `8x32x1` for output
+  addresses. `RtlOutputWritebackSkeleton` now models the sticky accumulation
+  completion, unload launch registers, 256-beat output address generator,
+  two-stage valid/last path, and four-stage native write-finished path. The
+  focused checks cover standalone drain timing and scheduler completion at
+  current-FSDB edges 2507/2512/2767/2771/2772. The developer rebuilt the
+  target and all 23 focused tests passed on 2026-07-22.
+- `RtlSramWriteTransportSkeleton` now extends the isolated timing chain across
+  `mem_ctrl`, ACTIVE `crossbar_mi`, and the shared-memory/TCDM sampling edge.
+  The current FSDB proves the 2512/2513/2514/2515 first-edge sequence and the
+  2767/2768/2769/2770 final-edge sequence, with no native ready or retry
+  signal. Two new tests check 256-token conservation and IDLE-crossbar
+  suppression. The developer rebuilt the target and all 25 focused tests
+  passed on 2026-07-22.
+- The resident-input trace proves that address completion precedes data drain:
+  requests occupy edges 2..257, memory-visible data 7..262, feeder input-RF
+  writes 8..263, and actual input-RF SRAM writes 9..264. Scheduler enters
+  `TRANSPOSE_LOAD` at 258 while the delayed state pipe safely drains six tail
+  writes. `RtlResidentFillSkeleton` now models this mem_ctrl/feeder/padding
+  valid chain and is coupled to the resident address and scheduler skeletons
+  in two new tests. The developer rebuilt the target and all 27 focused tests
+  passed on 2026-07-22; runtime `SauModel` remains unchanged.
+- `RtlInputFeederSkeleton` now models the current fixed ATB/reuse-A input-RF
+  read FSM, feeder control delay, A shift/count path, B valid pipeline and
+  final input-switch register. Three focused tests check the current-FSDB
+  266/267/269/298/301/302/303 edges, the one-edge SA pre-edge sampling
+  boundary and invalid configuration rejection. `git diff --check` and the
+  gem5 modification style check pass. This increment has not yet been built;
+  the last developer-built checkpoint remains 27/27.
 - The non-strict direct-command model still assumes the target operator uses
   the RTL `register_file_in` path; strict fixture runs replay the supported
   CSR reuse/control fields instead.
@@ -225,7 +381,7 @@ Design and implementation references:
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| 1. Capture deterministic RTL timing reference | Complete / refreshed | Re-imported and validated the corrected RTL-side package from `/home/xch/workspace/sau_task1_baseline.tar.gz` on 2026-07-07. The testcase is `INT8_SAU_MATMUL_TEST_ID_0` with matrix 64x256x256, not the originally requested 32x32x32. Public reference files live in `tests/gem5/sau/ref/int8_gemm_64x256x256/`. |
+| 1. Capture deterministic RTL timing reference | Superseded / recapture required | The 2026-07-07 packages are retained as historical diagnostics but are no longer golden. The current 64x256x256 `yinglong` run establishes internal edge provenance; new acceptance packages still need capture. |
 | 2. Add the common trace comparator | Complete | Adds `util/sau/compare_trace.py` and unit tests. Strict mode compares every normalized field; causal mode compares event order and metadata while allowing latency shifts with nondecreasing actual cycles. |
 | 3. Add command types and admission validation | Complete | Commit `b61ec79f60`; defines stable command/token types and validates the first-milestone contract. |
 | 4. Implement deterministic beat generation | Complete / calibrated | Commit `6b3fc7165a`; later calibrated after Task 1 so external reads are A preload once per instruction, then B streaming per flow. |
@@ -237,11 +393,12 @@ Design and implementation references:
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
-| PLAN2. CSR-driven Int8 GEMM RTL alignment | Steps 1–5 verified | Step 5 separates RTL `flow_times_i` from `ins_times_i`, adds nested vertical B addresses, asymmetric A/B array inputs, structural short/normal FSM timing, and command-local shadow-pipeline cleanup. Five coverage fixtures passed architecture/state strict comparison before formula freeze; three hold-outs then passed without fixture-specific adjustment. All eight are registered in the gem5 quick strict suite. |
+| PLAN2. CSR-driven Int8 GEMM RTL alignment | Step 5.5 in progress / baseline reset | Current-RTL scheduler and feeder/execute isolated skeletons are updated. The old five coverage and three hold-out results are historical; all eight profiles have been removed from quick strict registration until current-baseline packages are captured. |
 
-## PLAN2 RTL Golden Fixture Inventory
+## Retired PLAN2 RTL Fixture Inventory
 
-All packages use the fixed PLAN2 control contract: int8 GEMM,
+These packages are historical diagnostics, not current golden oracles. They
+used the fixed PLAN2 control contract: int8 GEMM,
 `trans_mode=01`, `reuse_mode=01`.
 
 | Role | Fixture | M × K × N |
@@ -257,8 +414,8 @@ All packages use the fixed PLAN2 control contract: int8 GEMM,
 
 Package validation checked SHA256 integrity, CSR/snapshot correspondence,
 command accept/complete closure, and event-count consistency. These fixtures
-provide evidence for M/K/N generalization but do not by themselves prove every
-unobserved RTL-accepted configuration.
+provided historical evidence for their retired RTL only; they provide no
+timing-acceptance evidence for the current baseline.
 
 ## Implemented Components
 
@@ -753,12 +910,16 @@ Results:
 
 ## Next Steps
 
-1. Build the Step 5.5 timing-provenance table from RTL source and classify
-   every strict delay as source-proven, unresolved, or aggregate/empirical.
-2. Replace strict aggregate duration scheduling with per-tick RTL counters,
+1. Have the developer rebuild and run `schedule_state.test.opt`; the new
+   input-RF/feeder increment adds three tests to the last 27-test checkpoint.
+2. After that focused checkpoint passes, connect the verified isolated producers into a complete
+   CSR-to-command-done driver, then replace the corresponding aggregate
+   runtime scheduling.
+3. When new current-baseline packages are available, use them for independent
+   architecture/state strict acceptance; do not compare against the old eight
+   traces as golden.
+4. Replace strict aggregate duration scheduling with per-tick RTL counters,
    transition guards, and delay/token pipelines; emit actual per-stage and
    total command-cycle summaries.
-3. Keep all eight fixed-memory strict fixtures passing during the migration;
-   request only targeted RTL instrumentation for genuinely unresolved signal
-   edges. After Step 5.5, resume timing-memory causal, backpressure, DSE, and
-   legacy direct-command regression.
+5. After Step 5.5 and new-trace acceptance, resume timing-memory causal,
+   backpressure, DSE, and legacy direct-command regression.

@@ -21,10 +21,12 @@ From the gem5 worktree, build the RISC-V optimized binary incrementally:
 scons --ignore-style build/RISCV/gem5.opt -j4
 ```
 
-## Run and compare a strict RTL CSR fixture
+## Historical RTL CSR fixture replay
 
-The fixed-cadence calibration path uses a local deterministic read-response
-schedule. It is the only profile intended for strict cycle comparison.
+The profiles under `tests/gem5/sau/ref` belong to a retired RTL baseline.
+They may be replayed for debugging the legacy model, but their architecture
+and diagnostic CSV files are not current golden timing and must not be used
+for strict acceptance. New current-baseline profiles are pending recapture.
 
 ```bash
 ./build/RISCV/gem5.opt \
@@ -38,8 +40,9 @@ python3 util/sau/compare_trace.py --mode strict \
     m5out/sau-rtl-strict/sau.csv
 ```
 
-The expected result is exit cause `SAU command complete` and no output from
-the comparator. Strict mode replays `csr_writes.csv`, loads named RTL
+Historically, this produced exit cause `SAU command complete` and no comparator
+output. That result is not evidence of alignment to the current RTL. The
+profile path replays `csr_writes.csv`, loads named RTL
 elaboration parameters from `manifest.json`, and writes
 `sau_timing_ledger.csv` alongside the trace. It rejects all timing overrides.
 
@@ -51,17 +54,15 @@ Operand-B requests and becomes resident in `ARegisterFileIn` before array
 execution. SRAM banks, crossbar contention, retry, and variable latency are
 intentionally reserved for non-strict system-memory runs.
 
-The verified strict control domain is int8 GEMM with `trans_mode=01` and
+The historically tested control domain was int8 GEMM with `trans_mode=01` and
 `reuse_mode=01`. Five coverage shapes (32x32x32, 64x32x256, 64x256x32,
 32x256x256, and 64x256x256) were used to derive and freeze the structural
 rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
 64x256x128) then passed without fixture-specific timing adjustment. This is
-evidence for M/K/N generalization inside the tested control domain, not a
-claim that every unobserved RTL configuration is supported.
+evidence for the retired RTL only, not the current baseline.
 
-All eight packages are registered as RISC-V quick tests. Each test runs both
-the normalized architecture strict comparator and the RTL-diagnostic
-semantic-state comparator:
+The eight retired packages are no longer registered as RISC-V quick strict
+tests. The remaining SAU quick tests still run with:
 
 ```bash
 cd tests
@@ -133,6 +134,25 @@ result-before-writeback dependency.
 All timing knobs in this section are DSE controls. Their use prints
 `non-strict direct-command/DSE`; they must not be combined with
 `--rtl-profile CSR_FIXTURE`.
+
+## Current RTL per-tick work
+
+Step 5.5 is replacing the retired aggregate strict timing formulas with
+source-driven per-edge components. The isolated scheduler, resident/stream
+address generators, resident fill, SA-enable/execute path, result serializer,
+and output writeback plus native SRAM transport skeleton are implemented in
+`schedule_state.{hh,cc}`. They do not yet alter `SauModel` runtime behavior.
+The authoritative baseline is the
+passing 64x256x256 `yinglong` RTL run described in
+`RTL_TIMING_PROVENANCE.md`; the older eight fixture traces are historical
+diagnostics and are not golden acceptance inputs.
+
+The last developer-built focused checkpoint is 27/27 passing tests. The next
+input-RF readout and feeder A/B-valid skeleton plus three tests are now in the
+source tree and pass static checks, but await a developer rebuild. Resume work
+from the `Session Handoff Checkpoint` at the top of `STATUS.md`; after that
+focused verification, the next increment is the combined
+CSR-to-command-done driver before any runtime integration.
 
 ## Statistics
 

@@ -2,6 +2,7 @@
 #define __SAU_SCHEDULE_STATE_HH__
 
 #include <cstdint>
+#include <vector>
 
 #include "sau/types.hh"
 
@@ -123,6 +124,83 @@ struct RtlExecuteUpdateInputs
     bool enable = false;
     bool currentInstructionOutput = false;
     bool resultLast = false;
+};
+
+struct RtlSaEnableInputs
+{
+    bool dataAValid = false;
+    bool dataBValid = false;
+    uint8_t inputSwitch = 0;
+};
+
+struct RtlResultSerializerConfig
+{
+    uint32_t saSize = 32;
+    uint32_t peRowNum = 4;
+    uint32_t peColNum = 4;
+};
+
+struct RtlResultSerializerInputs
+{
+    bool internalFinish = false;
+};
+
+struct RtlOutputWritebackConfig
+{
+    uint32_t internalXBurst = 0;
+    uint32_t internalYBurst = 0;
+    uint32_t internalFlowBurst = 0;
+    uint32_t internalInstructionBurst = 0;
+    uint32_t outputXBurst = 0;
+    uint32_t outputYCycles = 0;
+    uint32_t outputCCycles = 0;
+};
+
+struct RtlOutputWritebackInputs
+{
+    bool resultValid = false;
+    RtlCoreState coreState = RtlCoreState::Idle;
+};
+
+struct RtlSramWriteTransportInputs
+{
+    bool nativeWriteValid = false;
+    bool nativeWriteLast = false;
+    bool crossbarStart = false;
+    bool crossbarDone = false;
+    bool dbusRequest = false;
+};
+
+struct RtlResidentFillConfig
+{
+    uint32_t sramDelay = 3;
+};
+
+struct RtlResidentFillInputs
+{
+    bool readRequestValid = false;
+    bool readRequestLast = false;
+    RtlCoreState coreState = RtlCoreState::Idle;
+};
+
+struct RtlInputFeederConfig
+{
+    uint32_t xBurst = 0;
+    uint32_t yBurst = 0;
+    uint32_t flowBurst = 0;
+    uint32_t instructionBurst = 0;
+    uint32_t saSize = 32;
+    uint32_t sramDelay = 3;
+    uint32_t addressDelay = 2;
+    uint32_t memoryControlDelay = 2;
+    uint32_t registerDelay = 2;
+};
+
+struct RtlInputFeederInputs
+{
+    RtlCoreState coreState = RtlCoreState::Idle;
+    uint8_t inputSwitch = 0;
+    bool memoryDataValid = false;
 };
 
 /**
@@ -247,6 +325,226 @@ class RtlExecuteUpdateSkeleton
 };
 
 /**
+ * Timing-only copy of sa_feeder's EN_i/EN_i_d/sa_en_i boundary. The caller
+ * supplies the pre-edge input_switch_i and A/B valids. saEnable() is sampled
+ * before tick(), then tick() commits EN_i_d like the RTL positive edge.
+ */
+class RtlSaEnableSkeleton
+{
+  public:
+    bool saEnable(const RtlSaEnableInputs &inputs) const;
+    void tick(const RtlSaEnableInputs &inputs);
+
+    bool inputEnableDelayed() const { return inputEnableDelayReg; }
+
+  private:
+    bool inputEnableDelayReg = false;
+};
+
+/**
+ * Timing-only copy of the supported SA_ENGINE macro-array result path,
+ * sa_feeder output-start registers, and output transposer valid/last counters.
+ * It transports only control tokens; arithmetic result data is not modeled.
+ */
+class RtlResultSerializerSkeleton
+{
+  public:
+    explicit RtlResultSerializerSkeleton(
+        const RtlResultSerializerConfig &config);
+
+    void tick(const RtlResultSerializerInputs &inputs = {});
+
+    bool firstMacroValid() const { return firstMacroValidReg; }
+    bool engineStorageReady() const { return engineStorageReadyReg; }
+    bool rowScoreValid() const { return rowScoreValidReg; }
+    bool transposerReadyOut() const { return transposerReadyOutReg; }
+    bool transposerValid() const { return transposerValidReg; }
+    bool transposerLast() const { return transposerLastReg; }
+    bool resultValid() const { return resultValidReg; }
+    bool resultLast() const { return resultLastReg; }
+
+  private:
+    RtlResultSerializerConfig config;
+    std::vector<bool> finishToMacroPipeline;
+    bool firstMacroValidReg = false;
+    bool engineStorageReadyReg = false;
+    bool engineStorageReadyDelayReg = false;
+    bool outputPendingReg = false;
+    bool serialActiveReg = false;
+    bool resultGateReg = false;
+    bool outputStartReg = false;
+    bool macroResultPendingReg = false;
+    bool macroStreamingReg = false;
+    uint32_t macroStreamCount = 0;
+    uint32_t globalRowCount = 0;
+    bool rowScoreValidReg = false;
+    bool calFinishReg = false;
+    bool transposerInputReadyReg = true;
+    bool transposerReadyOutReg = false;
+    uint32_t transposerInputCount = 0;
+    uint32_t transposerOutputCount = 0;
+    bool transposerValidReg = false;
+    bool transposerLastReg = false;
+    bool resultValidReg = false;
+    bool resultLastReg = false;
+};
+
+/**
+ * Timing-only copy of register_file_out.sv's result-accumulation completion,
+ * REGISTER_UNLOAD launch, output register_addr instance, and final write-done
+ * delay. Result data and addresses remain owned by the existing data path.
+ */
+class RtlOutputWritebackSkeleton
+{
+  public:
+    explicit RtlOutputWritebackSkeleton(
+        const RtlOutputWritebackConfig &config);
+
+    void tick(const RtlOutputWritebackInputs &inputs = {});
+
+    bool resultAccumDone() const { return resultAccumDoneReg; }
+    bool writeValid() const { return writeValidDelay2Reg; }
+    bool writeDataLast() const { return writeLastDelay2Reg; }
+    bool writeFinished() const { return writeDoneDelay4Reg; }
+
+  private:
+    RtlOutputWritebackConfig config;
+    RtlResidentLoadSkeleton outputAddress;
+    uint32_t resultXCounter = 0;
+    uint32_t resultYCounter = 0;
+    uint32_t resultFlowCounter = 0;
+    uint32_t resultInstructionCounter = 0;
+    bool resultAccumDoneReg = false;
+    bool registerOutStateReg = false;
+    bool registerOutStateDelayReg = false;
+    bool writeValidDelay1Reg = false;
+    bool writeValidDelay2Reg = false;
+    bool writeLastDelay1Reg = false;
+    bool writeLastDelay2Reg = false;
+    bool writeDoneDelay1Reg = false;
+    bool writeDoneDelay2Reg = false;
+    bool writeDoneDelay3Reg = false;
+    bool writeDoneDelay4Reg = false;
+};
+
+/**
+ * Timing-only copy of the write portion of mem_ctrl.sv, crossbar_mi.sv, and
+ * the native-priority shared-memory input. There is no native ready signal:
+ * an ACTIVE crossbar forwards every registered request and the SRAM samples
+ * it on the following positive edge.
+ */
+class RtlSramWriteTransportSkeleton
+{
+  public:
+    void tick(const RtlSramWriteTransportInputs &inputs = {});
+
+    bool crossbarActive() const { return state == State::Active; }
+    bool memCtrlWriteValid() const { return memCtrlWriteValidReg; }
+    bool crossbarSlaveValid() const { return crossbarSlaveValidReg; }
+    bool memoryWriteAccepted() const { return memoryWriteAcceptedReg; }
+    bool memoryWriteLast() const { return memoryWriteLastReg; }
+
+  private:
+    enum class State
+    {
+        Idle,
+        Active,
+        RvActive,
+    };
+
+    State state = State::Idle;
+    bool memCtrlWriteValidReg = false;
+    bool memCtrlWriteLastReg = false;
+    bool crossbarSlaveValidReg = false;
+    bool crossbarSlaveLastReg = false;
+    bool memoryWriteAcceptedReg = false;
+    bool memoryWriteLastReg = false;
+};
+
+/**
+ * Timing-only copy of the resident-read visibility path through mem_ctrl,
+ * feeder.register_file_wvalid_o, and register_file_in's padding-shifter
+ * valid register. It intentionally allows the tail to drain after scheduler
+ * leaves REGISTER_LOAD, as the delayed core-state pipe does in RTL.
+ */
+class RtlResidentFillSkeleton
+{
+  public:
+    explicit RtlResidentFillSkeleton(const RtlResidentFillConfig &config);
+
+    void tick(const RtlResidentFillInputs &inputs = {});
+
+    bool memoryDataValid() const { return memoryDataValidReg; }
+    bool memoryDataLast() const { return memoryDataLastReg; }
+    bool registerFileInputValid() const
+    {
+        return registerFileInputValidReg;
+    }
+    bool residentWriteValid() const { return residentWriteValidReg; }
+
+  private:
+    RtlResidentFillConfig config;
+    std::vector<bool> memoryValidPipeline;
+    std::vector<bool> memoryLastPipeline;
+    std::vector<RtlCoreState> coreStatePipeline;
+    bool memoryDataValidReg = false;
+    bool memoryDataLastReg = false;
+    bool registerFileInputValidReg = false;
+    bool residentWriteValidReg = false;
+};
+
+/**
+ * Timing-only copy of the fixed ATB/reuse-A input-RF read path and feeder
+ * A/B-valid pipelines. It models register_file_in's x/y/flow/instruction
+ * read counters, feeder.STATE_DELAY, REGISTER_DELAY=2, and the final A/B and
+ * input-switch registers. Data values are intentionally not represented.
+ */
+class RtlInputFeederSkeleton
+{
+  public:
+    explicit RtlInputFeederSkeleton(const RtlInputFeederConfig &config);
+
+    void tick(const RtlInputFeederInputs &inputs = {});
+
+    bool registerFileReadEnable() const { return readEnableReg; }
+    bool registerFileReadValid() const { return readValidReg; }
+    bool registerFileReadLast() const { return readLastReg; }
+    bool dataAValid() const { return dataAValidReg; }
+    bool dataBValid() const { return dataBValidReg; }
+    uint8_t outputInputSwitch() const { return outputInputSwitchReg; }
+
+  private:
+    enum class ReadState
+    {
+        Idle,
+        Burst,
+    };
+
+    RtlInputFeederConfig config;
+    std::vector<RtlCoreState> coreStatePipeline;
+    std::vector<uint8_t> inputSwitchPipeline;
+    std::vector<uint8_t> outputInputSwitchPipeline;
+    std::vector<bool> memoryValidPipeline;
+    RtlCoreState delayedCoreStateReg = RtlCoreState::Idle;
+    bool reuseLoadStateReg = false;
+    bool memoryDataValidReg = false;
+    bool readEnableReg = false;
+    ReadState readState = ReadState::Idle;
+    uint32_t xCounter = 0;
+    uint32_t yCounter = 0;
+    uint32_t flowCounter = 0;
+    uint32_t instructionCounter = 0;
+    bool readValidReg = false;
+    bool readLastReg = false;
+    bool shiftDataValidReg = false;
+    uint32_t shiftDataCounter = 0;
+    bool dataAValidReg = false;
+    bool dataBValidReg = false;
+    uint8_t inputSwitchDelayReg = 0;
+    uint8_t outputInputSwitchReg = 0;
+};
+
+/**
  * Per-positive-edge control skeleton for scheduler.sv's supported timing
  * path. tick() evaluates guards from the old state and commits every register
  * together, preserving nonblocking-assignment semantics.
@@ -268,7 +566,6 @@ class RtlSchedulerSkeleton
     uint32_t transposeCount() const { return transposeCounter; }
     uint32_t flowCount() const { return flowCounter; }
     uint32_t instructionCount() const { return instructionCounter; }
-    bool updateFinishedLatched() const { return updateFinishedQ; }
     bool nextExecuteStart() const { return nextExecuteStartReg; }
     bool lastFlowTime() const { return lastFlowTimeReg; }
     bool lastInstructionTime() const { return lastInstructionTimeReg; }
@@ -281,7 +578,6 @@ class RtlSchedulerSkeleton
     bool startReg = false;
     bool instructionValid = false;
     bool dataLastD = false;
-    bool updateFinishedQ = false;
     bool nextExecuteStartReg = false;
     bool lastFlowTimeValidReg = false;
     bool lastFlowTimeReg = false;

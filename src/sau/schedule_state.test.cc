@@ -131,7 +131,6 @@ TEST(RtlSchedulerSkeleton, UsesFlowAndInstructionCountersForDOut)
     inputs.updateFinished = true;
     scheduler.tick(inputs);
     EXPECT_EQ(scheduler.coreState(), RtlCoreState::RegisterUnload);
-    EXPECT_TRUE(scheduler.updateFinishedLatched());
     EXPECT_FALSE(scheduler.commandDone());
 
     inputs = {};
@@ -139,10 +138,9 @@ TEST(RtlSchedulerSkeleton, UsesFlowAndInstructionCountersForDOut)
     scheduler.tick(inputs);
     EXPECT_EQ(scheduler.coreState(), RtlCoreState::Idle);
     EXPECT_TRUE(scheduler.commandDone());
-    EXPECT_FALSE(scheduler.updateFinishedLatched());
 }
 
-TEST(RtlSchedulerSkeleton, LatchesUpdateAcrossInstructionBoundaries)
+TEST(RtlSchedulerSkeleton, UsesUpdateForSingleFlowInstructionBoundaries)
 {
     RtlSchedulerSkeleton scheduler({1, 1, 2, 1, 1, 0, false});
     RtlSchedulerInputs inputs;
@@ -166,7 +164,6 @@ TEST(RtlSchedulerSkeleton, LatchesUpdateAcrossInstructionBoundaries)
     scheduler.tick(inputs);
     EXPECT_EQ(scheduler.coreState(), RtlCoreState::ReuseLoad);
     EXPECT_EQ(scheduler.instructionState(), RtlInstructionState::Loop);
-    EXPECT_TRUE(scheduler.updateFinishedLatched());
 
     inputs = {};
     inputs.loadDone = true;
@@ -270,6 +267,8 @@ TEST(RtlStreamLoadSkeleton, DrivesBaselineSchedulerToFirstDOut)
     uint32_t reuseLoadCycle = 0;
     uint32_t transposeClipCycle = 0;
     uint32_t dOutCycle = 0;
+    uint32_t dOutExitCycle = 0;
+    bool sawDOut = false;
     for (uint32_t cycle = 0; cycle < 600; ++cycle) {
         // All three components sample the same pre-edge register snapshot.
         const bool start = scheduler.start();
@@ -302,13 +301,16 @@ TEST(RtlStreamLoadSkeleton, DrivesBaselineSchedulerToFirstDOut)
                 transposeLoadCycle = cycle;
                 break;
               case RtlCoreState::ReuseLoad:
-                reuseLoadCycle = cycle;
+                if (reuseLoadCycle == 0) {
+                    reuseLoadCycle = cycle;
+                }
                 break;
               case RtlCoreState::TransposeClip:
                 transposeClipCycle = cycle;
                 break;
               case RtlCoreState::DOut:
                 dOutCycle = cycle;
+                sawDOut = true;
                 break;
               case RtlCoreState::Idle:
               case RtlCoreState::FirstLoad:
@@ -316,18 +318,512 @@ TEST(RtlStreamLoadSkeleton, DrivesBaselineSchedulerToFirstDOut)
                 break;
             }
         }
-        if (dOutCycle != 0) {
+        if (sawDOut && oldCore == RtlCoreState::DOut &&
+            newCore == RtlCoreState::ReuseLoad) {
+            dOutExitCycle = cycle;
             break;
         }
     }
 
-    // Baseline diagnostic command 1 uses absolute start 28914 and records
-    // these state edges at 28916, 29172, 29204, 29435, and 29468.
+    // The 2026-07-22 current-baseline FSDB records these command-relative
+    // state edges and the immediate non-final D_OUT exit at edge 555.
     EXPECT_EQ(registerLoadCycle, 2U);
     EXPECT_EQ(transposeLoadCycle, 258U);
     EXPECT_EQ(reuseLoadCycle, 290U);
     EXPECT_EQ(transposeClipCycle, 521U);
     EXPECT_EQ(dOutCycle, 554U);
+    EXPECT_EQ(dOutExitCycle, 555U);
+}
+
+TEST(RtlSaEnableSkeleton, PreservesPreEdgeSamplingAtExecuteBoundary)
+{
+    RtlSaEnableSkeleton feeder;
+    RtlExecuteUpdateSkeleton execute({32, 8, 0, false});
+    RtlSaEnableInputs feederInputs;
+    RtlExecuteUpdateInputs executeInputs;
+
+    // Prime EN_i_d while input_switch_i still selects no execute input.
+    feederInputs.dataAValid = true;
+    executeInputs.enable = feeder.saEnable(feederInputs);
+    execute.tick(executeInputs);
+    feeder.tick(feederInputs);
+    EXPECT_TRUE(feeder.inputEnableDelayed());
+    EXPECT_EQ(execute.calculationCount(), 0U);
+
+    // The switch becomes visible after this edge. SA_ENGINE sampled the old
+    // combinational sa_en_i, so the counter still has not advanced.
+    executeInputs.enable = feeder.saEnable(feederInputs);
+    execute.tick(executeInputs);
+    feeder.tick(feederInputs);
+    feederInputs.inputSwitch = 0x1;
+    EXPECT_TRUE(feeder.saEnable(feederInputs));
+    EXPECT_EQ(execute.calculationCount(), 0U);
+
+    // The following edge is the first accepted SA enable.
+    executeInputs.enable = feeder.saEnable(feederInputs);
+    execute.tick(executeInputs);
+    feeder.tick(feederInputs);
+    EXPECT_EQ(execute.calculationCount(), 1U);
+
+    // A one-edge A/B-valid bubble remains visible through EN_i_d for the
+    // current edge and stalls the calculation on the following edge.
+    feederInputs.dataAValid = false;
+    executeInputs.enable = feeder.saEnable(feederInputs);
+    execute.tick(executeInputs);
+    feeder.tick(feederInputs);
+    EXPECT_EQ(execute.calculationCount(), 2U);
+    EXPECT_FALSE(feeder.saEnable(feederInputs));
+
+    executeInputs.enable = feeder.saEnable(feederInputs);
+    execute.tick(executeInputs);
+    feeder.tick(feederInputs);
+    EXPECT_EQ(execute.calculationCount(), 2U);
+}
+
+TEST(RtlResultSerializerSkeleton, PipelinesInternalFinishToResultLast)
+{
+    RtlResultSerializerSkeleton serializer({32, 4, 4});
+    uint32_t firstMacroCycle = 0;
+    uint32_t storageReadyCycle = 0;
+    uint32_t rowValidCycle = 0;
+    uint32_t transposerReadyCycle = 0;
+    uint32_t transposerValidCycle = 0;
+    uint32_t resultValidCycle = 0;
+    uint32_t transposerLastCycle = 0;
+    uint32_t resultLastCycle = 0;
+    uint32_t resultValidCycles = 0;
+
+    for (uint32_t cycle = 0; cycle < 100; ++cycle) {
+        RtlResultSerializerInputs inputs;
+        inputs.internalFinish = cycle == 0;
+        serializer.tick(inputs);
+
+        if (serializer.firstMacroValid() && firstMacroCycle == 0) {
+            firstMacroCycle = cycle;
+        }
+        if (serializer.engineStorageReady() && storageReadyCycle == 0) {
+            storageReadyCycle = cycle;
+        }
+        if (serializer.rowScoreValid() && rowValidCycle == 0) {
+            rowValidCycle = cycle;
+        }
+        if (serializer.transposerReadyOut() && transposerReadyCycle == 0) {
+            transposerReadyCycle = cycle;
+        }
+        if (serializer.transposerValid() && transposerValidCycle == 0) {
+            transposerValidCycle = cycle;
+        }
+        if (serializer.resultValid() && resultValidCycle == 0) {
+            resultValidCycle = cycle;
+        }
+        if (serializer.transposerLast() && transposerLastCycle == 0) {
+            transposerLastCycle = cycle;
+        }
+        if (serializer.resultLast() && resultLastCycle == 0) {
+            resultLastCycle = cycle;
+        }
+        resultValidCycles += serializer.resultValid() ? 1 : 0;
+    }
+
+    // With cycle 0 representing the edge that samples internal_finish, the
+    // offsets correspond to RTL command edges 566, 574, 575, 578, 610, 611,
+    // 612, 642, and 643 respectively.
+    EXPECT_EQ(firstMacroCycle, 8U);
+    EXPECT_EQ(storageReadyCycle, 9U);
+    EXPECT_EQ(rowValidCycle, 12U);
+    EXPECT_EQ(transposerReadyCycle, 44U);
+    EXPECT_EQ(transposerValidCycle, 45U);
+    EXPECT_EQ(resultValidCycle, 46U);
+    EXPECT_EQ(transposerLastCycle, 76U);
+    EXPECT_EQ(resultLastCycle, 77U);
+    EXPECT_EQ(resultValidCycles, 32U);
+}
+
+TEST(RtlResultSerializerSkeleton, RejectsUnsupportedGeometry)
+{
+    EXPECT_THROW((RtlResultSerializerSkeleton({16, 4, 4})),
+                 std::invalid_argument);
+    EXPECT_THROW((RtlResultSerializerSkeleton({32, 8, 4})),
+                 std::invalid_argument);
+}
+
+TEST(RtlOutputWritebackSkeleton, DrainsBaselineResultTileAndPipelinesDone)
+{
+    // The passing 64x256x256 RTL command exposes these values directly at
+    // u_register_file_out: accumulation 1x32x1x8, output address 8x32x1.
+    RtlOutputWritebackSkeleton output({1, 32, 1, 8, 8, 32, 1});
+    RtlOutputWritebackInputs inputs;
+    inputs.coreState = RtlCoreState::DOut;
+
+    for (uint32_t token = 0; token < 255; ++token) {
+        inputs.resultValid = true;
+        output.tick(inputs);
+        EXPECT_FALSE(output.resultAccumDone());
+    }
+    output.tick(inputs);
+    EXPECT_TRUE(output.resultAccumDone());
+
+    inputs.resultValid = false;
+    inputs.coreState = RtlCoreState::RegisterUnload;
+    uint32_t firstWriteCycle = 0;
+    uint32_t dataLastCycle = 0;
+    uint32_t writeFinishedCycle = 0;
+    uint32_t writeCycles = 0;
+    for (uint32_t cycle = 0; cycle < 300; ++cycle) {
+        output.tick(inputs);
+        if (output.writeValid() && firstWriteCycle == 0) {
+            firstWriteCycle = cycle;
+        }
+        if (output.writeDataLast()) {
+            dataLastCycle = cycle;
+        }
+        if (output.writeFinished()) {
+            writeFinishedCycle = cycle;
+        }
+        writeCycles += output.writeValid() ? 1 : 0;
+    }
+
+    EXPECT_EQ(firstWriteCycle, 4U);
+    EXPECT_EQ(dataLastCycle, 259U);
+    EXPECT_EQ(writeFinishedCycle, 263U);
+    EXPECT_EQ(writeCycles, 256U);
+
+    inputs.coreState = RtlCoreState::Idle;
+    output.tick(inputs);
+    EXPECT_FALSE(output.resultAccumDone());
+}
+
+TEST(RtlOutputWritebackSkeleton, RejectsInvalidAccumulationDimensions)
+{
+    EXPECT_THROW((RtlOutputWritebackSkeleton({0, 32, 1, 8, 8, 32, 1})),
+                 std::invalid_argument);
+    EXPECT_THROW((RtlOutputWritebackSkeleton({1, 32, 1, 65, 8, 32, 1})),
+                 std::invalid_argument);
+}
+
+TEST(RtlOutputWritebackSkeleton, DrivesSchedulerCompletionAfterNativeDrain)
+{
+    RtlSchedulerSkeleton scheduler({1, 1, 1, 1, 1, 0, false});
+    RtlOutputWritebackSkeleton output({1, 32, 1, 8, 8, 32, 1});
+
+    RtlSchedulerInputs schedulerInputs;
+    schedulerInputs.startWrite = true;
+    scheduler.tick(schedulerInputs);
+    scheduler.tick();
+    scheduler.tick();
+    schedulerInputs = {};
+    schedulerInputs.registerLoadDone = true;
+    scheduler.tick(schedulerInputs);
+    scheduler.tick();
+    schedulerInputs = {};
+    schedulerInputs.loadDone = true;
+    scheduler.tick(schedulerInputs);
+    scheduler.tick(schedulerInputs);
+    ASSERT_EQ(scheduler.coreState(), RtlCoreState::DOut);
+
+    RtlOutputWritebackInputs outputInputs;
+    outputInputs.coreState = RtlCoreState::DOut;
+    outputInputs.resultValid = true;
+    for (uint32_t token = 0; token < 256; ++token) {
+        scheduler.tick();
+        output.tick(outputInputs);
+    }
+    ASSERT_TRUE(output.resultAccumDone());
+
+    schedulerInputs = {};
+    schedulerInputs.updateFinished = true;
+    scheduler.tick(schedulerInputs);
+    outputInputs.resultValid = false;
+    output.tick(outputInputs);
+    ASSERT_EQ(scheduler.coreState(), RtlCoreState::RegisterUnload);
+
+    uint32_t commandDoneCycle = 0;
+    uint32_t writeCycles = 0;
+    for (uint32_t cycle = 0; cycle < 280; ++cycle) {
+        schedulerInputs = {};
+        schedulerInputs.writeFinished = output.writeFinished();
+        outputInputs.coreState = scheduler.coreState();
+        scheduler.tick(schedulerInputs);
+        output.tick(outputInputs);
+
+        writeCycles += output.writeValid() ? 1 : 0;
+        if (scheduler.commandDone()) {
+            commandDoneCycle = cycle;
+            break;
+        }
+    }
+
+    // REGISTER_UNLOAD is already visible before cycle 0. RTL raises the
+    // native write-finished pulse 264 edges later and command done one edge
+    // after that, matching edges 2507 -> 2771 -> 2772 in the passing FSDB.
+    EXPECT_EQ(commandDoneCycle, 264U);
+    EXPECT_EQ(writeCycles, 256U);
+    EXPECT_EQ(scheduler.coreState(), RtlCoreState::Idle);
+}
+
+TEST(RtlSramWriteTransportSkeleton, PipelinesAllNativeWritesIntoSram)
+{
+    RtlSramWriteTransportSkeleton transport;
+    RtlSramWriteTransportInputs inputs;
+    inputs.crossbarStart = true;
+    transport.tick(inputs);
+    ASSERT_TRUE(transport.crossbarActive());
+
+    uint32_t firstAcceptedCycle = 0;
+    uint32_t finalAcceptedCycle = 0;
+    uint32_t acceptedWrites = 0;
+    for (uint32_t cycle = 0; cycle < 260; ++cycle) {
+        inputs = {};
+        inputs.nativeWriteValid = cycle < 256;
+        inputs.nativeWriteLast = cycle == 255;
+        transport.tick(inputs);
+
+        if (transport.memoryWriteAccepted()) {
+            if (acceptedWrites == 0) {
+                firstAcceptedCycle = cycle;
+            }
+            ++acceptedWrites;
+        }
+        if (transport.memoryWriteLast()) {
+            finalAcceptedCycle = cycle;
+        }
+    }
+
+    // Given a native valid sampled at cycle 0, mem_ctrl drives the master at
+    // cycle 0, crossbar drives the slave at cycle 1, and SRAM samples it at
+    // cycle 2. The tail drains through the same two registered boundaries.
+    EXPECT_EQ(firstAcceptedCycle, 2U);
+    EXPECT_EQ(finalAcceptedCycle, 257U);
+    EXPECT_EQ(acceptedWrites, 256U);
+
+    inputs = {};
+    inputs.crossbarDone = true;
+    transport.tick(inputs);
+    EXPECT_FALSE(transport.crossbarActive());
+}
+
+TEST(RtlSramWriteTransportSkeleton, DoesNotForwardWhileCrossbarIsIdle)
+{
+    RtlSramWriteTransportSkeleton transport;
+    RtlSramWriteTransportInputs inputs;
+    inputs.nativeWriteValid = true;
+    inputs.nativeWriteLast = true;
+    transport.tick(inputs);
+    EXPECT_TRUE(transport.memCtrlWriteValid());
+    EXPECT_FALSE(transport.crossbarSlaveValid());
+    EXPECT_FALSE(transport.memoryWriteAccepted());
+
+    transport.tick();
+    transport.tick();
+    EXPECT_FALSE(transport.memoryWriteAccepted());
+}
+
+TEST(RtlResidentFillSkeleton, DrainsResidentTailPastSchedulerTransition)
+{
+    RtlSchedulerSkeleton scheduler({32, 8, 8, 1, 1, 0, false});
+    RtlResidentLoadSkeleton resident({8, 32, 1});
+    RtlResidentFillSkeleton fill({3});
+
+    uint32_t firstMemoryCycle = 0;
+    uint32_t memoryLastCycle = 0;
+    uint32_t firstFeederWriteCycle = 0;
+    uint32_t firstResidentWriteCycle = 0;
+    uint32_t lastResidentWriteCycle = 0;
+    uint32_t memoryCycles = 0;
+    uint32_t feederWriteCycles = 0;
+    uint32_t residentWriteCycles = 0;
+    uint32_t transposeCycle = 0;
+
+    for (uint32_t cycle = 0; cycle < 300; ++cycle) {
+        const bool start = scheduler.start();
+        RtlSchedulerInputs schedulerInputs;
+        schedulerInputs.startWrite = cycle == 0;
+        schedulerInputs.registerLoadDone = resident.requestLast();
+
+        RtlResidentFillInputs fillInputs;
+        fillInputs.readRequestValid = resident.requestValid();
+        fillInputs.readRequestLast = resident.requestLast();
+        fillInputs.coreState = scheduler.coreState();
+
+        scheduler.tick(schedulerInputs);
+        resident.tick(start);
+        fill.tick(fillInputs);
+
+        if (fill.memoryDataValid()) {
+            if (memoryCycles == 0) {
+                firstMemoryCycle = cycle;
+            }
+            ++memoryCycles;
+        }
+        if (fill.memoryDataLast()) {
+            memoryLastCycle = cycle;
+        }
+        if (fill.registerFileInputValid()) {
+            if (feederWriteCycles == 0) {
+                firstFeederWriteCycle = cycle;
+            }
+            ++feederWriteCycles;
+        }
+        if (fill.residentWriteValid()) {
+            if (residentWriteCycles == 0) {
+                firstResidentWriteCycle = cycle;
+            }
+            lastResidentWriteCycle = cycle;
+            ++residentWriteCycles;
+        }
+        if (scheduler.coreState() == RtlCoreState::TransposeLoad &&
+            transposeCycle == 0) {
+            transposeCycle = cycle;
+        }
+    }
+
+    EXPECT_EQ(firstMemoryCycle, 7U);
+    EXPECT_EQ(memoryLastCycle, 262U);
+    EXPECT_EQ(firstFeederWriteCycle, 8U);
+    EXPECT_EQ(firstResidentWriteCycle, 9U);
+    EXPECT_EQ(lastResidentWriteCycle, 264U);
+    EXPECT_EQ(memoryCycles, 256U);
+    EXPECT_EQ(feederWriteCycles, 256U);
+    EXPECT_EQ(residentWriteCycles, 256U);
+    EXPECT_EQ(transposeCycle, 258U);
+}
+
+TEST(RtlResidentFillSkeleton, RejectsInvalidSramDelay)
+{
+    EXPECT_THROW((RtlResidentFillSkeleton({0})), std::invalid_argument);
+}
+
+TEST(RtlInputFeederSkeleton, ReproducesCurrentRtlInputBoundaryEdges)
+{
+    RtlSchedulerSkeleton scheduler({32, 8, 8, 1, 1, 0, false});
+    RtlResidentLoadSkeleton resident({8, 32, 1});
+    RtlStreamLoadSkeleton stream({1, 32, 8, 8});
+    RtlInputFeederSkeleton feeder({1, 32, 8, 8, 32, 3, 2, 2, 2});
+    uint32_t firstReadEnableCycle = 0;
+    uint32_t secondReadEnableCycle = 0;
+    uint32_t readEnableCount = 0;
+    uint32_t firstReadValidCycle = 0;
+    uint32_t firstReadLastCycle = 0;
+    uint32_t firstAValidCycle = 0;
+    uint32_t firstBValidCycle = 0;
+    uint32_t firstInputSwitchCycle = 0;
+
+    for (uint32_t cycle = 0; cycle < 340; ++cycle) {
+        const bool start = scheduler.start();
+        RtlStreamLoadInputs streamInputs;
+        streamInputs.start = start;
+        streamInputs.coreState = scheduler.coreState();
+        streamInputs.inputSwitch = scheduler.inputSwitch();
+        streamInputs.lastFlowTime = scheduler.lastFlowTime();
+        streamInputs.nextExecuteStart = scheduler.nextExecuteStart();
+        streamInputs.registerRequestValid = resident.requestValid();
+        streamInputs.registerRequestLast = resident.requestLast();
+
+        RtlSchedulerInputs schedulerInputs;
+        schedulerInputs.startWrite = cycle == 0;
+        schedulerInputs.loadDone = stream.outputs(streamInputs).loadDone;
+        schedulerInputs.registerLoadDone = resident.requestLast();
+
+        RtlInputFeederInputs inputs;
+        inputs.coreState = scheduler.coreState();
+        inputs.inputSwitch = scheduler.inputSwitch();
+        // The memory producer makes B visible after edge 297. The feeder
+        // samples that registered value from the pre-edge snapshot at 298.
+        inputs.memoryDataValid = cycle >= 298 && cycle < 330;
+
+        scheduler.tick(schedulerInputs);
+        resident.tick(start);
+        stream.tick(streamInputs);
+        feeder.tick(inputs);
+
+        if (feeder.registerFileReadEnable()) {
+            if (readEnableCount == 0) {
+                firstReadEnableCycle = cycle;
+            } else if (readEnableCount == 1) {
+                secondReadEnableCycle = cycle;
+            }
+            ++readEnableCount;
+        }
+        if (feeder.registerFileReadValid() && firstReadValidCycle == 0) {
+            firstReadValidCycle = cycle;
+        }
+        if (feeder.registerFileReadLast() && firstReadLastCycle == 0) {
+            firstReadLastCycle = cycle;
+        }
+        if (feeder.dataAValid() && firstAValidCycle == 0) {
+            firstAValidCycle = cycle;
+        }
+        if (feeder.dataBValid() && firstBValidCycle == 0) {
+            firstBValidCycle = cycle;
+        }
+        if (feeder.outputInputSwitch() != 0 &&
+            firstInputSwitchCycle == 0) {
+            firstInputSwitchCycle = cycle;
+        }
+    }
+
+    EXPECT_EQ(firstReadEnableCycle, 266U);
+    EXPECT_EQ(firstReadValidCycle, 267U);
+    EXPECT_EQ(firstAValidCycle, 269U);
+    EXPECT_EQ(firstReadLastCycle, 298U);
+    EXPECT_EQ(secondReadEnableCycle, 298U);
+    EXPECT_EQ(firstBValidCycle, 301U);
+    EXPECT_EQ(firstInputSwitchCycle, 302U);
+}
+
+TEST(RtlInputFeederSkeleton, FeedsSaOneEdgeAfterSwitchBecomesVisible)
+{
+    RtlInputFeederSkeleton feeder({1, 32, 8, 8, 32, 3, 2, 2, 2});
+    RtlSaEnableSkeleton saEnable;
+    RtlExecuteUpdateSkeleton execute({32, 8, 0, false});
+    uint32_t saEnableCycle = 0;
+    uint32_t firstSaSampleCycle = 0;
+
+    for (uint32_t cycle = 0; cycle < 320; ++cycle) {
+        RtlInputFeederInputs feederInputs;
+        if (cycle >= 259 && cycle < 291) {
+            feederInputs.coreState = RtlCoreState::TransposeLoad;
+        } else if (cycle >= 291) {
+            feederInputs.coreState = RtlCoreState::ReuseLoad;
+        } else {
+            feederInputs.coreState = RtlCoreState::RegisterLoad;
+        }
+        feederInputs.inputSwitch = cycle >= 292 ? 0x1 : 0;
+        feederInputs.memoryDataValid = cycle >= 298;
+
+        RtlSaEnableInputs saInputs;
+        saInputs.dataAValid = feeder.dataAValid();
+        saInputs.dataBValid = feeder.dataBValid();
+        saInputs.inputSwitch = feeder.outputInputSwitch();
+        RtlExecuteUpdateInputs executeInputs;
+        executeInputs.enable = saEnable.saEnable(saInputs);
+
+        execute.tick(executeInputs);
+        saEnable.tick(saInputs);
+        feeder.tick(feederInputs);
+
+        RtlSaEnableInputs visibleInputs;
+        visibleInputs.dataAValid = feeder.dataAValid();
+        visibleInputs.dataBValid = feeder.dataBValid();
+        visibleInputs.inputSwitch = feeder.outputInputSwitch();
+        if (saEnable.saEnable(visibleInputs) && saEnableCycle == 0) {
+            saEnableCycle = cycle;
+        }
+        if (execute.calculationCount() != 0 && firstSaSampleCycle == 0) {
+            firstSaSampleCycle = cycle;
+        }
+    }
+
+    EXPECT_EQ(saEnableCycle, 302U);
+    EXPECT_EQ(firstSaSampleCycle, 303U);
+}
+
+TEST(RtlInputFeederSkeleton, RejectsInvalidConfiguration)
+{
+    EXPECT_THROW((RtlInputFeederSkeleton({0, 32, 8, 8, 32, 3, 2, 2, 2})),
+                 std::invalid_argument);
+    EXPECT_THROW((RtlInputFeederSkeleton({1, 32, 8, 8, 32, 3, 2, 2, 0})),
+                 std::invalid_argument);
 }
 
 TEST(RtlExecuteUpdateSkeleton, CountsEnabledSaEdgesAndPipelinesExecuteDone)
@@ -371,25 +867,37 @@ TEST(RtlExecuteUpdateSkeleton, CountsEnabledSaEdgesAndPipelinesExecuteDone)
 TEST(RtlExecuteUpdateSkeleton, FinalInstructionWaitsForResultLast)
 {
     RtlExecuteUpdateSkeleton execute({32, 1, 0, false});
+    RtlResultSerializerSkeleton serializer({32, 4, 4});
     RtlExecuteUpdateInputs inputs;
     inputs.enable = true;
     inputs.currentInstructionOutput = true;
     for (uint32_t count = 0; count < 32; ++count) {
+        RtlResultSerializerInputs serializerInputs;
+        serializerInputs.internalFinish = execute.internalFinish();
+        inputs.resultLast = serializer.resultLast();
         execute.tick(inputs);
+        serializer.tick(serializerInputs);
     }
     inputs.enable = false;
-    execute.tick(inputs);
-    execute.tick(inputs);
-    ASSERT_TRUE(execute.executeDone());
-    execute.tick(inputs);
-    EXPECT_FALSE(execute.updateFinished());
+    uint32_t resultLastCycle = 0;
+    uint32_t updateFinishedCycle = 0;
+    for (uint32_t cycle = 1; cycle < 100; ++cycle) {
+        RtlResultSerializerInputs serializerInputs;
+        serializerInputs.internalFinish = execute.internalFinish();
+        inputs.resultLast = serializer.resultLast();
+        execute.tick(inputs);
+        serializer.tick(serializerInputs);
 
-    inputs.resultLast = true;
-    execute.tick(inputs);
-    EXPECT_TRUE(execute.updateFinished());
-    inputs.resultLast = false;
-    execute.tick(inputs);
-    EXPECT_FALSE(execute.updateFinished());
+        if (serializer.resultLast() && resultLastCycle == 0) {
+            resultLastCycle = cycle;
+        }
+        if (execute.updateFinished() && updateFinishedCycle == 0) {
+            updateFinishedCycle = cycle;
+        }
+    }
+
+    EXPECT_EQ(resultLastCycle, 78U);
+    EXPECT_EQ(updateFinishedCycle, 79U);
 }
 
 TEST(RtlExecuteUpdateSkeleton, RejectsUnsupportedControlModes)

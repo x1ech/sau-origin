@@ -2,12 +2,13 @@
 
 ## 状态
 
-**Ready for implementation.**
+**In implementation; RTL baseline reset on 2026-07-22.**
 
-八组 RTL golden package 已交付并完成 package 完整性、SHA256、CSR/snapshot
-一致性与命令事件闭合检查：五组 coverage fixture 和三组 hold-out fixture。
-hold-out 已可用，但仍必须在 coverage 的通用公式冻结后才可用于验收，不能参与
-调参。
+原八组 RTL package 已完成过完整性与一致性检查，但现已确认其 scheduler/result
+语义与当前通过的 `yinglong` RTL 不同，因此降级为历史调试资料，不再作为 golden、
+strict oracle 或完成判据。新的 coverage/hold-out 必须从 2026-07-22 选定的当前 RTL
+基线重新采集；重新采集前只能执行源码证明和隔离 skeleton 验证，不能声明 strict
+RTL 对齐。
 
 本计划是 Task 11 后的独立阶段。它不替换 `PLAN.md` 中的首里程碑记录；
 实施时以本文件为准。
@@ -337,7 +338,8 @@ array execution。baseline 的 architecture/state strict 回归继续通过，�
 4. `int8_gemm_32x256x256_m_sweep`：验证 M/command 与 resident-A 装载变化；
 5. `int8_gemm_64x256x256_baseline`：回归已对齐的多 flow 基准。
 
-每个 coverage fixture 必须依次通过以下门槛，不能跳级宣称“已对齐”：
+以下是 2026-07-15 已退役基线的历史验收记录，不构成当前基线的完成状态。未来新
+coverage fixture 仍必须依次通过这些门槛，不能跳级宣称“已对齐”：
 
 1. CSR replay 与 start snapshot decode 等价；
 2. 外部 SRAM 的 A preload、B stream、writeback 地址、beat、请求顺序和
@@ -356,13 +358,13 @@ array execution。baseline 的 architecture/state strict 回归继续通过，�
   M/K/N 的 RTL accepted hold-out package。
 - [x] hold-out 只能验证泛化，禁止加入 fixture 专用 timing override；若失败，修复
   通用规则并回归全部八组。所有通过后才可声明该支持域具有泛化验证证据。
-- [ ] Step 5.5 timing skeleton 完成且八组 fixed-memory strict 继续通过后，再为
-  所有 supported fixture 运行
+- [ ] Step 5.5 timing skeleton 完成且当前 RTL 的新 coverage/hold-out package
+  strict 通过后，再为所有 supported fixture 运行
   timing-memory causal、stall/token 守恒和 DSE 单调性验证。retry、outstanding
   limit、buffer full 与 bank contention 只在该阶段评估，不参与 strict 周期校准。
 - [ ] legacy 64x256x256 direct-command 与 CSR fixture trace 持续回归。
 
-**2026-07-15 验收状态：** 五组 coverage 已按 small → K → N → M → baseline
+**已退役的 2026-07-15 验收状态：** 五组 coverage 曾按 small → K → N → M → baseline
 顺序完成 fixed-memory architecture/state strict 验收，通用公式随后冻结；三组
 M96/K128/N128 hold-out 未参与参数拟合，并在冻结后完成相同的 strict 验收。八组
 fixture 共 16 个最终 comparator 均返回成功，且已加入 gem5 quick strict suite。
@@ -392,16 +394,17 @@ K128 hold-out 首次验收时 architecture strict 已通过，但内部状态每
 
 ### 5.5 从聚合延迟公式收敛到逐拍 RTL timing skeleton
 
-Step 5 的八组 strict 通过证明当前实现具有多点一致性，但不能单独证明所有合法
-CSR 都能被预测。删除 golden 后仍可运行也只证明运行时没有读取答案，不能证明
+Step 5 的八组 strict 通过现在只保留为历史回归记录，不能证明当前 RTL 的任何周期
+一致性。删除旧 trace 后仍可运行也只证明运行时没有读取答案，不能证明
 `arrayFillCycles`、short-path gap/drain 或 result gap 等聚合公式已经完整表达 RTL。
 本步骤优先于 timing-memory causal/DSE，目标是：给定算子产生的一组 CSR 配置与
 地址，在不需要对应 RTL trace 的情况下，由 RTL 时序骨架逐拍产生各阶段拍数与
-总拍数；golden 只用于最终验收，不能参与运行、查表或 residual 拟合。
+总拍数；未来重新采集的 golden 只用于最终验收，不能参与运行、查表或 residual
+拟合。
 
 不新增 CPU、M/K/N 到 CSR 的生成器或新的仿真模式。模型边界仍是现有
 `csr_writes.csv + manifest.json`；CPU/算子负责产生 CSR，SAU 只负责 replay、解码
-和执行。`architecture.csv`、`diagnostic.csv` 是可选 golden，不是运行输入。
+和执行。旧 `architecture.csv`、`diagnostic.csv` 不是当前 golden，也不是运行输入。
 
 #### RTL 时序执行链
 
@@ -439,10 +442,10 @@ assignment 的边沿语义。
 | flow execute | `flow_times_cnt`/`ins_times_cnt` | `REUSE_LOAD` | `data_last` + counter clear | flow/ins CSR | 源码 guard 已审计，待 counter 实现 |
 | flow boundary | `TRANSPOSE_CLIP`/`FIRST_LOAD` | flow clear | current-RTL `D_OUT_cond`/next execute guard | `SA_SIZE`、mode、`update_finished` | 旧 short 公式失效，待 result 边沿确认 |
 | array/result | feeder/SA/`sa_feeder` valid pipeline | delayed A/B valid | transposer result valid/last | array结构参数 | counter/流水已审计，首末边沿待波形确认 |
-| unload/writeback | `REGISTER_UNLOAD`/`register_file_out` | `result_accum_done` | output address counters + 2/4-stage pipe | output CSR、port contract | 源码链已审计，边沿待波形确认 |
-| command complete | `sram_wr_last_o`/scheduler | four-stage write-finished pulse | `flow_end_o` | 固定寄存器边沿 | 源码链已审计，待逐拍实现 |
+| unload/writeback | `REGISTER_UNLOAD`/`register_file_out` | `result_accum_done` | output address counters + 2/4-stage pipe | output CSR、port contract | 当前 FSDB 边沿已确认，隔离逐拍实现待编译 |
+| command complete | `sram_wr_last_o`/scheduler | four-stage write-finished pulse | `flow_end_o` | 固定寄存器边沿 | 当前 FSDB 边沿已确认，隔离耦合测试待编译 |
 
-每一行最终必须标记为“RTL 源码已证明、逐拍实现、golden 已验证”；若源码存在跨
+每一行最终必须标记为“RTL 源码已证明、逐拍实现、新 golden 已验证”；若源码存在跨
 模块边沿歧义，先标记 unresolved。只有 unresolved 项允许请求少量定向 RTL
 instrumentation，优先观察 `flow_times_cnt`、`ins_times_cnt`、
 `transload_state_cnt`、`data_last`、`result_last`、`update_finished`、
@@ -462,58 +465,51 @@ instrumentation，优先观察 `flow_times_cnt`、`ins_times_cnt`、
   counter 上限和经 RTL 证明的固定流水级数。
 - [ ] 每个 command 从实际状态转换生成阶段汇总：stage instance、start cycle、
   end cycle、cycles，并以 `command_accepted -> command_complete` 给出总拍数。
-- [ ] 每完成一段替换，重新运行 small、K、N、M、baseline 五组 coverage；冻结后
-  再运行 M96/K128/N128 三组 hold-out。architecture/state strict 必须继续全行
-  一致，且不得为回归添加 fixture/profile 分支。
+- [ ] 每完成一段替换，先运行 focused test；待当前 RTL 的新 package 重新采集后，
+  再依次运行 coverage、冻结规则并运行 hold-out。architecture/state strict 必须
+  对新 trace 全行一致，且不得为回归添加 fixture/profile 分支。
 - [ ] 用仅含 `manifest.json + csr_writes.csv` 的输入做独立预测 smoke test；该测试
-  只验证输入边界。模型正确性仍由 RTL 来源表、逐拍实现和独立 golden 回归共同
-  证明。
-- [ ] Step 5.5 完成后，才继续八组 timing-memory causal、stall/token 守恒、DSE
+  只验证输入边界。模型正确性仍由 RTL 来源表、逐拍实现和重新采集的独立 golden
+  回归共同证明。
+- [ ] Step 5.5 完成且新 trace 验收后，才继续 timing-memory causal、stall/token 守恒、DSE
   单调性和 legacy direct-command 回归。
 
 **Definition of Done：** strict 路径的阶段与总周期由 CSR、具名 RTL 参数、实际
 counter/valid/last/handshake 自然推进得到；不存在按 workload 预先预约的聚合结束
 周期、裸延迟或 fixture 特判。对于尚未逐拍建模的 RTL 行为必须显式拒绝对应 CSR
-支持域，不能以当前八组通过推断为任意尺寸均已对齐。
+支持域，不能以旧八组的历史通过结果推断当前 RTL 的任意尺寸已经对齐。
 
-**2026-07-15 新 RTL 第一阶段审计：** 当前
-`/home/xch/workspace/npu_lpnpu` 源码已完成 CSR start、resident、scheduler、feeder、
-SA/result、output RF 和 write-finished 的静态链路审计，完整文件哈希、结构参数、
-guard 与待观察信号见 `RTL_TIMING_PROVENANCE.md`。审计发现当前
-`scheduler.D_OUT_cond` 已改由 `update_finished/update_finished_q` 驱动，且输出写回
-增加 `result_accum_done` guard、两级地址/数据流水和四级完成流水；因此 Step 5 的
-short/early-unload/completion 聚合公式不能继续作为运行时推进机制。RTL 负责人已
-确认八组 package 来自这套最新 RTL，因此它们继续作为 strict oracle；其中
-`diagnostic.csv` 已保存 start/state、memory last、result last、write 和 done 的当前
-RTL 边沿。源码 guard 与这些导出边沿足以开始逐拍实现，不要求重新运行 RTL；若原始
-FSDB 仍可取得，再用 `npi_fsdb_probe` 补查未导出的内部 counter/update 信号。
+**基线说明：** 2026-07-15 对 `/home/xch/workspace/npu_lpnpu` 的审计及其
+`update_finished_q` scheduler 语义已经退役。2026-07-22 起以
+`/home/xch/work/npu_lpnpu` 当前源码和通过的 `yinglong` FSDB 为权威基线；完整哈希、
+源码 guard 和命令相对边沿见 `RTL_TIMING_PROVENANCE.md`。旧八组 package 与新基线
+不一致，只保留为历史调试资料。
 
 Phase B 已冻结最小组件边界：`schedule_state.{hh,cc}` 中新增纯逐拍
 `RtlSchedulerSkeleton`，只复制 scheduler timing-relevant 状态、counter、guard 和
-寄存器边沿，不接收 workload 尺寸、golden cycle 或预计算结束时间。该组件暂未接入
-`SauModel`，所以不会改变现有 strict 输出；先通过 focused test 后，再依次接入
-memory-last、result/update 和 write-finished 三类实际脉冲。
+寄存器边沿，不接收 workload 尺寸、golden cycle 或预计算结束时间。当前版本已移除
+新基线中不存在的 `update_finished_q`，并按 RTL 恢复非最终、非 shift、非 keep 且
+`flow_times_i != 1` 时立即成立的 `D_OUT_cond`。该组件暂未接入 `SauModel`。
 
 Phase C 的第一个 producer 已以隔离组件加入：`RtlResidentLoadSkeleton` 逐拍执行
 `register_addr.sv` 的 x/y/channel counter，并产生注册后的 request valid/last。
-baseline 的 `8*32*1` CSR extent 自然得到 256 个请求拍，scheduler 在相对第 258 拍
-进入 `TRANSPOSE_LOAD`，对应当前 RTL 波形 28914→29172；没有使用 resident 聚合延迟。
+64x256x256 命令的 `8*32*1` CSR extent 自然得到 256 个请求拍，scheduler 在相对
+第 258 拍进入 `TRANSPOSE_LOAD`；没有使用 resident 聚合延迟。
 
 Phase C 的第二个 producer 已以隔离组件加入：`RtlStreamLoadSkeleton` 逐拍执行
 `mem_addr.sv` 的 `WAIT_TRIG/RUNNING/DONE`、x/y/flow/instruction counter、
 `vertical_cnt_valid/last`、`rdaddr_last_d[1]`、`last_flow_time_d[1]` 和 9 拍
-fallback counter，并从这些当前寄存器组合产生 `load_done_flag`。八组当前 CSR
-snapshot 的 vertical shape 均为 `x_burst=1, y_cycle=32`，所以首个受支持契约只接受
-该 shape，flow/ins extent 仍分别由 CSR 驱动；未验证 shape 显式拒绝。focused test
+fallback counter，并从这些当前寄存器组合产生 `load_done_flag`。当前已验证的
+64x256x256 CSR 使用 `x_burst=1, y_cycle=32`，所以首个受支持契约只接受该 shape，
+flow/ins extent 仍分别由 CSR 驱动；未验证 shape 显式拒绝。focused test
 要求每个 `load_done` 对应 32 个注册 read-valid 拍，连续 flow 由延迟后的 last 自然以
 33 拍间隔重触发；这 3 个测试连同已有 10 个测试已经由开发者构建并全部通过。
 新增的耦合测试让 scheduler、resident 和 stream producer 在每拍共享同一份旧状态
-snapshot，预期 baseline 第一条 instruction 的相对状态边沿为
+snapshot。新 FSDB 第一条 instruction 的相对状态边沿为
 `REGISTER_LOAD=2`、`TRANSPOSE_LOAD=258`、`REUSE_LOAD=290`、
-`TRANSPOSE_CLIP=521`、`D_OUT=554`，分别对应 diagnostic 的
-28916/29172/29204/29435/29468。开发者增量构建后，14 个测试全部通过，至首次
-`D_OUT` 的逐拍控制链已闭合。该 producer 尚未接入 `SauModel`；下一小步开始
-result/update producer，暂不替换 strict 聚合调度。
+`TRANSPOSE_CLIP=521`、`D_OUT=554`，并在 555 拍退出。focused test 已更新为检查
+554/555 的 scheduler/execute 重叠边界；该测试包含在开发者已确认通过的当前
+27/27 focused checkpoint 中。该 producer 尚未接入 `SauModel`。
 
 result/update 的首个隔离增量新增 `RtlExecuteUpdateSkeleton`：当前只接受已验证的
 normal-int8 GEMM、non-retain 控制域，逐拍复制 `SA_ENGINE.calc_cnt`、
@@ -521,17 +517,66 @@ normal-int8 GEMM、non-retain 控制域，逐拍复制 `SA_ENGINE.calc_cnt`、
 以及 `sa_feeder.update_state/update_finished`。计数器只在实际 `sa_en_i` 为真时推进，
 所以输入 bubble 会自然停住计数，不会被折算成聚合 elapsed delay。非最终
 instruction 从 `execute_done_flag_o` 产生注册后的 update pulse；最终 instruction
-必须等待 `result_last_o`。开发者增量构建后 17 个测试全部通过；feeder enable 和
-result serializer 尚未耦合。
+必须等待 `result_last_o`。历史版本的 17 个测试曾通过；当前基线修改后的测试等待
+重新编译。result serializer 尚未耦合。
 
-耦合前的 diagnostic 复核发现一个不能用常数掩盖的观测缺口：按导出的
+耦合前的历史 diagnostic 复核发现一个不能用常数掩盖的观测缺口：按导出的
 `input_switch_f` 与上一拍 `data_A_valid || data_B_valid` 重建 `sa_en_i`，baseline
 command 1 首次进入/退出 `D_OUT` 时只累计 246/247 个 enable，第 256 个 enable 在
 退出后 9 拍；但源码的 `calc_cnt` limit 明确为 `32*8=256`。single-flow 同样在
 `D_OUT` 入口表现为少 10 个可见 enable，但退出受 result serialization 影响，不能
-据此补一个“10 拍修正”。因此暂停 execute producer 的耦合，先为既有 baseline
-定向导出 `sa_en_i/calc_cnt/internal_finish/execute_done/update_finished/update_q`
-从第一段 stream 到首次 D_OUT 的内部边沿；这不是采集新尺寸或重新拟合。
+据此补一个“10 拍修正”。2026-07-22 内部波形已经证明：`sa_en_i` 在 302 拍可见，
+SA counter 在 303 拍首次采样；`D_OUT` 在 554/555 拍进入/退出时，拍后
+`calc_cnt` 为 245/246，第 256 次采样在 565 拍产生 internal finish。新增
+`RtlSaEnableSkeleton` 显式表达 `EN_i -> EN_i_d -> sa_en_i` 和 pre-edge sampling，
+并与 execute skeleton 做隔离耦合；禁止加入十拍修正。
+
+result serializer 的隔离增量新增 `RtlResultSerializerSkeleton`。当前仅接受固定
+32x32 SA、4x4 PE macro，逐拍表达 internal finish 穿过 8 列 macro、32 拍 SA_ROW
+token stream、storage-ready/output-start 寄存器、32 拍 output transposer，以及最终
+valid/last 寄存器。新 FSDB 的首轮边沿为 565 internal finish、574 first macro、575
+storage ready、578 row valid、610 transposer ready、611 transposer valid、612 final
+valid、642 transposer last、643 result last、644 update finished。最终轮相同延迟自然
+得到 2427→2505→2506→2507。final-instruction focused test 已改为消费 serializer
+产生的 `resultLast`，不再手工注入；开发者增量编译后的 20 个 focused test 已通过。
+
+output/writeback 的隔离增量新增 `RtlOutputWritebackSkeleton`。它从当前 RTL CSR
+字段直接接收内部累加 extent `1x32x1x8` 与输出地址 extent `8x32x1`，逐拍复制
+`result_accum_done` sticky flag、`register_out_state/register_out_state_d` 启动边沿、
+输出 `register_addr` 和 valid/last 两级、finish 四级寄存器。当前 FSDB 显示最终
+result valid 在相对边沿 2505 被采样，2506 置位累加完成，2507 进入
+`REGISTER_UNLOAD`，2512..2767 共 256 个 native write-valid 拍，2771 产生
+`write_finished/flow_end_o`，2772 产生 `crossbar_done`。新增 standalone 与 scheduler
+耦合测试直接检查这些结构关系；开发者增量编译后的 23 个 focused test 已通过。
+该组件仍未接入 `SauModel`。
+
+write transport 的隔离增量新增 `RtlSramWriteTransportSkeleton`，逐拍复制
+`mem_ctrl` 写分支、`crossbar_mi` ACTIVE 转发寄存器以及 shared-memory/TCDM 在下一
+posedge 的无 ready 写采样。当前波形中 native valid 为 2512..2767，mem_ctrl master
+request 为 2513..2768，crossbar slave request 为 2514..2769，物理 SRAM 采样边沿为
+2515..2770；最后写完成后 2771 才产生 `flow_end`。新增测试要求 256 个 native token
+全部成为 256 个物理写事件，并验证 IDLE crossbar 不转发请求；开发者增量编译后的
+25 个 focused test 已通过。
+
+resident fill 的隔离增量新增 `RtlResidentFillSkeleton`。`register_addr` request-valid
+在 2..257 拍，经过 `mem_ctrl` 四级 valid pipe 和最终输出 FF 后成为 7..262 拍的
+`core_register_data_out_valid`；feeder 写使能为 8..263，padding shifter/输入 RF SRAM
+写使能为 9..264，三段都严格保持 256 token。scheduler 依据地址 last 在 258 拍已
+进入 `TRANSPOSE_LOAD`，输入 RF 依靠七级 delayed core-state 继续排空尾部，不能把
+这两个完成事件合并。新增 scheduler/resident/fill 耦合测试直接检查该重叠关系和
+token 守恒；开发者增量编译后的 27 个 focused test 已通过。
+
+input-RF read/feeder 隔离增量已实现 `RtlInputFeederSkeleton`：它逐拍复制当前固定
+ATB/reuse-A 路径的 input-RF x/y/flow/ins read counter、feeder 控制延迟、A
+shift/count valid、B `REGISTER_DELAY=2` valid pipe 和最终 input-switch FF，并以共享
+pre-edge snapshot 接到现有 `RtlSaEnableSkeleton`。新增三个 focused test 检查
+`register_file_rden=266`、`register_file_rvalid=267`、`data_A_valid=269`、下一次
+rden=298、`data_B_valid=301`、`input_switch_f/sa_en_i=302`、SA 首次采样=303，以及
+非法配置拒绝。静态 whitespace/style 检查通过，等待开发者增量编译。
+
+**当前接手点：** 开发者先重建并运行 `schedule_state.test.opt`；通过后把所有已验证
+producer 连接成 CSR-to-command-done driver，随后替换 `SauModel` strict 聚合调度
+并生成实际 stage ledger。
 
 ### 6. 最终验证与交付
 
