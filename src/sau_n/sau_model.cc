@@ -192,6 +192,15 @@ peMaskBit(const SauPeMask &mask, uint64_t row, uint64_t column)
     return (mask[index / 64] >> (index % 64)) & uint64_t{1};
 }
 
+SauCycleModel::SauCycleModel(SauInputProtocol protocol)
+    : inputProtocol(protocol)
+{
+    if (inputProtocol != SauInputProtocol::StrictRtlContinuous &&
+        inputProtocol != SauInputProtocol::ElasticBubbleEnabled) {
+        throw std::invalid_argument("invalid SA input protocol");
+    }
+}
+
 void
 SauCycleModel::validateConfig(const SauCycleConfig &candidate) const
 {
@@ -360,7 +369,9 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
         if (!inputs.inputValid && configLoaded &&
             acceptedInputs == activeConfig.calcCycles) {
             nextState = SauEngineState::Work;
-        } else if (!inputs.inputValid && acceptedInputs == 0) {
+        } else if (
+            inputProtocol == SauInputProtocol::StrictRtlContinuous &&
+            !inputs.inputValid && acceptedInputs == 0) {
             nextState = SauEngineState::Idle;
         } else {
             nextState = SauEngineState::Start;
@@ -388,12 +399,17 @@ SauCycleModel::tick(const SauCycleInputs &inputs)
              oldState != SauEngineState::Start) || launched) {
             throw std::logic_error("input requires IDLE/START stream state");
         }
+        if (acceptedInputs >= activeConfig.calcCycles) {
+            throw std::logic_error("input exceeds configured CALC_CYCLE");
+        }
         scheduleInput(inputs);
-        ++acceptedInputs;
+        acceptedInputs = checkedAdd(
+            acceptedInputs, 1, "accepted SA input count");
         if (acceptedInputs == activeConfig.calcCycles) {
             scheduleCompletion();
         }
     } else if (
+        inputProtocol == SauInputProtocol::StrictRtlContinuous &&
         oldState == SauEngineState::Start && !launched &&
         acceptedInputs < activeConfig.calcCycles) {
         throw std::logic_error("SA input stream cannot contain bubbles");

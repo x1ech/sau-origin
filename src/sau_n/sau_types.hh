@@ -30,6 +30,12 @@ enum class PipelineState : uint8_t
     Done = 6,
 };
 
+enum class SauInputProtocol : uint8_t
+{
+    StrictRtlContinuous = 0,
+    ElasticBubbleEnabled = 1,
+};
+
 std::string_view pipelineStateName(PipelineState state);
 
 struct PipelineResolvedConfig

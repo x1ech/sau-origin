@@ -2,6 +2,10 @@ Import("*")
 
 SimObject("Im2Col.py", sim_objects=["Im2ColTiming"])
 SimObject("ConvPipeline.py", sim_objects=["ConvPipelineTiming"])
+SimObject(
+    "StreamingConvPipeline.py",
+    sim_objects=["StreamingConvPipelineTiming"],
+)
 
 Source("im2col_types.cc")
 Source("im2col_address.cc")
@@ -16,6 +20,11 @@ Source("sau_tile_buffer.cc")
 Source("conv_pipeline_model.cc")
 Source("conv_pipeline_io.cc")
 Source("conv_pipeline_timing.cc")
+Source("streaming_pipeline_contract.cc")
+Source("pipelined_im2col_model.cc")
+Source("streaming_conv_pipeline_model.cc")
+Source("streaming_conv_pipeline_io.cc")
+Source("streaming_conv_pipeline_timing.cc")
 
 GTest("im2col_types.test", "im2col_types.test.cc", "im2col_types.cc")
 GTest(
@@ -97,6 +106,50 @@ GTest(
     "conv_pipeline_io.test",
     "conv_pipeline_io.test.cc",
     "conv_pipeline_io.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "streaming_pipeline_contract.test",
+    "streaming_pipeline_contract.test.cc",
+    "streaming_pipeline_contract.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "pipelined_im2col_model.test",
+    "pipelined_im2col_model.test.cc",
+    "pipelined_im2col_model.cc",
+    "streaming_pipeline_contract.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "streaming_conv_pipeline_model.test",
+    "streaming_conv_pipeline_model.test.cc",
+    "streaming_conv_pipeline_model.cc",
+    "pipelined_im2col_model.cc",
+    "streaming_pipeline_contract.cc",
+    "sau_model.cc",
+    "sau_generators.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
+    "sau_types.cc",
+    "im2col_types.cc",
+)
+GTest(
+    "streaming_conv_pipeline_io.test",
+    "streaming_conv_pipeline_io.test.cc",
+    "streaming_conv_pipeline_io.cc",
+    "streaming_conv_pipeline_model.cc",
+    "pipelined_im2col_model.cc",
+    "streaming_pipeline_contract.cc",
+    "sau_model.cc",
+    "sau_generators.cc",
+    "banked_scratchpad.cc",
+    "im2col_address.cc",
     "sau_types.cc",
     "im2col_types.cc",
 )
