@@ -56,6 +56,9 @@ struct ConvPipelineCycle
 class ConvPipelineModel
 {
   public:
+    static constexpr SauInputProtocol InputProtocol =
+        SauInputProtocol::StrictRtlContinuous;
+
     explicit ConvPipelineModel(
         const PipelineResolvedConfig &config,
         const OutputReadyConfig &ready = {});

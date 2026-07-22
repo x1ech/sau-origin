@@ -988,3 +988,290 @@ testbench、周期模型、fixture 解析或 trace schema，必须重新生成 p
   轮数公式，以及 `conflictFreeOutputII` 的整数计数验收口径；
 - 当前仅完成需求收敛和实施计划，尚未修改模型、构建文件或 RTL，也未执行编译或
   性能验证。
+- 计划审查发现自然输出尺寸的 `W6/stride2` 在现有 W<=16 packing 中会产生 scattered
+  raw spatial mask，与旧 pipeline 的 canonical-prefix 限制冲突；计划已修订为仅在新
+  streaming 路径的 S2 做稳定 lane compaction，并保存 compacted PE row 到 raw lane/
+  NCHW 坐标映射。旧 pipeline fixture loader 和旧模型的 scattered-mask 拒绝行为保持
+  不变。
+- 已修正 PE 气泡契约：无 `input_fire` 只表示不注入新 token、不推进 K、不创建新
+  MAC；更早输入已经调度的 MAC 仍可在气泡所在墙钟周期 commit 并更新 accumulator，
+  不能冻结阵列内部流水。
+- 目标 workload 的候选预算约为每 tile 195..196 拍、32 tiles 共 6240..6272 拍，说明
+  `<12000` 门槛具有余量；该预算不是 magic expected cycle，最终仍以通用模型统计为准。
+- `28378/22169/5891` 暂标为待 Step 0 provenance 冻结的候选基线；正式比较前必须保存
+  运行命令、worktree/build 来源、fixture/stats/output SHA256 和对应原始 artifact。
+
+### Im2Col 流水化 Step 0 启动（2026-07-21）
+
+- 已确认目标 fixture 的 resolved config SHA256 为
+  `888705e26fd978e08a95c702d688eb1eede4b1d522e43c02ac500d1313deae6c`，派生值为
+  32 tiles、4608 activation vectors、8192 outputs 和 1179648 useful MACs；
+- 使用现有 `build/RISCV/gem5.opt` 运行目标 fixture并正常以
+  `conv pipeline drained` 退出，原始 artifact 保存到
+  `m5out/im2col_pipeline_step0_baseline_20260721/`；
+- 独立 direct-NCHW convolution oracle 已逐项验证全部 8192 个 output；
+- 现有 binary SHA256 为
+  `63fced0cdf780e82a5c355315bb5c7e34c3a299c81993fb3b5b6bac6435faa54`，报告编译时间为
+  2026-07-19 19:28:25，早于当前源码和 `collectTileCycles/nonCollectCycles` 更新；
+- 该旧 binary 得到 `totalCycles=28058`、`im2colBackpressureCycles=5581`，不包含
+  `collectTileCycles/nonCollectCycles`，并输出历史 27 字段未完整 flush 的 trace，因此
+  本次只作为 pre-rebuild 证据，不能冻结为正式性能基线；
+- Step 0 当前等待开发者按目录约束手动增量编译当前源码。新 binary 构建成功后必须写入
+  新输出目录重新运行，再冻结正式 stats、output、trace、命令和 SHA256；不得覆盖上述
+  pre-rebuild 证据。
+
+### Im2Col 流水化 Step 0 正式基线冻结（2026-07-21）
+
+- 开发者已手动完成当前源码的增量编译；新 `gem5.opt` SHA256 为
+  `4766b45e47e13049aa21c165fcf823c9918179c09d695fe888fa6709c56cdcc7`，binary 报告编译
+  时间为 2026-07-21 21:32:32；
+- 使用与 pre-rebuild 完全相同的目标 fixture 和默认 output ready 运行，正式 artifact
+  保存到 `m5out/im2col_pipeline_step0_formal_20260721/`，未覆盖旧证据；
+- 正式基线精确复现计划候选值：`totalCycles=28378`、`collectTileCycles=22169`、
+  `nonCollectCycles=6209`、`im2colBackpressureCycles=5891`；
+- 完成周期为 `im2colDoneCycle=28184`、`sauLastResultCycle=28375`、
+  `drainedCycle=28377`；32 tiles、4608 activation handshakes、4608 engine input cycles
+  和8192 outputs 全部满足守恒；
+- 53字段 canonical trace 含 cycle 0..28377 共28378个数据周期，最终LF、严格loader和
+  self-comparison均通过；
+- 8192个NCHW output全部通过独立direct convolution oracle，并与pre-rebuild output
+  逐字节一致；
+- 已保存运行命令、HEAD/worktree状态、binary/fixture/resolved config信息、原始
+  stats/trace/output/config/log和全artifact SHA256清单；目标 workload 的正式基线冻结
+  已完成。
+- 随后执行 `cd tests && ./main.py run --skip-build gem5/conv_pipeline`，结果为20项通过、
+  1项失败；7个gem5运行和退出检查全部通过，6个RTL strict verifier通过，唯一失败是
+  `03_c3_w16_oc16_full` 的resolved config SHA256不一致；
+- 根因是当前commit `47b454350a`已将该fixture的`cutbit`从golden冻结的8改为12：当前
+  hash为`0d9ee29f41d4851100dce8a5950fd1c8230a50899f3170586d02542d523e18d9`，RTL manifest
+  hash为`292d4723cb4d570796e7d72700e0a6afaf39336ce49a1e35628d96290230646e`且记录`cutbit=8`；
+- 该fixture/golden冲突早于本次Step 0且不影响目标fixture 08的正式基线；发现时旧
+  strict regression验收保持pending，等待用户决定后再继续，处理结果记录如下。
+
+### Im2Col 流水化 Step 0 完成（2026-07-21）
+
+- 经用户确认，将冻结profile `03_c3_w16_oc16_full.json`的`cutbit`从12恢复为RTL
+  manifest记录的8；未修改RTL golden；
+- fixture重新解析后的resolved config SHA256为
+  `292d4723cb4d570796e7d72700e0a6afaf39336ce49a1e35628d96290230646e`，与manifest
+  精确一致；
+- 重新执行`cd tests && ./main.py run --skip-build gem5/conv_pipeline`，7个suite的gem5
+  运行、退出检查和RTL strict verifier共21项全部通过；
+- 正式基线artifact的SHA256清单再次全量校验通过，目标fixture 08的28378-cycle基线、
+  53字段trace和8192项NCHW output结论保持不变；
+- Im2Col流水化Step 0的基线、provenance、功能回归和strict regression验收全部完成，
+  可以进入Step 1契约实现。
+
+### Im2Col 流水化 Step 1 完成（2026-07-21）
+
+- 新增 `streaming_pipeline_contract.hh/.cc`，只定义新探索路径的纯 C++ 契约；既有
+  `Im2ColModel`、`ConvPipelineModel`、`SauCycleModel` 和旧运行入口均未修改；
+- 明确定义 S0/S1/S2 payload、lane source、深度 4 FIFO entry、三级
+  valid/ready/fire 组合关系，以及 FIFO 满且同拍 pop 时允许 push 的计数语义；
+- 冻结 vector tag 的 canonical `k_index=c*9+kh*3+kw`、tile first/last、同 tile
+  metadata 稳定、tile/K 连续顺序和 drained vector/tile 守恒检查；
+- 实现 raw scattered spatial mask 的稳定升序 compaction，保存 compacted PE row 到
+  raw source lane 和 NCHW coordinate 的映射，并强制输出 prefix row mask；
+- 冻结 consumer 的 IDLE/LAUNCH/ACCEPT_K/WAIT_RESULT/DRAIN_OUTPUT 决策，以及同一个
+  `input_fire` 控制输入接受；strict 模式继续拒绝流中气泡，elastic 模式允许气泡且
+  保留更早 token 的到期 MAC commit；
+- 新增独立 Python mirror/oracle `util/conv_pipeline/streaming_contract.py`，没有复用
+  C++ compaction helper；C++ 与 Python 各有 13 项对应定向测试；
+- 独立 C++ 测试以 `-Wall -Wextra -Werror` 编译并通过 13 项；ASan/UBSan 版本同样
+  通过 13 项；`util/conv_pipeline` 全部 55 项 Python 回归通过；
+- 未修改 `SConscript`，未将新源码接入 gem5，也未主动编译 gem5；Step 2 将在这些
+  已冻结契约上实现 `PipelinedIm2ColModel`。
+
+### Im2Col 流水化 Step 2 完成（2026-07-21）
+
+- 新增 `pipelined_im2col_model.hh/.cc`，以 `PipelineResolvedConfig` 构造并复用现有
+  `ChwAddressMapper`、`BankedScratchpad` 和 Step 1 streaming contract；旧
+  `Im2ColModel` 未修改；
+- S0 按 `KW -> KH -> C -> W group/H group -> N` 生成 canonical tag、输出坐标、
+  padding/invalid/read lane 分类和下溢安全的输入坐标；迭代器只随 S0 向 S1 fire 推进；
+- S1 每 bank 每拍选择最低 raw destination lane 的未完成 row，同 bank/同 row 响应
+  广播给全部匹配 lane，同 bank/不同 row 分轮读取；本拍组合 response 计入
+  `s1_can_retire`，没有额外 all-done 空拍；
+- 每个 S1 vector 退休时重新计算各 bank 的 distinct row 数，并断言实际读取轮数等于
+  单端口理论最少轮数；W6/stride2 定向用例精确得到 6 个冲突 vector 和 6 个额外轮次；
+- 审查修正全 padding/零 SRAM 请求 vector 的轮次口径：按冻结公式
+  `max(1, max_b distinct_rows[b])` 计为一轮；定向测试同时确认下游阻塞期间该轮数
+  保持为 1，不会重复累计；
+- S2 在 S1 fire 时组合执行稳定 raw-lane compaction，寄存保存 raw/compacted payload、
+  source-lane/NCHW mapping 和 tag；FIFO 不 ready 时保持 S2 并逐级反压；
+- 无冲突且下游 ready 时，cycle 3 首次 `S2 -> FIFO` fire，之后连续 vector 每拍 push，
+  同拍允许 S2、S1、S0 和 producer 四个边界全部 fire，寄存器之间没有组合穿透；
+- 每拍检查 S0/S1/S2 payload canonical 性、prefix compaction 重算一致性、tile/K 连续、
+  `inputVectors-outputVectors == validStages`、最终 tile 数和完整 drained 序列；
+- 新增 7 项 `PipelinedIm2Col` 定向测试，覆盖 W1/W6/W17/W32、stride 1/2、padding 0/1、
+  N/C 顺序、scattered mask、反压保持及恢复、自定义 Scratchpad 和 `C=63/K=567`；
+- 新模型、Step 1 contract、旧 Im2Col、地址 mapper、Scratchpad 和 SA 配置相关测试合并
+  为 47 项，普通 `-Wall -Wextra -Werror` 与 ASan/UBSan 构建各自全部通过；
+  `util/conv_pipeline` 的 55 项 Python 回归也全部通过；
+- 未修改 `SConscript`，未接入 gem5，未主动编译 gem5；下一步 Step 3 将单独修改
+  `SauCycleModel`，为新路径增加显式 elastic bubble 模式并保持旧路径 strict。
+- 本次 Step 2 审查修正后重新从当前源码严格编译：7 项 `PipelinedIm2Col` 专项、
+  72 项 Step 1 至 Step 4 合并普通测试和 72 项 ASan/UBSan 测试全部通过；Python
+  `util/conv_pipeline` 55 项及 `git diff --check` 同样通过，未执行 gem5 编译。
+
+### Im2Col 流水化 Step 3 完成（2026-07-21）
+
+- 将 `SauInputProtocol` 放入共享 `sau_types.hh`，定义
+  `StrictRtlContinuous` 和 `ElasticBubbleEnabled` 两种协议；数值和状态编码不变；
+- `SauCycleModel` 新增构造期协议参数，默认值为 strict，协议成员为 `const` 且无
+  setter，避免运行过程中切换语义；非法枚举值在构造时立即拒绝；
+- `ConvPipelineModel::InputProtocol` 固定为编译期 strict 常量，并在构造
+  `SauCycleModel` 时显式传入；旧融合入口没有新增运行参数，无法启用 elastic；
+- strict 模式继续在输入流开始后、K 尚未完成时拒绝气泡，既有 K9、全阵列、输出
+  反压、K567 饱和和精确 cycle anchor 测试保持原结果；
+- elastic 模式下，无 `inputValid` 不调度新 MAC、不增加 accepted count，也不提前安排
+  completion；每次 MAC 仍按该项实际接受的墙钟周期加 row/column skew 调度；
+- 新增定向 bubble 测试：3项输入之间插入4个气泡，只产生3项 MAC；更早输入安排的
+  MAC 分别在气泡周期正常 commit，累加器依次为6、26、33，bias后输出34；最后输入
+  和结果相对连续路径都自然后移4拍；
+- 新增 strict/elastic 连续输入逐拍等价测试，比较 state、计数、MAC/add/valid mask、
+  全部 PE activation/weight/accumulator、output slot 和 calFinish，结果完全一致；
+- Step 1 contract、Step 2 producer、SA、新旧融合模型、旧 Im2Col、地址 mapper 和
+  Scratchpad 合并 69 项 C++ 测试全部通过；ASan/UBSan 下同样 69 项全部通过；
+  `util/conv_pipeline` 的 55 项 Python 回归全部通过；
+- 本步修改的既有源码已能按原 SConscript 依赖独立编译，不依赖尚未登记的新 Step 1/2
+  源文件；仍未主动编译 gem5。下一步 Step 4 将实现深度4 FIFO 和 streaming consumer。
+
+### Im2Col 流水化 Step 4 完成（2026-07-21）
+
+- 新增 `streaming_conv_pipeline_model.hh/.cc`，独立组合
+  `PipelinedIm2ColModel`、固定深度4 FIFO、consumer FSM 和显式 elastic
+  `SauCycleModel`；旧 `ConvPipelineModel` 保持独立 strict 路径；
+- consumer 状态为 IDLE/LAUNCH/ACCEPT_K/WAIT_RESULT/DRAIN_OUTPUT；Step 1 decision
+  进一步区分 IDLE 发现 tile-first head 的 `beginLaunch` 和 LAUNCH 周期实际发出的
+  instruction，首项输入在下一 ACCEPT_K 周期发生，配置和输入严格分拍；
+- 每拍先从旧 FIFO head 计算 `input_fire/pop`，再以
+  `push_ready=(count<4)||pop` 驱动 producer；FIFO 空且同拍 push 时不旁路，满且同拍
+  pop 时允许 producer push，ring read/write pointer 和 count 每拍检查一致；
+- 同一个 `input_fire` 同时控制 FIFO pop、weight tag 选择、SA `inputValid`、MAC 调度和
+  `acceptedK`；WAIT_RESULT/DRAIN_OUTPUT 即使 FIFO head 已是下一 tile-first 也不 pop；
+- IDLE 只接受连续 tile index 的 tile-first head；active tile 的 spatial mask、valid rows、
+  source-lane 和 NCHW coordinate mapping 在所有 K 项间保持一致，FIFO tag 不匹配立即
+  报错；
+- SA 输出按 active compacted row mapping 写回 NCHW，逐项检查 signed INT8 canonical
+  sign extension、row sequence、索引范围和重复写；output backpressure 由既有周期 ready
+  配置直接传给 SA；
+- 每拍检查 producer output/FIFO push、FIFO pop/PE input、已完成 tile/active accepted K、
+  launch/completion 状态和 FIFO pointer/count 守恒；drained 时进一步要求 producer、
+  FIFO、PE、tile、output row 和 output element 全部达到派生值；
+- 新增3项 streaming 端到端测试：单 tile 的 launch/input 分拍和手算输出；N2、W6、
+  stride2 scattered compaction 与独立 direct convolution oracle；W32 多 tile 预取、
+  FIFO full pop/push、PE busy 禁止消费下一 tile、producer 反压和周期 output stall；
+- 新 streaming 路径、Step 1/2/3、旧融合模型、旧 Im2Col、地址 mapper 和 Scratchpad
+  合并72项 C++ 测试全部通过；ASan/UBSan 下同样72项通过；Python streaming contract
+  在 launch 相位细化后与 `util/conv_pipeline` 全部55项回归通过；
+- 未修改 `SConscript`，未新增 SimObject 或运行入口，未主动编译 gem5。Step 5 开始前
+  仍需按计划再次说明构建注册、trace/stats 和入口影响并取得用户确认。
+
+### Im2Col 流水化 Step 5 完成（2026-07-21）
+
+- `PipelinedIm2ColStats` 新增 pipeline fill、producer/output 相邻 pair 与 gap，以及
+  合格无冲突相邻 pair/gap/max-gap 的整数统计；合格 pair 要求相邻两个 vector 都只需
+  一轮读取，且两次 push 之间没有 S2/FIFO 下游反压；少于一个 pair 时平均值安全记 0；
+- streaming 融合模型补齐第 13 节规定的 bank conflict、stage/downstream stall、FIFO
+  occupancy/push/pop、PE launch/input/bubble/busy、tile 和 output 守恒统计；drained 时
+  继续检查全部派生数量；
+- 新增 `streaming_conv_pipeline_io.hh/.cc`，默认写 54 字段精简逐拍控制 trace；显式
+  `detailed_pe_trace` 才追加 6 个规范化 PE mask/vector snapshot 字段，最终 drained 行会
+  flush；探索 trace 与旧 53 字段 RTL strict schema 完全隔离；
+- 新增 `StreamingConvPipelineTiming` ClockedObject 和 `StreamingConvPipeline.py`，注册
+  `streamingPipeline.*` 全部统计，在 drained 时写 NCHW output 并以
+  `streaming conv pipeline drained` 退出；
+- 抽取旧 loader 的共享严格字段解析，同时保持旧 spatial canonical-prefix 校验不变；
+  新增 streaming 专用 loader/config，允许 W6/stride2 scattered raw mask，但只接受计划
+  冻结的 3x3、dilation1、stride/padding 范围；
+- 新增独立 `configs/example/streaming_conv_pipeline_timing.py`，默认输出到
+  `<outdir>/streaming_conv_pipeline/{trace,output}.csv`，并提供
+  `--detailed-pe-trace`；旧运行入口未修改；
+- 经用户确认，`SConscript` 已登记新 SimObject、source 和 GTest；README 已记录入口、
+  trace 模式、stats 口径以及组合 Scratchpad/理想 weight 和未做 RTL 逐拍验证的假设；
+- 当前源码的 81 项普通 C++ 测试和 81 项 ASan/UBSan 测试全部通过；
+  `util/conv_pipeline` 的 59 项 Python 测试全部通过；timing 包装使用现有
+  `build/RISCV` 生成头和参数桩完成 C++17 `-fsyntax-only` 检查；Python/SConscript AST、
+  行长和 `git diff --check` 作为最终收尾检查执行；
+- 按目录规则由开发者手动完成增量编译；新 `gem5.opt` SHA256 为
+  `d38ad1b32b3eba3edcb827445c181b35f0d1c803c5b4da66696ac0c660dc3fa2`，binary 报告编译
+  时间为 2026-07-21 23:02:30；
+- 使用目标 fixture 08 和默认 output ready 运行新入口，artifact 保存到
+  `m5out/im2col_pipeline_step5_streaming_20260721/`；模型以
+  `streaming conv pipeline drained` 正常退出，`drainedCycle=6243`、
+  `totalCycles=6244`、`pipelineFillCycles=4`；
+- 4608 个 producer input/output、FIFO push/pop 和 PE input，32 个 generated/launched/
+  completed tile，以及 8192 个 NCHW output 全部满足守恒；output SHA256 为
+  `9eeda13ea3af2596815247691a4a74588b7e04795ccd1521b08b636037870892`，与 Step 0 正式
+  基线逐字节一致；
+- 目标 workload 无 bank conflict；`conflictFreeOutputPairs=4576`、
+  `conflictFreeOutputGapCycles=4576`、`conflictFreeOutputMaxGap=1`，以整数条件确认合格
+  无冲突稳态 II=1；默认 trace 为 54 字段，包含 header 和 cycle 0..6243 共 6245 行；
+- 使用 fixture 01 和 `--detailed-pe-trace` 完成运行时冒烟，artifact 保存到
+  `m5out/im2col_pipeline_step5_detailed_smoke_20260721/`；模型在 cycle 50 drained，详细
+  trace 为预期 60 字段，9 个 vector、1 个 tile 和 3 个 output 全部守恒；
+- 新 binary 下重新执行 `cd tests && ./main.py run --skip-build gem5/conv_pipeline`，旧融合
+  路径 7 个 suite 共 21 项 RTL strict regression 全部通过；
+- Step 5 的源码、构建、独立入口、两种 trace 模式、stats/output 守恒和旧路径隔离验收
+  已完成。Step 6 完整功能/冲突矩阵和 Step 7 正式性能报告尚未开始。
+
+### Im2Col 流水化 Step 6 完成（2026-07-21）
+
+- 新增 `util/conv_pipeline/verify_streaming_pipeline.py`，严格解析 54 字段 compact trace、
+  `streamingPipeline.*` stats 和 NCHW output；逐拍检查 schema/hash/cycle、tile/K 顺序、
+  producer/S1/S2/FIFO/PE handshake 数量、FIFO 深度、launch/output/drained 守恒；
+- verifier 不调用 C++ 或 Python compaction helper，而是从 W、outH/outW、rows-per-word
+  和 tile 顺序独立推导每个 raw source lane、coordinate、raw mask、compacted prefix mask
+  及 source-lane vector；W6/stride2 精确得到 `[0,1,2,6,7,8] -> [0..5]`，W5/pad0
+  精确得到 `[0,1,2,5,6,7,10,11,12] -> [0..8]`；
+- 所有 profile 的 output 都与独立 direct-NCHW convolution oracle 逐项比较；W1、W5、
+  W16、N2/W20/stride2、C63 和周期 output-backpressure 六个兼容 profile 还与既有 strict
+  路径冻结 output 逐字节一致；
+- 新增 streaming 专用 W5/pad0、W6/stride2 scattered、W17 tail/OC7 和
+  W32/stride2 conflict fixture；与六个既有 profile 及目标 fixture 08 组成 11-profile
+  gem5 矩阵，覆盖 W1/W5/W6/W16/W17/W20/W32、padding 0/1、stride 1/2、C63、
+  OC1/7/15/16、N2、宽度尾部和 packing；
+- `cd tests && ./main.py run --skip-build gem5/streaming_conv_pipeline` 共 11 个 suite、
+  33 项全部通过；W6/stride2 观测到 12 个 conflict vector、12 个 extra round、18 个
+  scattered vector 和 10 个 PE bubble；W32/stride2 为 42/42 conflict/extra round、
+  22 个 bubble；N2/W20/stride2 为 168/168 conflict/extra round、124 个 bubble；
+- trace 定向验证实际覆盖满 FIFO 同拍 pop/push、PE input bubble 和 DRAIN_OUTPUT 期间
+  周期 output grant 反压；目标 W32/stride1 profile 继续得到 6244 total cycles、无 bank
+  conflict 和 FIFO peak 4；
+- 重新执行旧融合路径 7 个 suite 共 21 项 RTL strict regression，既有 53 字段 golden
+  trace 和 NCHW output 全部通过；没有修改旧 schema、golden 或入口；
+- 最终从当前源码重新验证：81 项普通 C++、81 项 ASan/UBSan、62 项 Python、33 项
+  streaming gem5 和 21 项旧 RTL strict 测试全部通过；`git diff --check` 和 Python AST/
+  行长检查作为最终静态收尾执行；
+- Step 6 功能和冲突回归完成。下一步 Step 7 将对目标 workload 输出正式新旧周期、冲突、
+  FIFO、PE bubble 和 tile 间停顿分解报告。
+
+### Im2Col 流水化 Step 7 完成（2026-07-21）
+
+- 使用 binary SHA256
+  `d38ad1b32b3eba3edcb827445c181b35f0d1c803c5b4da66696ac0c660dc3fa2` 和目标
+  fixture 08 重新运行正式性能验收；artifact 独立保存到
+  `m5out/im2col_pipeline_step7_performance_20260721/`，未覆盖 Step 0/5 证据；
+- Step 6 独立 verifier 再次通过：54 字段 compact trace 包含 cycle 0..6243，4608 个
+  producer/S1/S2/FIFO/PE vector、32 个 generated/launched/completed tile、512 个 output
+  row 和 8192 个 NCHW output 全部守恒；
+- 新 output 通过 direct-NCHW convolution oracle，并与 Step 0 正式基线逐字节一致；两者
+  SHA256 都是 `9eeda13ea3af2596815247691a4a74588b7e04795ccd1521b08b636037870892`；
+- `totalCycles=6244`，相对旧基线 28378 节省 22134 拍、减少 77.997%，等效周期加速
+  4.545 倍；end-to-end vector rate 从 0.162379 提升为 0.737988 vector/cycle；
+- `bankConflictVectors=bankConflictExtraRounds=bankConflictStallCycles=0`；
+  `conflictFreeOutputPairs=4576`、gap sum=4576、max gap=1，以整数条件确认目标 workload
+  的合格无冲突稳态 II=1；
+- 精确周期闭合为 `6 startup + 4608 PE input + 31*51 inter-tile + 49 final drain =
+  6244`；每个 tile 的 144 个输入连续、`peInputBubbleCycles=0`；每个 tile 输入结束后固定
+  33 拍 WAIT_RESULT 和 16 拍 DRAIN_OUTPUT，非末 tile 再加 1 拍 IDLE/begin-launch 和
+  1 拍 LAUNCH；
+- producer 跨 tile 边界连续预取；4607 个相邻 output pair 的 gap sum 为 6187，超过理想
+  值的 1580 拍与 S0/S1/S2/downstream stall 全部精确相等；
+- FIFO 平均 occupancy=3.941063、peak=4；6041 个满周期由 4460 个满队列同拍 pop/push、
+  1580 个 S2 真正下游 stall 和 1 个 producer exhausted 后仅 pop 周期组成；
+  `peBusyNotAcceptingCycles=1568=32*(33+16)`；
+- 正式报告、运行命令、模型假设、分解和 artifact SHA256 已写入
+  `m5out/im2col_pipeline_step7_performance_20260721/PERFORMANCE_REPORT.md`。Step 7 的
+  `<12000`、功能、II、守恒、输出一致和瓶颈解释要求全部通过。

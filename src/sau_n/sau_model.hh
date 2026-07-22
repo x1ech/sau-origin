@@ -153,16 +153,21 @@ struct SauCycleObservation
 /**
  * Frozen fused-array cycle model. tick() observes the current stable cycle,
  * applies all events due at its closing edge, and returns the newly committed
- * register view. Step 4 keeps the fixed CONV/CNORMAL/INT8 protocol only.
+ * register view. Strict input timing remains the default frozen RTL behavior;
+ * the elastic mode only permits gaps between otherwise identical input fires.
+ * Both modes keep the fixed CONV/CNORMAL/INT8 numeric protocol.
  */
 class SauCycleModel
 {
   public:
+    explicit SauCycleModel(
+        SauInputProtocol protocol = SauInputProtocol::StrictRtlContinuous);
     SauCycleObservation tick(const SauCycleInputs &inputs = {});
     void reset();
 
     uint64_t cycle() const { return currentCycle; }
     SauEngineState state() const { return engineState; }
+    SauInputProtocol protocol() const { return inputProtocol; }
     bool cycleAnchorsProvisional() const { return false; }
 
   private:
@@ -187,6 +192,7 @@ class SauCycleModel
     void setMaskBit(SauPeMask &mask, uint64_t row, uint64_t column) const;
 
     uint64_t currentCycle = 0;
+    const SauInputProtocol inputProtocol;
     SauEngineState engineState = SauEngineState::Idle;
     SauCycleConfig activeConfig{};
     bool configLoaded = false;

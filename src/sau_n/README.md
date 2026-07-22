@@ -309,3 +309,63 @@ Large legal workloads with explicit `out_h/out_w` can require a long
 simulation. The model does not add a functional watchdog or reject a legal
 configuration merely because it is slow. Batch timeout policy belongs to the
 external test framework.
+
+## Streaming Im2Col exploration path
+
+`StreamingConvPipelineTiming` is a separate architecture-exploration object.
+It does not replace `Im2ColTiming` or the RTL-validated `ConvPipelineTiming`,
+and its trace is not compared with an RTL golden. The first version fixes a
+three-stage elastic Im2Col producer, a four-entry FIFO, and an elastic-bubble
+SA input protocol. It accepts only 3x3, dilation 1, symmetric stride 1/2,
+symmetric padding 0/1, `C=1..63`, and `out_channels=1..16`.
+
+Run it after rebuilding the RISC-V binary:
+
+```bash
+build/RISCV/gem5.opt \
+    --outdir=m5out/streaming-conv \
+    configs/example/streaming_conv_pipeline_timing.py \
+    --fixture tests/gem5/conv_pipeline/fixtures/08_n1_c16_h16_w32_oc16.json
+```
+
+The default files are:
+
+```text
+<outdir>/streaming_conv_pipeline/trace.csv
+<outdir>/streaming_conv_pipeline/output.csv
+<outdir>/stats.txt
+```
+
+The default trace contains producer valid/ready/fire, raw S1 arbitration,
+S2 compaction, FIFO, consumer, SA input and output control. Add
+`--detailed-pe-trace` to append the 256-PE valid/MAC/add masks and canonical
+activation, weight, and accumulator snapshots. Detailed tracing can produce
+large files and is disabled by default.
+
+The `streamingPipeline.*` statistics include inclusive total/drained cycles,
+producer input and output interval numerators/denominators, qualified
+conflict-free II, bank conflicts, stage stalls, FIFO occupancy and transfers,
+PE input bubbles, tile counts, and output counts. A qualified II of one is
+established using the integer fields `conflictFreeOutputPairs`,
+`conflictFreeOutputGapCycles`, and `conflictFreeOutputMaxGap`, not a floating
+point comparison alone.
+
+This path assumes combinational scratchpad responses and ideal per-input
+weight availability. It is not RTL cycle-validated and does not establish
+physical timing, SRAM, DMA, or real weight-memory performance.
+
+Run the streaming functional and conflict matrix with an already built
+binary using:
+
+```bash
+cd tests
+./main.py run --skip-build gem5/streaming_conv_pipeline
+```
+
+The 11 profiles cover width packing and tails, stride and padding choices,
+the channel limit, output-channel tails, batch ordering, scattered-lane
+compaction, bank conflicts, FIFO full exchange, PE input bubbles, and output
+backpressure. `verify_streaming_pipeline.py` derives raw-to-compacted source
+lanes directly from output geometry and compares every generated NCHW value
+with the independent direct convolution oracle. Compatible profiles are also
+compared byte-for-byte with frozen outputs from the existing strict path.

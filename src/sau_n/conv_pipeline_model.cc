@@ -37,7 +37,7 @@ ConvPipelineModel::ConvPipelineModel(
     const PipelineResolvedConfig &config, const OutputReadyConfig &ready)
     : resolved(config), dimensions(validateAndDerive(resolved)),
       readyConfig(ready), im2colModel(resolved.im2col),
-      tileBuffer(dimensions.k)
+      tileBuffer(dimensions.k), sauModel(InputProtocol)
 {
     validateOutputReady(readyConfig);
     validateSpatialTileMapping(resolved, dimensions);

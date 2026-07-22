@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "name": "03_c3_w16_oc16_full",
+  "name": "streaming_w17_stride1_tail_oc7",
   "im2col": {
     "schema_version": 1,
-    "name": "03_c3_w16_oc16_full_im2col",
+    "name": "streaming_w17_stride1_tail_oc7_im2col",
     "n": 1,
     "c": 3,
-    "h": 3,
-    "w": 16,
+    "h": 4,
+    "w": 17,
     "kernel_h": 3,
     "kernel_w": 3,
     "stride_h": 1,
@@ -19,7 +19,7 @@
     "spad_base": 0,
     "input_generator": "tb_act_value_v1"
   },
-  "out_channels": 16,
+  "out_channels": 7,
   "cutbit": 8,
   "weight_generator": "tb_weight_value_v1",
   "bias_generator": "tb_bias_value_v1"

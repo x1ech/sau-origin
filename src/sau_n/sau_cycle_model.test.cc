@@ -32,6 +32,39 @@ streamInputs(int8_t activation, int8_t weight)
     return inputs;
 }
 
+void
+expectSameObservation(
+    const SauCycleObservation &strict,
+    const SauCycleObservation &elastic)
+{
+    EXPECT_EQ(strict.cycle, elastic.cycle);
+    EXPECT_EQ(strict.state, elastic.state);
+    EXPECT_EQ(strict.dataInCount, elastic.dataInCount);
+    EXPECT_EQ(strict.outputCounter, elastic.outputCounter);
+    EXPECT_EQ(strict.storageReady, elastic.storageReady);
+    EXPECT_EQ(strict.rowReadyMask, elastic.rowReadyMask);
+    EXPECT_EQ(strict.peFinish, elastic.peFinish);
+    EXPECT_EQ(strict.osValidMask, elastic.osValidMask);
+    EXPECT_EQ(strict.internalOutputValid, elastic.internalOutputValid);
+    EXPECT_EQ(strict.engineOutputFire, elastic.engineOutputFire);
+    EXPECT_EQ(strict.rowScoreValid, elastic.rowScoreValid);
+    EXPECT_EQ(strict.rowSequence, elastic.rowSequence);
+    EXPECT_EQ(strict.outputSlots, elastic.outputSlots);
+    EXPECT_EQ(strict.calFinish, elastic.calFinish);
+    EXPECT_EQ(strict.peValidMask, elastic.peValidMask);
+    EXPECT_EQ(strict.macCommitMask, elastic.macCommitMask);
+    EXPECT_EQ(strict.addCommitMask, elastic.addCommitMask);
+    for (uint64_t pe = 0; pe < strict.peStates.size(); ++pe) {
+        EXPECT_EQ(
+            strict.peStates[pe].activation,
+            elastic.peStates[pe].activation);
+        EXPECT_EQ(strict.peStates[pe].weight, elastic.peStates[pe].weight);
+        EXPECT_EQ(
+            strict.peStates[pe].accumulator,
+            elastic.peStates[pe].accumulator);
+    }
+}
+
 TEST(SauCycleContract, FreezesProjectArrayStateEncodingAndAnchors)
 {
     EXPECT_EQ(static_cast<uint8_t>(SauEngineState::Idle), uint8_t{0});
@@ -47,7 +80,69 @@ TEST(SauCycleContract, FreezesProjectArrayStateEncodingAndAnchors)
     EXPECT_EQ(ArrayDrainToBiasDelay, uint64_t{33});
 
     SauCycleModel model;
+    EXPECT_EQ(
+        model.protocol(), SauInputProtocol::StrictRtlContinuous);
     EXPECT_FALSE(model.cycleAnchorsProvisional());
+}
+
+TEST(SauCycleModel, ContinuousInputIsIdenticalAcrossProtocols)
+{
+    SauCycleModel strict(SauInputProtocol::StrictRtlContinuous);
+    SauCycleModel elastic(SauInputProtocol::ElasticBubbleEnabled);
+
+    auto launch = launchInputs(9, 2, 3);
+    launch.config.biases[0] = 1;
+    launch.config.biases[1] = -2;
+    launch.config.biases[2] = 3;
+    expectSameObservation(strict.tick(launch), elastic.tick(launch));
+    for (uint64_t cycle = 1; cycle <= 48; ++cycle) {
+        const auto inputs = cycle <= 9 ?
+            streamInputs(2, -4) : SauCycleInputs{};
+        expectSameObservation(strict.tick(inputs), elastic.tick(inputs));
+    }
+}
+
+TEST(SauCycleModel, ElasticBubblesDoNotCreateOrFreezeMacs)
+{
+    SauCycleModel model(SauInputProtocol::ElasticBubbleEnabled);
+    auto launch = launchInputs(3, 1, 1);
+    launch.config.biases[0] = 1;
+    model.tick(launch);
+
+    auto observation = model.tick(streamInputs(2, 3));
+    EXPECT_EQ(observation.dataInCount, uint64_t{0});
+    observation = model.tick();
+    EXPECT_EQ(observation.state, SauEngineState::Start);
+    EXPECT_EQ(observation.dataInCount, uint64_t{1});
+    EXPECT_FALSE(peMaskBit(observation.macCommitMask, 0, 0));
+
+    observation = model.tick();
+    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
+    EXPECT_EQ(observation.peStates[0].accumulator, int32_t{6});
+    EXPECT_EQ(observation.dataInCount, uint64_t{1});
+
+    model.tick(streamInputs(4, 5));
+    observation = model.tick();
+    EXPECT_FALSE(peMaskBit(observation.macCommitMask, 0, 0));
+    EXPECT_EQ(observation.dataInCount, uint64_t{2});
+    observation = model.tick();
+    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
+    EXPECT_EQ(observation.peStates[0].accumulator, int32_t{26});
+
+    model.tick(streamInputs(1, 7));
+    observation = model.tick();
+    EXPECT_EQ(observation.state, SauEngineState::Work);
+    EXPECT_EQ(observation.dataInCount, uint64_t{3});
+    observation = model.tick();
+    EXPECT_TRUE(peMaskBit(observation.macCommitMask, 0, 0));
+    EXPECT_EQ(observation.peStates[0].accumulator, int32_t{33});
+
+    while (observation.cycle < 40) {
+        observation = model.tick();
+    }
+    EXPECT_EQ(observation.cycle, uint64_t{40});
+    EXPECT_TRUE(observation.rowScoreValid);
+    EXPECT_EQ(observation.outputSlots[0], uint16_t{34});
 }
 
 TEST(SauCycleModel, K9OneByOneFollowsCandidatePipeline)
@@ -311,6 +406,9 @@ TEST(SauCycleModel, K567SaturationUsesValidatedCommitCycles)
 
 TEST(SauCycleModel, RejectsInvalidProtocolAndResetClearsQueues)
 {
+    EXPECT_THROW(
+        SauCycleModel(static_cast<SauInputProtocol>(2)),
+        std::invalid_argument);
     SauCycleModel model;
     auto invalid = launchInputs(0, 1, 1);
     EXPECT_THROW(model.tick(invalid), std::invalid_argument);

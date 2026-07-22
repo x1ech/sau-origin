@@ -12,6 +12,13 @@ namespace gem5::sau_n
 namespace
 {
 
+TEST(ConvPipelineContract, OldPathFixesStrictSauInputProtocol)
+{
+    EXPECT_EQ(
+        ConvPipelineModel::InputProtocol,
+        SauInputProtocol::StrictRtlContinuous);
+}
+
 PipelineResolvedConfig
 pipelineConfig()
 {

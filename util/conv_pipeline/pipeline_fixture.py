@@ -51,7 +51,7 @@ class LoadedFixture:
     resolved_config_sha256: str
 
 
-def _reject_duplicate_keys(pairs):
+def reject_duplicate_keys(pairs):
     document = {}
     for key, value in pairs:
         if key in document:
@@ -60,7 +60,7 @@ def _reject_duplicate_keys(pairs):
     return document
 
 
-def _resolve_fixture(document):
+def resolve_fixture_fields(document):
     if type(document) is not dict:
         raise FixtureError("fixture root must be a JSON object")
     if any(type(key) is not str for key in document):
@@ -90,10 +90,6 @@ def _resolve_fixture(document):
         bias_generator=document["bias_generator"],
     )
     derived = validate_and_derive(resolved)
-    try:
-        spatial_tiles(resolved)
-    except TileMappingError as error:
-        raise FixtureError(str(error)) from error
     return LoadedFixture(
         config=resolved,
         derived=derived,
@@ -104,7 +100,12 @@ def _resolve_fixture(document):
 
 def resolve_fixture(document):
     try:
-        return _resolve_fixture(document)
+        loaded = resolve_fixture_fields(document)
+        try:
+            spatial_tiles(loaded.config)
+        except TileMappingError as error:
+            raise FixtureError(str(error)) from error
+        return loaded
     except FixtureError:
         raise
     except PipelineConfigError as error:
@@ -119,7 +120,7 @@ def load_fixture(path):
         raise FixtureError(f"cannot read fixture {fixture_path}: {error}") \
             from error
     try:
-        document = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        document = json.loads(text, object_pairs_hook=reject_duplicate_keys)
     except FixtureError:
         raise
     except json.JSONDecodeError as error:
