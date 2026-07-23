@@ -138,7 +138,76 @@ the two-stage B-valid pipe and final A/B/input-switch registers. Its coupled
 test preserves the shared pre-edge snapshot into `RtlSaEnableSkeleton`, so
 `sa_en_i` becomes visible at edge 302 while the execute counter first samples
 it at 303. The source and three tests pass static checks; developer build
-verification is pending.
+verification passed as part of the 30/30 focused checkpoint on 2026-07-23.
+
+`RtlCommandDriverSkeleton` composes the isolated timing producers with a
+single pre-edge snapshot per tick. Resident and streamed reads share one
+`RtlResidentFillSkeleton` visibility pipeline, matching `mem_ctrl.sv`'s
+shared read-valid path. Its baseline test spans scheduler start at edge 2
+through physical writes and `commandDone` at edge 2772, and checks conservation
+of 256 resident reads, 2048 streamed/RF/A/B/accepted-SA tokens, 256 results,
+and 256 native/physical writes. A second test rejects inconsistent component
+configuration. Both new tests pass static checks and await the developer-owned
+focused rebuild. The first rebuild passed 31/32 and proved that execute-state
+gating alone was insufficient: the shared resident-return tail leaked into B
+at edge 266. The skeleton now also copies feeder.sv's registered
+`input_switch_case`, which blocks delayed input-switch 00 and admits streamed
+input-switch 01. That correction moved the first B edge to 301, but the next
+run produced only 2007/2048 B and 2016/2048 accepted-SA tokens. The remaining
+loss came from an extra skeleton-only delayed core-state gate: RTL's A/B
+arbiter remains active through `D_OUT`, so B must continue draining there.
+Removing the extra gate produced a 32/32 passing developer rebuild on
+2026-07-23.
+
+The first `SauModel` integration keeps the existing architecture data path but
+ticks the command driver at every strict command edge. Its core state and
+registered input switch now produce the semantic state trace, and completion
+requires both architectural resource drain and driver `commandDone`; driver
+token counts are checked before teardown. Non-strict DSE bypasses this path.
+A new focused test exercises the current flow/instruction shape combinations;
+the developer-built checkpoint passes 33/33 and the updated `sau_model.o`
+compiles. After relinking, the historical baseline architecture and state
+comparators both pass.
+
+The next runtime increment replaces two remaining aggregate consumers.
+`ResultScheduler` becomes an index owner when strict driver `resultValid` is
+present, while retaining its time-based API for non-strict DSE. External write
+events consume the driver's registered mem_ctrl write valid/last, matching the
+observed 2513..2768 request window rather than using a writeback-delay formula.
+After compilation/relink, the historical baseline architecture and state
+comparators both pass.
+
+The read/array increment exposes mem_ctrl's selected external SRAM request
+from the driver's existing pre-edge address snapshot. It exposes resident
+requests at 3..258 and streamed requests at 293..2417, whose fixed four-cycle
+responses line up with 7..262 and 297..2421. The first focused rebuild caught
+one redundant request register because it shifted every boundary one edge
+late; that register is removed and the corrected focused target passes 33/33.
+Strict runtime consumes these request pulses while
+retaining the existing address and response objects. Driver A/B-valid pulses
+release array indices through an externally-clocked `ArrayInputScheduler`
+path, bypassing aggregate skew/gap timing only for strict mode. Static checks
+pass. After runtime relink, the historical baseline architecture and state
+comparators both pass.
+
+The driver now records the actual first edge, last edge, and inclusive span
+for resident/stream SRAM requests, feeder A/B-valid, result-valid, and mem_ctrl
+write requests, plus the scheduler command-done edge. `SauModel` appends those
+`actual_*` observations to the existing derivation ledger at command
+completion. Baseline focused assertions cover all recorded windows. The
+developer checkpoint passes 33/33; after relinking, both baseline comparators
+pass and both commands emit the expected windows through command-done edge
+2772.
+
+The following cleanup makes these per-tick signals the only strict timing
+authority: strict `ArrayPipeline` is reduced to one-cycle bounded shadow-token
+accounting, `ArrayInputScheduler` and `ResultScheduler` retain only structural
+extents, completion waits on driver `commandDone` rather than a final-write
+delay, and the legacy A-tail/result-tail state projections are non-strict
+only. The original aggregate timing behavior remains available for non-strict
+DSE. After developer relinking, both strict comparators pass, all actual
+windows remain unchanged, and the constrained plus four-way non-strict DSE
+regressions complete successfully.
 
 `RtlResultSerializerSkeleton` is the next result-side producer. For the fixed
 32x32 SA with 4x4 PE macros, it explicitly shifts the internal-finish token

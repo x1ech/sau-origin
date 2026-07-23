@@ -75,6 +75,113 @@ streamName(StreamKind stream)
     throw std::invalid_argument("unknown SAU stream kind");
 }
 
+RtlCommandDriverConfig
+buildRtlCommandDriverConfig(const SauCommand &command,
+                            const TimingPolicy &policy,
+                            const RtlTimingParameters &rtl)
+{
+    const auto &address = command.operandBAddress;
+    const uint64_t streamedBeats =
+        static_cast<uint64_t>(address.xCount) * address.yCount *
+        address.flowCount * address.instructionCount;
+    if (rtl.saSize != 32 || !address.enabled ||
+        address.xCount != 1 || address.yCount != rtl.saSize ||
+        address.flowCount != command.flowLoops ||
+        address.instructionCount != policy.scheduleInstructions ||
+        streamedBeats != command.workItems ||
+        policy.residentLoadBeats % rtl.saSize != 0 ||
+        policy.residentLoadBeats / rtl.saSize == 0 ||
+        policy.residentLoadBeats / rtl.saSize > 64 ||
+        policy.scheduleInstructions > 64 ||
+        policy.outputBeats !=
+            static_cast<uint64_t>(rtl.saSize) *
+                policy.scheduleInstructions ||
+        policy.transMode != 0x1 || policy.reuseMode != 0x1) {
+        throw std::invalid_argument(
+            "unsupported strict RTL command-driver shape");
+    }
+
+    const uint32_t residentXBurst =
+        policy.residentLoadBeats / rtl.saSize;
+    return {
+        {rtl.saSize, command.flowLoops, policy.scheduleInstructions,
+         policy.transMode, policy.reuseMode, 0, false},
+        {residentXBurst, rtl.saSize, 1},
+        {address.xCount, address.yCount, address.flowCount,
+         address.instructionCount},
+        {address.xCount, address.yCount, address.flowCount,
+         address.instructionCount, rtl.saSize, rtl.sramDelay,
+         rtl.memAddressDelay, rtl.memCtrlDelay, rtl.registerDelay},
+        {rtl.saSize, command.flowLoops, 0, false},
+        {rtl.saSize, 4, 4},
+        {1, rtl.saSize, 1, policy.scheduleInstructions,
+         policy.scheduleInstructions, rtl.saSize, 1},
+        rtl.sramDelay,
+    };
+}
+
+SauScheduleState
+projectedScheduleState(RtlCoreState state)
+{
+    switch (state) {
+      case RtlCoreState::Idle:
+        return SauScheduleState::Idle;
+      case RtlCoreState::RegisterLoad:
+        return SauScheduleState::ResidentLoad;
+      case RtlCoreState::TransposeLoad:
+        return SauScheduleState::TransposeSetup;
+      case RtlCoreState::ReuseLoad:
+        return SauScheduleState::FlowExecute;
+      case RtlCoreState::TransposeClip:
+        return SauScheduleState::FlowBoundary;
+      case RtlCoreState::FirstLoad:
+      case RtlCoreState::DOut:
+      case RtlCoreState::RegisterUnload:
+        return SauScheduleState::DrainAndWriteback;
+    }
+    throw std::invalid_argument("unknown RTL core state");
+}
+
+std::string_view
+projectedTransitionCause(RtlCoreState state)
+{
+    switch (state) {
+      case RtlCoreState::Idle:
+        return "command_complete";
+      case RtlCoreState::RegisterLoad:
+        return "register_load";
+      case RtlCoreState::TransposeLoad:
+        return "register_load_done";
+      case RtlCoreState::ReuseLoad:
+        return "transpose_complete";
+      case RtlCoreState::TransposeClip:
+        return "flow_boundary";
+      case RtlCoreState::FirstLoad:
+        return "final_flow";
+      case RtlCoreState::DOut:
+        return "drain_results";
+      case RtlCoreState::RegisterUnload:
+        return "writeback_drained";
+    }
+    throw std::invalid_argument("unknown RTL core state");
+}
+
+std::string
+projectedInputSwitchName(uint8_t inputSwitch)
+{
+    switch (inputSwitch & 0x3) {
+      case 0:
+        return "00";
+      case 1:
+        return "01";
+      case 2:
+        return "10";
+      case 3:
+        return "11";
+    }
+    throw std::invalid_argument("unknown RTL input switch");
+}
+
 } // anonymous namespace
 
 // ==================== SauModel 构造 ====================
@@ -207,7 +314,13 @@ SauModel::submitCommand(const SauCommand &command)
     // its nominal ready cycle, so clear the previous command's epoch before
     // configuring the next command's derived fill timing.
     arrayPipeline.resetForCommand();
-    arrayPipeline.configure(activeArrayFillCycles(), arrayIiCycles);
+    // In strict mode the RTL command driver owns admission and result timing.
+    // Keep this pipeline only as bounded shadow-token accounting; a one-cycle
+    // fill/II prevents the retired aggregate timing policy from gating RTL
+    // pulses. Non-strict DSE retains its configured timing behavior.
+    arrayPipeline.configure(
+        strictTiming ? Cycles(1) : activeArrayFillCycles(),
+        strictTiming ? Cycles(1) : arrayIiCycles);
     activeCommand = command;
     scheduleState.beginCommand();
     lastTracedScheduleState.reset();
@@ -221,18 +334,37 @@ SauModel::submitCommand(const SauCommand &command)
     projectedInputSwitch = "00";
     readGenerator.emplace(command);
     aRegisterFile.emplace(command, activeArrayInputABeats());
-    arrayInputScheduler.emplace(
-        activeArrayInputABeats(), activeArrayInputBBeats(),
-        activeArrayInputSkewCycles(),
-        activeArrayInputBurstBeats(), arrayInputsPerInstruction(),
-        activeArrayInputBurstGapCycles(),
-        activeArrayInputFlowGapCycles(1),
-        activeArrayInputFlowGapCycles(2),
-        activeArrayInputFlowGapCycles(3));
-    resultScheduler.emplace(
-        expectedOutputBeats(), outputBeatsPerInstruction(),
-        activeArrayFillCycles(),
-        activeResultFlowGapCycles());
+    if (strictTiming) {
+        panic_if(!timingPolicy(),
+                 "strict SAU command lacks an active timing policy");
+        // releaseA/releaseB and ResultScheduler::produce() consume driver
+        // pulses directly. Keep only their structural extents in strict mode;
+        // the neutral timing fields must not become a second scheduler.
+        arrayInputScheduler.emplace(
+            activeArrayInputABeats(), activeArrayInputBBeats(),
+            0, 1, 1, Cycles(0), Cycles(0), Cycles(0), Cycles(0));
+        resultScheduler.emplace(
+            expectedOutputBeats(), outputBeatsPerInstruction(),
+            Cycles(0), Cycles(0));
+        rtlCommandDriver.emplace(buildRtlCommandDriverConfig(
+            command, *timingPolicy(), rtlTiming));
+        rtlCommandDriverStarted = false;
+    } else {
+        arrayInputScheduler.emplace(
+            activeArrayInputABeats(), activeArrayInputBBeats(),
+            activeArrayInputSkewCycles(),
+            activeArrayInputBurstBeats(), arrayInputsPerInstruction(),
+            activeArrayInputBurstGapCycles(),
+            activeArrayInputFlowGapCycles(1),
+            activeArrayInputFlowGapCycles(2),
+            activeArrayInputFlowGapCycles(3));
+        resultScheduler.emplace(
+            expectedOutputBeats(), outputBeatsPerInstruction(),
+            activeArrayFillCycles(),
+            activeResultFlowGapCycles());
+        rtlCommandDriver.reset();
+        rtlCommandDriverStarted = false;
+    }
     availableB.clear();
     visibleMemoryResponses.clear();
     nextResultIndex = 0;
@@ -285,6 +417,7 @@ SauModel::tick()
     }
 
     if (acceptedCommandThisTick) {
+        advanceRtlCommandDriver();
         ++sauCycle;
         if (hasPendingWork() && !tickEvent.scheduled()) {
             schedule(tickEvent, clockEdge(Cycles(1)));
@@ -311,6 +444,7 @@ SauModel::tick()
         return;
     }
 
+    advanceRtlCommandDriver();
     issueReads();
     advanceScheduleProjection();
 
@@ -370,6 +504,18 @@ SauModel::advanceArray()
         arrayInputScheduler->complete()) {
         return;
     }
+    if (rtlCommandDriver) {
+        const bool bWanted = rtlCommandDriver->dataBValid();
+        const bool aWanted = rtlCommandDriver->dataAValid();
+        const bool bProgressed = bWanted ? advanceArrayB(true) : false;
+        const bool aProgressed =
+            aWanted ? advanceArrayA(bProgressed, true) : false;
+        panic_if(bWanted && !bProgressed,
+                 "strict SAU could not release an RTL operand-B token");
+        panic_if(aWanted && !aProgressed,
+                 "strict SAU could not release an RTL operand-A token");
+        return;
+    }
     if (commandCycle() < activeArrayInputStartDelayCycles()) {
         return;
     }
@@ -408,12 +554,12 @@ SauModel::advanceArray()
 }
 
 bool
-SauModel::advanceArrayB()
+SauModel::advanceArrayB(bool rtlRelease)
 {
     assert(activeCommand);
     assert(arrayInputScheduler);
 
-    if (!arrayInputScheduler->canIssueB()) {
+    if (!rtlRelease && !arrayInputScheduler->canIssueB()) {
         return false;
     }
     if (!scheduleState.canAdmitArrayB()) {
@@ -426,7 +572,9 @@ SauModel::advanceArrayB()
         return false;
     }
     const auto bBeat = availableB.front();
-    const uint32_t arrayIndex = arrayInputScheduler->issueB();
+    const uint32_t arrayIndex = rtlRelease ?
+        arrayInputScheduler->releaseB() :
+        arrayInputScheduler->issueB();
     availableB.pop_front();
     const bool lastWork = arrayIndex + 1 == activeCommand->workItems;
     const bool flowBoundary = !lastWork &&
@@ -466,12 +614,12 @@ SauModel::advanceArrayB()
 }
 
 bool
-SauModel::advanceArrayA(bool allowPipelineBypass)
+SauModel::advanceArrayA(bool allowPipelineBypass, bool rtlRelease)
 {
     assert(activeCommand);
     assert(arrayInputScheduler);
 
-    if (!arrayInputScheduler->canIssueA()) {
+    if (!rtlRelease && !arrayInputScheduler->canIssueA()) {
         return false;
     }
     if (!scheduleState.canAdmitArrayA()) {
@@ -490,7 +638,9 @@ SauModel::advanceArrayA(bool allowPipelineBypass)
     }
 
     const Beat aBeat = makeArrayABeat(arrayIndex);
-    const uint32_t issuedIndex = arrayInputScheduler->issueA();
+    const uint32_t issuedIndex = rtlRelease ?
+        arrayInputScheduler->releaseA() :
+        arrayInputScheduler->issueA();
     assert(issuedIndex == arrayIndex);
     if (!scheduleState.onArrayAAdmitted()) {
         panic("SAU schedule rejected an Operand-A array admission");
@@ -532,24 +682,41 @@ SauModel::produceResults()
         arrayPipeline.takeReady(commandCycle());
     }
 
-    if (!activeCommand || !resultScheduler || resultScheduler->complete() ||
-        !scheduleState.canReleaseResult() || !resultFlowReady()) {
+    if (!activeCommand || !resultScheduler || resultScheduler->complete()) {
         return;
     }
-    resultScheduler->deferUntil(commandCycle());
-    if (!resultScheduler->canProduce(commandCycle())) {
+    if (!scheduleState.canReleaseResult()) {
+        panic_if(rtlCommandDriver && rtlCommandDriver->resultValid(),
+                 "strict SAU schedule rejected an RTL result token");
         return;
+    }
+    if (rtlCommandDriver) {
+        if (!rtlCommandDriver->resultValid()) {
+            return;
+        }
+    } else {
+        if (!resultFlowReady()) {
+            return;
+        }
+        resultScheduler->deferUntil(commandCycle());
+        if (!resultScheduler->canProduce(commandCycle())) {
+            return;
+        }
     }
     if (!outputBuffer.canPush()) {
+        panic_if(rtlCommandDriver,
+                 "strict SAU output buffer blocked an RTL result token");
         ++stats.stallOutputBufferFull;
         return;
     }
 
-    const uint32_t resultIndex = resultScheduler->produce(commandCycle());
+    const uint32_t resultIndex = rtlCommandDriver ?
+        resultScheduler->produce() :
+        resultScheduler->produce(commandCycle());
     const bool last = resultIndex + 1 == expectedOutputBeats();
     outputBuffer.push({activeCommand->id, resultIndex, commandCycle(), last});
     lastResultCycle = commandCycle();
-    if (last) {
+    if (last && !rtlCommandDriver) {
         if (!inputSwitchResetVisibleCycle) {
             inputSwitchResetVisibleCycle = commandCycle() +
                 activeInputSwitchResetVisibleDelayCycles();
@@ -576,22 +743,39 @@ SauModel::produceResults()
 void
 SauModel::issueWrites()
 {
-    if (!activeCommand || outputBuffer.size() == 0 ||
-        memoryBlocked() || !scheduleState.canIssueWriteback()) {
+    if (!activeCommand || memoryBlocked()) {
         return;
     }
-    // RTL calibration keeps all output tokens until the result stream is
-    // complete. A smaller FIFO cannot satisfy that policy, so in that DSE
-    // regime it begins draining once tokens are available. The calibrated
-    // default (256 slots for 256 outputs) keeps the RTL path unchanged.
-    const bool waitForFullResultStream =
-        outputBufferEntries >= expectedOutputBeats();
-    if ((waitForFullResultStream &&
-         resultsProduced != expectedOutputBeats()) || !lastResultCycle ||
-        static_cast<uint64_t>(commandCycle()) <
-            static_cast<uint64_t>(*lastResultCycle +
-                                  activeWritebackStartDelayCycles())) {
+    if (!scheduleState.canIssueWriteback()) {
+        panic_if(rtlCommandDriver &&
+                     rtlCommandDriver->memoryWriteRequestValid(),
+                 "strict SAU schedule rejected an RTL write request");
         return;
+    }
+    if (outputBuffer.size() == 0) {
+        panic_if(rtlCommandDriver &&
+                     rtlCommandDriver->memoryWriteRequestValid(),
+                 "strict SAU lacks a result token for an RTL write request");
+        return;
+    }
+    if (rtlCommandDriver) {
+        if (!rtlCommandDriver->memoryWriteRequestValid()) {
+            return;
+        }
+    } else {
+        // RTL calibration keeps all output tokens until the result stream is
+        // complete. A smaller FIFO cannot satisfy that policy, so in that DSE
+        // regime it begins draining once tokens are available. The calibrated
+        // default (256 slots for 256 outputs) keeps the RTL path unchanged.
+        const bool waitForFullResultStream =
+            outputBufferEntries >= expectedOutputBeats();
+        if ((waitForFullResultStream &&
+             resultsProduced != expectedOutputBeats()) || !lastResultCycle ||
+            static_cast<uint64_t>(commandCycle()) <
+                static_cast<uint64_t>(*lastResultCycle +
+                                      activeWritebackStartDelayCycles())) {
+            return;
+        }
     }
     if (!calibrationMemory && outstandingWrites() >= maxOutstandingWrites) {
         ++stats.stallOutstandingWriteLimit;
@@ -618,6 +802,11 @@ SauModel::issueWrites()
             beatIndex,
             beatIndex + 1 == expectedOutputBeats(),
         };
+        panic_if(
+            rtlCommandDriver &&
+                writeBeat.last !=
+                    rtlCommandDriver->memoryWriteRequestLast(),
+            "strict SAU write-last differs from RTL command driver");
 
         if (phase != Phase::Writeback) {
             transitionTo(Phase::Writeback);
@@ -641,15 +830,26 @@ SauModel::issueWrites()
 void
 SauModel::issueReads()
 {
-    if (!activeCommand || !readGenerator || readGenerator->empty() ||
-        memoryBlocked()) {
+    if (!activeCommand || !readGenerator || memoryBlocked()) {
         return;
     }
-    // The feeder starts after command acceptance.  This is distinct from
-    // physical event scheduling: it defines the command-local trace boundary
-    // between command acceptance and the first external read.
-    if (commandCycle() < activeCommandStartCycles()) {
+    if (readGenerator->empty()) {
+        panic_if(rtlCommandDriver &&
+                     rtlCommandDriver->memoryReadRequestValid(),
+                 "strict SAU lacks an address for an RTL read request");
         return;
+    }
+    if (rtlCommandDriver) {
+        if (!rtlCommandDriver->memoryReadRequestValid()) {
+            return;
+        }
+    } else {
+        // The feeder starts after command acceptance. This is distinct from
+        // physical event scheduling: it defines the command-local trace
+        // boundary between command acceptance and the first external read.
+        if (commandCycle() < activeCommandStartCycles()) {
+            return;
+        }
     }
     if (!calibrationMemory && outstandingReads() >= maxOutstandingReads) {
         ++stats.stallOutstandingReadLimit;
@@ -664,12 +864,20 @@ SauModel::issueReads()
            memoryCanIssue()) {
         const Beat beat = readGenerator->front();
         if (!scheduleState.canIssueRead(beat.stream)) {
+            panic_if(rtlCommandDriver,
+                     "strict SAU schedule rejected an RTL read request");
             break;
         }
-        if (beat.stream == StreamKind::OperandB && bReadInCooldown()) {
+        panic_if(
+            rtlCommandDriver &&
+                (beat.stream == StreamKind::OperandB) !=
+                    rtlCommandDriver->memoryReadRequestIsStream(),
+            "strict SAU read stream differs from RTL command driver");
+        if (!rtlCommandDriver && beat.stream == StreamKind::OperandB &&
+            bReadInCooldown()) {
             break;
         }
-        if (!canIssueReadBeat(beat)) {
+        if (!rtlCommandDriver && !canIssueReadBeat(beat)) {
             break;
         }
         const bool acceptedOrBlocked = calibrationMemory ?
@@ -685,7 +893,8 @@ SauModel::issueReads()
             calibrationReadResponses.push_back({
                 acceptedCycle, visibleCycle, beat});
             requestAccepted(beat, false);
-            if (beat.stream == StreamKind::OperandB) {
+            if (!rtlCommandDriver &&
+                beat.stream == StreamKind::OperandB) {
                 applyBReadCooldown();
             }
         }
@@ -853,6 +1062,21 @@ SauModel::updatePhase()
     }
 
     if (commandLocallyComplete()) {
+        if (rtlCommandDriver) {
+            panic_if(
+                rtlCommandDriver->residentReadTokens() !=
+                    timingPolicy()->residentLoadBeats ||
+                rtlCommandDriver->streamReadTokens() !=
+                    activeCommand->workItems ||
+                rtlCommandDriver->acceptedSaTokens() !=
+                    activeCommand->workItems ||
+                rtlCommandDriver->resultTokens() !=
+                    expectedOutputBeats() ||
+                rtlCommandDriver->physicalWriteTokens() !=
+                    expectedOutputBeats(),
+                "strict SAU command-driver token conservation failed");
+            emitRtlStageLedger(*activeCommand);
+        }
         traceScheduleState = SauScheduleState::Complete;
         scheduleState.completeCommand();
         emitScheduleState("command_complete");
@@ -868,6 +1092,8 @@ SauModel::updatePhase()
         aRegisterFile.reset();
         arrayInputScheduler.reset();
         resultScheduler.reset();
+        rtlCommandDriver.reset();
+        rtlCommandDriverStarted = false;
         availableB.clear();
         if (moreCommands) {
             if (strictTiming) {
@@ -1140,9 +1366,88 @@ SauModel::emitTimingLedger(const SauCommand &command)
 }
 
 void
+SauModel::emitRtlStageLedger(const SauCommand &command)
+{
+    if (!timingLedger.is_open() || !rtlCommandDriver) {
+        return;
+    }
+
+    const auto emitWindow =
+        [this, &command](std::string_view term,
+                         const RtlStageWindow &window,
+                         std::string_view source) {
+            panic_if(!window.observed,
+                     "strict SAU stage ledger missed an observed window");
+            timingLedger << command.id << ",actual_" << term
+                         << "_first_edge," << window.firstEdge << ','
+                         << source << '\n';
+            timingLedger << command.id << ",actual_" << term
+                         << "_last_edge," << window.lastEdge << ','
+                         << source << '\n';
+            timingLedger << command.id << ",actual_" << term
+                         << "_span," << window.span() << ','
+                         << source << '\n';
+        };
+
+    emitWindow("resident_read", rtlCommandDriver->residentReadWindow(),
+               "RtlCommandDriver shared SRAM request");
+    emitWindow("stream_read", rtlCommandDriver->streamReadWindow(),
+               "RtlCommandDriver shared SRAM request");
+    emitWindow("operand_a", rtlCommandDriver->operandAWindow(),
+               "RtlCommandDriver feeder data_A_valid");
+    emitWindow("operand_b", rtlCommandDriver->operandBWindow(),
+               "RtlCommandDriver feeder data_B_valid");
+    emitWindow("result", rtlCommandDriver->resultWindow(),
+               "RtlCommandDriver result_final_valid");
+    emitWindow("memory_write", rtlCommandDriver->memoryWriteWindow(),
+               "RtlCommandDriver mem_ctrl write request");
+    panic_if(!rtlCommandDriver->commandDoneObserved(),
+             "strict SAU stage ledger missed command_done");
+    timingLedger << command.id << ",actual_command_done_edge,"
+                 << rtlCommandDriver->commandDoneEdge()
+                 << ",RtlCommandDriver scheduler command_done\n";
+    timingLedger.flush();
+}
+
+void
+SauModel::advanceRtlCommandDriver()
+{
+    if (!rtlCommandDriver) {
+        return;
+    }
+    rtlCommandDriver->tick(!rtlCommandDriverStarted);
+    rtlCommandDriverStarted = true;
+}
+
+void
+SauModel::advanceRtlScheduleProjection()
+{
+    assert(rtlCommandDriver);
+    const auto coreState = rtlCommandDriver->coreState();
+    if (coreState == RtlCoreState::Idle) {
+        return;
+    }
+
+    const auto nextState = projectedScheduleState(coreState);
+    const auto nextInputSwitch = projectedInputSwitchName(
+        rtlCommandDriver->outputInputSwitch());
+    const bool switchOnly =
+        nextState == traceScheduleState &&
+        nextInputSwitch != projectedInputSwitch;
+    traceScheduleState = nextState;
+    projectedInputSwitch = nextInputSwitch;
+    emitScheduleState(switchOnly ? "input_switch_visible" :
+                      projectedTransitionCause(coreState));
+}
+
+void
 SauModel::advanceScheduleProjection()
 {
     if (!activeCommand) {
+        return;
+    }
+    if (rtlCommandDriver) {
+        advanceRtlScheduleProjection();
         return;
     }
 
@@ -1280,6 +1585,7 @@ bool
 SauModel::commandLocallyComplete() const
 {
     return activeCommand &&
+        (!rtlCommandDriver || rtlCommandDriver->commandDone()) &&
         writesAccepted == expectedOutputBeats() &&
         outputBuffer.size() == 0 &&
         // ArrayPipeline occupancy is a capacity/II accounting mechanism.
@@ -1290,9 +1596,10 @@ SauModel::commandLocallyComplete() const
         arrayInputScheduler && arrayInputScheduler->complete() &&
         resultScheduler && resultScheduler->complete() &&
         lastWriteCycle &&
-        static_cast<uint64_t>(commandCycle()) >=
-            static_cast<uint64_t>(*lastWriteCycle +
-                                  activeCompletionDelayCycles()) &&
+        (rtlCommandDriver ||
+         static_cast<uint64_t>(commandCycle()) >=
+             static_cast<uint64_t>(*lastWriteCycle +
+                                   activeCompletionDelayCycles())) &&
         (!readGenerator || readGenerator->empty()) &&
         visibleReadBeats == acceptedReadBeats &&
         visibleMemoryResponses.empty() &&
@@ -1501,12 +1808,15 @@ SauModel::requestAccepted(const Beat &beat, bool write)
             panic("SAU schedule rejected an Operand-A read acceptance");
         }
         if (beat.stream == StreamKind::OperandA && beat.last) {
-            // scheduler.sv enters TRANSPOSE_LOAD on register_load_done; the
-            // following SA_SIZE cycles are projected separately in tick().
-            transposeCompleteCycle = commandCycle() +
-                Cycles(activeArrayInputBurstBeats());
-            traceScheduleState = SauScheduleState::TransposeSetup;
-            emitScheduleState("register_load_done");
+            if (!rtlCommandDriver) {
+                // The legacy/non-strict projection derives TRANSPOSE_LOAD
+                // from the final resident request. Strict state is sampled
+                // directly from the per-tick RTL command driver.
+                transposeCompleteCycle = commandCycle() +
+                    Cycles(activeArrayInputBurstBeats());
+                traceScheduleState = SauScheduleState::TransposeSetup;
+                emitScheduleState("register_load_done");
+            }
         }
     }
 

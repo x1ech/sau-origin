@@ -36,6 +36,25 @@ scheduleStateMapping(SauScheduleState state)
     return StateMappings[index];
 }
 
+void
+RtlStageWindow::observe(uint64_t edge)
+{
+    if (!observed) {
+        observed = true;
+        firstEdge = edge;
+    }
+    lastEdge = edge;
+}
+
+uint64_t
+RtlStageWindow::span() const
+{
+    if (!observed) {
+        throw std::logic_error("RTL stage window was not observed");
+    }
+    return lastEdge - firstEdge + 1;
+}
+
 RtlResidentLoadSkeleton::RtlResidentLoadSkeleton(
     const RtlResidentLoadConfig &config_) : config(config_)
 {
@@ -682,6 +701,7 @@ RtlInputFeederSkeleton::RtlInputFeederSkeleton(
         config.memoryControlDelay;
     coreStatePipeline.assign(stateDelay, RtlCoreState::Idle);
     inputSwitchPipeline.assign(stateDelay, 0);
+    lastFlowTimePipeline.assign(stateDelay, false);
     outputInputSwitchPipeline.assign(config.registerDelay, 0);
     memoryValidPipeline.assign(config.registerDelay, false);
 }
@@ -757,9 +777,17 @@ RtlInputFeederSkeleton::tick(const RtlInputFeederInputs &inputs)
     readEnableReg = readTrigger;
 
     // The fixed ATB/reuse-A path streams B through EN_i_d, REGISTER_DELAY,
-    // and the final data_B_valid_o register once the delayed scheduler state
-    // has entered the execute family.
-    dataBValidReg = reuseLoadStateReg && memoryValidPipeline.back();
+    // the A/B arbiter, and the final data_B_valid_o register. The arbiter
+    // remains active while the scheduler crosses D_OUT; core state does not
+    // directly gate this output.
+    // feeder.sv's ATB arbiter registers
+    //   input_switch_case = ~input_switch_d_o[0][0]
+    // and only enables B when that case bit is clear. This blocks the
+    // resident-load tail that is still visible after the scheduler has
+    // entered TRANSPOSE_LOAD, while admitting the streamed operand once the
+    // delayed input switch selects 01.
+    dataBValidReg =
+        !inputSwitchCaseReg && memoryValidPipeline.back();
     for (uint32_t index = memoryValidPipeline.size() - 1;
          index > 0; --index) {
         memoryValidPipeline[index] = memoryValidPipeline[index - 1];
@@ -774,7 +802,11 @@ RtlInputFeederSkeleton::tick(const RtlInputFeederInputs &inputs)
             outputInputSwitchPipeline[index - 1];
     }
     outputInputSwitchPipeline[0] = inputSwitchDelayReg;
+    inputSwitchCaseReg = (inputSwitchDelayReg & 0x1) == 0;
     inputSwitchDelayReg = inputSwitchPipeline.back();
+    lastFlowTimeClearReg =
+        !lastFlowTimePipeline.back() &&
+        lastFlowTimePipeline[lastFlowTimePipeline.size() - 2];
 
     delayedCoreStateReg = delayedCoreState;
     reuseLoadStateReg =
@@ -788,9 +820,11 @@ RtlInputFeederSkeleton::tick(const RtlInputFeederInputs &inputs)
          index > 0; --index) {
         coreStatePipeline[index] = coreStatePipeline[index - 1];
         inputSwitchPipeline[index] = inputSwitchPipeline[index - 1];
+        lastFlowTimePipeline[index] = lastFlowTimePipeline[index - 1];
     }
     coreStatePipeline[0] = inputs.coreState;
     inputSwitchPipeline[0] = inputs.inputSwitch;
+    lastFlowTimePipeline[0] = inputs.lastFlowTime;
 }
 
 RtlSchedulerSkeleton::RtlSchedulerSkeleton(
@@ -1026,6 +1060,162 @@ RtlSchedulerSkeleton::tick(const RtlSchedulerInputs &inputs)
     lastFlowTimeValidReg = flowClear;
     lastInstructionTimeClearReg = instructionClear;
     crossbarDoneReg = flowEnd;
+}
+
+RtlCommandDriverSkeleton::RtlCommandDriverSkeleton(
+    const RtlCommandDriverConfig &config_)
+    : config(config_),
+      scheduler(config.scheduler),
+      residentLoad(config.residentLoad),
+      streamLoad(config.streamLoad),
+      readPath({config.sramDelay}),
+      inputFeeder(config.inputFeeder),
+      execute(config.execute),
+      resultSerializer(config.resultSerializer),
+      outputWriteback(config.outputWriteback)
+{
+    if (config.scheduler.saSize != config.inputFeeder.saSize ||
+        config.scheduler.saSize != config.execute.saSize ||
+        config.scheduler.saSize != config.resultSerializer.saSize ||
+        config.scheduler.flowTimes != config.streamLoad.flowCycles ||
+        config.scheduler.flowTimes != config.inputFeeder.flowBurst ||
+        config.scheduler.flowTimes != config.execute.flowLoops ||
+        config.scheduler.instructionTimes !=
+            config.streamLoad.instructionCycles ||
+        config.scheduler.instructionTimes !=
+            config.inputFeeder.instructionBurst ||
+        config.scheduler.instructionTimes !=
+            config.outputWriteback.internalInstructionBurst ||
+        config.sramDelay != config.inputFeeder.sramDelay) {
+        throw std::invalid_argument(
+            "inconsistent RTL command-driver configuration");
+    }
+}
+
+void
+RtlCommandDriverSkeleton::tick(bool startWrite)
+{
+    // Snapshot every producer output before any component commits this edge.
+    const bool start = scheduler.start();
+    const bool residentRequestValid = residentLoad.requestValid();
+    const bool residentRequestLast = residentLoad.requestLast();
+
+    RtlStreamLoadInputs streamInputs;
+    streamInputs.start = start;
+    streamInputs.coreState = scheduler.coreState();
+    streamInputs.inputSwitch = scheduler.inputSwitch();
+    streamInputs.lastFlowTime = scheduler.lastFlowTime();
+    streamInputs.nextExecuteStart = scheduler.nextExecuteStart();
+    streamInputs.registerRequestValid = residentRequestValid;
+    streamInputs.registerRequestLast = residentRequestLast;
+    const auto streamOutputs = streamLoad.outputs(streamInputs);
+
+    RtlSchedulerInputs schedulerInputs;
+    schedulerInputs.startWrite = startWrite;
+    schedulerInputs.loadDone = streamOutputs.loadDone;
+    schedulerInputs.registerLoadDone = residentRequestLast;
+    schedulerInputs.updateFinished = execute.updateFinished();
+    schedulerInputs.writeFinished = outputWriteback.writeFinished();
+    schedulerInputs.lastFlowTimeClear =
+        inputFeeder.lastFlowTimeClear();
+
+    RtlResidentFillInputs readInputs;
+    readInputs.readRequestValid =
+        residentRequestValid || streamOutputs.readEnable;
+    readInputs.readRequestLast =
+        residentRequestLast || streamOutputs.readLast;
+    readInputs.coreState = scheduler.coreState();
+
+    RtlInputFeederInputs inputFeederInputs;
+    inputFeederInputs.coreState = scheduler.coreState();
+    inputFeederInputs.inputSwitch = scheduler.inputSwitch();
+    inputFeederInputs.memoryDataValid = readPath.memoryDataValid();
+    inputFeederInputs.lastFlowTime = scheduler.lastFlowTime();
+
+    RtlSaEnableInputs saEnableInputs;
+    saEnableInputs.dataAValid = inputFeeder.dataAValid();
+    saEnableInputs.dataBValid = inputFeeder.dataBValid();
+    saEnableInputs.inputSwitch = inputFeeder.outputInputSwitch();
+    const bool acceptedSaEnable = saEnablePath.saEnable(saEnableInputs);
+
+    RtlExecuteUpdateInputs executeInputs;
+    executeInputs.enable = acceptedSaEnable;
+    executeInputs.currentInstructionOutput =
+        scheduler.lastInstruction();
+    executeInputs.resultLast = resultSerializer.resultLast();
+
+    RtlResultSerializerInputs serializerInputs;
+    serializerInputs.internalFinish = execute.internalFinish();
+
+    RtlOutputWritebackInputs outputInputs;
+    outputInputs.resultValid = resultSerializer.resultValid();
+    outputInputs.coreState = scheduler.coreState();
+
+    RtlSramWriteTransportInputs writeInputs;
+    writeInputs.nativeWriteValid = outputWriteback.writeValid();
+    writeInputs.nativeWriteLast = outputWriteback.writeDataLast();
+    writeInputs.crossbarStart = startWrite;
+    writeInputs.crossbarDone = scheduler.commandDone();
+
+    scheduler.tick(schedulerInputs);
+    residentLoad.tick(start);
+    streamLoad.tick(streamInputs);
+    readPath.tick(readInputs);
+    inputFeeder.tick(inputFeederInputs);
+    saEnablePath.tick(saEnableInputs);
+    execute.tick(executeInputs);
+    resultSerializer.tick(serializerInputs);
+    outputWriteback.tick(outputInputs);
+    writeTransport.tick(writeInputs);
+
+    // The shared pre-edge snapshot is already one edge behind the address
+    // producer's registered output, matching mem_ctrl's selected SRAM
+    // request. Do not add another register here.
+    memoryReadAcceptedReg = readInputs.readRequestValid;
+    memoryReadAcceptedLastReg =
+        readInputs.readRequestValid && readInputs.readRequestLast;
+    memoryReadAcceptedStreamReg =
+        streamOutputs.readEnable && !residentRequestValid;
+
+    currentStreamReadEnable =
+        streamLoad.outputs(streamInputs).readEnable;
+    currentSaEnable = saEnablePath.saEnable(
+        {inputFeeder.dataAValid(), inputFeeder.dataBValid(),
+         inputFeeder.outputInputSwitch()});
+
+    residentReads += residentLoad.requestValid() ? 1 : 0;
+    streamReads += currentStreamReadEnable ? 1 : 0;
+    registerFileReads +=
+        inputFeeder.registerFileReadValid() ? 1 : 0;
+    operandAInputs += inputFeeder.dataAValid() ? 1 : 0;
+    operandBInputs += inputFeeder.dataBValid() ? 1 : 0;
+    acceptedSaInputs += acceptedSaEnable ? 1 : 0;
+    results += resultSerializer.resultValid() ? 1 : 0;
+    nativeWrites += outputWriteback.writeValid() ? 1 : 0;
+    physicalWrites +=
+        writeTransport.memoryWriteAccepted() ? 1 : 0;
+
+    if (memoryReadAcceptedReg) {
+        (memoryReadAcceptedStreamReg ?
+             streamReadStage : residentReadStage).observe(currentEdge);
+    }
+    if (inputFeeder.dataAValid()) {
+        operandAStage.observe(currentEdge);
+    }
+    if (inputFeeder.dataBValid()) {
+        operandBStage.observe(currentEdge);
+    }
+    if (resultSerializer.resultValid()) {
+        resultStage.observe(currentEdge);
+    }
+    if (writeTransport.memCtrlWriteValid()) {
+        memoryWriteStage.observe(currentEdge);
+    }
+    if (scheduler.commandDone() && !commandDoneSeen) {
+        commandDoneSeen = true;
+        commandDoneAt = currentEdge;
+    }
+    ++currentEdge;
 }
 
 SauScheduleState

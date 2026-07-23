@@ -66,5 +66,14 @@ TEST(ResultScheduler, DefersAFlowWithoutCollapsingLaterSpacing)
     EXPECT_TRUE(scheduler.canProduce(Cycles(1266)));
 }
 
+TEST(ResultScheduler, AllowsAnExternalPerTickProducerToReleaseResults)
+{
+    ResultScheduler scheduler(2, 1, Cycles(343), Cycles(0));
+
+    EXPECT_EQ(scheduler.produce(), 0U);
+    EXPECT_EQ(scheduler.produce(), 1U);
+    EXPECT_TRUE(scheduler.complete());
+}
+
 } // anonymous namespace
 } // namespace gem5::sau

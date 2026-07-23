@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 ## Goal
 
@@ -10,7 +10,7 @@ The model targets architecture-relevant cycle timing rather than RTL
 register-level equivalence, and the first milestone does not perform
 arithmetic computation.
 
-## Session Handoff Checkpoint — 2026-07-22
+## Session Handoff Checkpoint — 2026-07-23
 
 Read this section first when resuming Step 5.5 in a new session.
 
@@ -20,13 +20,34 @@ Read this section first when resuming Step 5.5 in a new session.
   by the passing 64x256x256 matmul run.
 - gem5 worktree:
   `/home/xch/work/sau_n_gem5/sau_origin_feature_sau_command_types_b9fbc18_20260720`.
-- Focused target status: the last developer rebuild of
-  `build/ALL/sau/schedule_state.test.opt` passed **27/27 tests** after adding
-  `RtlResidentFillSkeleton`. `RtlInputFeederSkeleton` and three additional
-  tests are now implemented, but this new increment still awaits the next
-  developer rebuild.
+- Focused target status: the developer rebuild after adding the multi-shape
+  `RtlCommandDriverSkeleton` regression passed **33/33 tests**. The baseline
+  driver test
+  first exposed resident tail data incorrectly producing B-valid at edge 266.
+  Adding feeder.sv's registered `input_switch_case` corrected the first B edge
+  to 301, but the next rebuild showed only 2007/2048 B tokens and 2016/2048
+  accepted SA tokens. The remaining cause was an extra skeleton-only
+  core-state gate that dropped B while RTL's arbiter remains active through
+  `D_OUT`. Removing that gate closed the full edge and token checks. A new
+  multi-shape conservation test now covers the current 1/4/8 flow and 1/4/8
+  instruction combinations. The first `SauModel` strict-runtime integration
+  passed the historical baseline architecture and state comparators after
+  relinking `gem5.opt`. The result/write producer increment also passes both
+  comparators. The read/array producer increment also passes both comparators.
+  The actual driver stage-ledger increment passes the developer's 33/33
+  focused checkpoint and, after relinking, the baseline architecture and
+  state comparators. Both commands emit the expected observed windows. Strict
+  aggregate-consumer cleanup is now relinked and verified: both comparators
+  and all observed windows remain unchanged. The constrained non-strict run
+  and four DSE monotonicity configurations also pass.
 - Static status: `git diff --check` passes. Codex did not run the gem5 build;
   builds are developer-owned per `src/sau/AGENTS.md`.
+- Post-link verification used `m5out/sau-rtl-driver-cleanup`,
+  `m5out/sau-cleanup-constrained`, and four `m5out/sau-cleanup-dse-*`
+  directories. `verify_dse.py` now avoids Python 3.9-only
+  `str.removeprefix`, so its documented command runs under the workspace's
+  Python 3.8.2; its 2 unit tests, syntax check, and four-stat monotonicity
+  verification pass.
 - The worktree intentionally contains uncommitted Step 5.5 changes and a
   user-owned modification to `src/sau/AGENTS.md`. Preserve them; do not reset,
   checkout, or overwrite unrelated changes.
@@ -40,7 +61,7 @@ scons build/ALL/sau/schedule_state.test.opt \
 ./build/ALL/sau/schedule_state.test.opt
 ```
 
-Implemented and focused-test verified in `schedule_state.{hh,cc}`:
+Implemented in `schedule_state.{hh,cc}`; items 1–9 are focused-test verified:
 
 1. `RtlSchedulerSkeleton` — start registers, states, transpose/flow/ins
    counters, current D_OUT guards, switch and command completion.
@@ -58,12 +79,28 @@ Implemented and focused-test verified in `schedule_state.{hh,cc}`:
 8. `RtlResidentFillSkeleton` — resident mem_ctrl visibility, feeder input-RF
    write valid and padding-shifter/input-SRAM tail drain.
 9. `RtlInputFeederSkeleton` — input-RF read counters, feeder A/B-valid and
-   input-switch pipelines through the SA-enable observation boundary. Static
-   checks pass; focused build verification is pending.
+   input-switch pipelines through the SA-enable observation boundary.
+10. `RtlCommandDriverSkeleton` — shared pre-edge composition of the verified
+    producers from CSR start through scheduler `commandDone`, including one
+    shared resident/stream memory-read visibility path and token accounting.
+    The baseline edge/token and multi-shape conservation tests pass in the
+    33/33 checkpoint.
 
-Current boundary: these are still isolated timing components. They are **not
-connected to `SauModel::tick()`**, so strict runtime still uses old aggregate
-timing policy. Step 5.5 is therefore not complete.
+Current boundary: strict `SauModel` commands now construct and tick a
+command-local driver. Driver core state/input switch replace the old
+formula-based state-trace projection, and local completion is additionally
+gated by driver `commandDone` plus driver token conservation. Strict result
+events and SRAM write requests now consume driver `resultValid` and registered
+mem_ctrl write valid/last rather than aggregate result/write delays. Strict
+external reads consume the registered shared-SRAM request, and A/B admissions
+consume driver valid pulses.
+At command completion the driver now appends observed first/last/span rows for
+resident read, stream read, A, B, result, and mem_ctrl write plus the actual
+command-done edge to the timing ledger. The old derivation rows remain for
+provenance comparison. The latest source cleanup also removes the remaining
+strict aggregate fill/gap/completion consumers while preserving the original
+non-strict DSE schedulers. It awaits developer relinking and regression.
+Step 5.5 still needs new-current-trace acceptance.
 
 The latest implementation adds the input-RF read/feeder coupling from the
 already exported current-FSDB edges:
@@ -79,13 +116,20 @@ sa_en_i=1            302
 first SA sample      303
 ```
 
-The new skeleton models `register_file_in` read counters/valid, feeder
-`REGISTER_DELAY=2` plus final A/B valid FF, and feeds the existing
+The input-feeder skeleton models `register_file_in` read counters/valid,
+feeder `REGISTER_DELAY=2` plus final A/B valid FF, and feeds the existing
 `RtlSaEnableSkeleton` using shared pre-edge snapshots. Its focused tests check
-the complete 266/267/269/298/301/302/303 boundary. The immediate handoff is to
-run the developer-owned focused rebuild. If it passes, connect all verified
-producers into one CSR-to-command-done driver, then replace aggregate strict
-runtime scheduling and generate the stage ledger.
+the complete 266/267/269/298/301/302/303 boundary and now pass 30/30.
+
+The new command driver composes every verified producer using one pre-edge
+snapshot per tick. Its baseline test checks the full 2..2772 edge chain and
+conservation of 256 resident reads, 2048 streamed/RF/A/B/accepted-SA tokens,
+256 results, and 256 native/physical writes. The first 32-test rebuild exposed
+and localized the missing registered A/B-arbiter gate; the resulting early B
+token caused all later result/writeback failures. The corrected driver and
+multi-shape extension now pass 33/33; strict runtime integration and the
+observed stage ledger are complete. The current handoff is the aggregate
+consumer cleanup described at the top of this file.
 
 Relevant raw exports under `/home/xch/work/npu_lpnpu/tmp`:
 
@@ -366,9 +410,58 @@ Design and implementation references:
   read FSM, feeder control delay, A shift/count path, B valid pipeline and
   final input-switch register. Three focused tests check the current-FSDB
   266/267/269/298/301/302/303 edges, the one-edge SA pre-edge sampling
-  boundary and invalid configuration rejection. `git diff --check` and the
-  gem5 modification style check pass. This increment has not yet been built;
-  the last developer-built checkpoint remains 27/27.
+  boundary and invalid configuration rejection. The developer rebuilt the
+  target and all 30 focused tests passed on 2026-07-23.
+- `RtlCommandDriverSkeleton` now connects the scheduler, address producers,
+  shared memory-read visibility path, input feeder, SA-enable/execute path,
+  result serializer, output writeback, and physical write transport with
+  shared pre-edge sampling. Two new tests check the baseline edge chain,
+  end-to-end token conservation, and inconsistent configuration rejection.
+  The first developer rebuild passed 31/32: the end-to-end test caught
+  resident tail data leaking into B at edge 266. Adding feeder.sv's registered
+  `input_switch_case` corrected that edge, while the next run localized a
+  second defect: a skeleton-only delayed core-state gate suppressed 41 B
+  tokens across `D_OUT` boundaries and left the final SA calculation at
+  224/256. RTL gates B with the persistent A/B arbiter instead, so that extra
+  state gate was removed. The developer rebuilt the target and all 32 focused
+  tests passed on 2026-07-23.
+- The first strict-runtime integration increment adds a command-local
+  `RtlCommandDriverSkeleton` to `SauModel`. It advances on the command's
+  logical edge zero for both startup and replayed commands, drives semantic
+  state/input-switch trace projection, gates completion with `commandDone`,
+  and checks resident/stream/SA/result/physical-write conservation before
+  teardown. A new focused test covers the current 1/4/8 flow and 1/4/8
+  instruction combinations. The developer-built target passes 33/33 and the
+  updated `sau_model.o` compiles. After relinking, the historical baseline
+  strict simulation completed and both architecture and state comparators
+  passed on 2026-07-23.
+- The next runtime increment makes strict result production consume driver
+  `resultValid` directly and makes write issue consume the registered
+  mem_ctrl request valid/last at the observed 2513..2768 edges. The old
+  `ResultScheduler` timing overload remains for non-strict DSE; a new
+  externally-clocked release test covers its strict index-only use. Static
+  checks pass. After developer compilation/relink, the strict baseline
+  simulation and both comparators pass.
+- The read/array runtime increment exposes the shared-SRAM request from the
+  driver's existing pre-edge address snapshot: resident read requests are
+  3..258 and streamed requests are 293..2417. The first focused rebuild caught
+  and removed one redundant request register which had shifted all four
+  boundaries by one edge; the corrected focused target passes 33/33. Strict
+  `issueReads()` now uses those pulses while retaining
+  `AddressGenerator` for address/index ownership and fixed-latency responses.
+  A/B architecture admissions use driver A/B-valid while
+  `ArrayInputScheduler` remains the index/conservation owner; its new external
+  release API bypasses aggregate cooldown/skew only in strict mode. Non-strict
+  behavior is unchanged. The corrected schedule-state target passes 33/33;
+  after runtime relink the historical baseline strict simulation and both
+  comparators pass.
+- `RtlCommandDriverSkeleton` now records actual stage windows from its own
+  per-tick signals. `SauModel` appends `actual_*_first_edge`,
+  `actual_*_last_edge`, and `actual_*_span` rows for resident/stream reads,
+  operands A/B, results, and mem_ctrl writes, followed by
+  `actual_command_done_edge`. Baseline unit assertions cover the exact
+  3..258, 293..2417, 269..2392, 301..2425, 612..2505, 2513..2768, and 2772
+  boundaries. Static checks pass; developer compilation is pending.
 - The non-strict direct-command model still assumes the target operator uses
   the RTL `register_file_in` path; strict fixture runs replay the supported
   CSR reuse/control fields instead.
@@ -826,7 +919,7 @@ Results:
 - Timing-memory port tests: 3/3 passed, covering exact packet metadata,
   request rejection/retry, outstanding accounting, response ownership, and
   zero-filled writes.
-- All focused SAU tests: 27/27 passed.
+- Latest developer-built focused SAU tests: 33/33 passed.
 - `build/RISCV/gem5.opt`: built successfully.
 - After the strict-calibration boundary fix, `scons
   build/RISCV/sau/sau_model.o build/RISCV/sau/token_pipeline.test.opt -j4`
@@ -910,16 +1003,8 @@ Results:
 
 ## Next Steps
 
-1. Have the developer rebuild and run `schedule_state.test.opt`; the new
-   input-RF/feeder increment adds three tests to the last 27-test checkpoint.
-2. After that focused checkpoint passes, connect the verified isolated producers into a complete
-   CSR-to-command-done driver, then replace the corresponding aggregate
-   runtime scheduling.
-3. When new current-baseline packages are available, use them for independent
+1. When new current-baseline packages are available, use them for independent
    architecture/state strict acceptance; do not compare against the old eight
    traces as golden.
-4. Replace strict aggregate duration scheduling with per-tick RTL counters,
-   transition guards, and delay/token pipelines; emit actual per-stage and
-   total command-cycle summaries.
-5. After Step 5.5 and new-trace acceptance, resume timing-memory causal,
+2. After Step 5.5 and new-trace acceptance, resume timing-memory causal,
    backpressure, DSE, and legacy direct-command regression.

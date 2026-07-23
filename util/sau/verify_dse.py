@@ -27,7 +27,7 @@ def read_sau_stats(path):
             match = STAT_LINE.match(line)
             if not match:
                 continue
-            name = match.group(1).removeprefix("system.sau.")
+            name = match.group(1)[len("system.sau."):]
             try:
                 stats[name] = float(match.group(2))
             except ValueError as exc:

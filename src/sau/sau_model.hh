@@ -111,6 +111,8 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::optional<ARegisterFileIn> aRegisterFile;
     std::optional<ArrayInputScheduler> arrayInputScheduler;
     std::optional<ResultScheduler> resultScheduler;
+    std::optional<RtlCommandDriverSkeleton> rtlCommandDriver;
+    bool rtlCommandDriverStarted = false;
     SauSchedule scheduleState;
     std::deque<Beat> availableB;
     TokenBuffer outputBuffer;
@@ -146,8 +148,8 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     void tick();
     void consumeResponses();
     void advanceArray();
-    bool advanceArrayB();
-    bool advanceArrayA(bool allowPipelineBypass);
+    bool advanceArrayB(bool rtlRelease = false);
+    bool advanceArrayA(bool allowPipelineBypass, bool rtlRelease = false);
     void produceResults();
     void issueWrites();
     void issueReads();
@@ -186,6 +188,9 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     Cycles activeCompletionDelayCycles() const;
     Cycles activeCommandStartCycles() const;
     void emitTimingLedger(const SauCommand &command);
+    void emitRtlStageLedger(const SauCommand &command);
+    void advanceRtlCommandDriver();
+    void advanceRtlScheduleProjection();
     void advanceScheduleProjection();
     void scheduleTraceInstructionTransition(bool firstInstruction);
     void emitScheduleState(std::string_view cause);

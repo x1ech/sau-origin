@@ -66,19 +66,33 @@ uint32_t
 ArrayInputScheduler::issueA()
 {
     assert(canIssueA());
-    return nextA++;
+    return releaseA();
 }
 
 uint32_t
 ArrayInputScheduler::issueB()
 {
     assert(canIssueB());
-    const uint32_t issued = nextB++;
+    const uint32_t issued = releaseB();
     if (nextB < totalB && nextB % burst == 0) {
         pendingCooldownCycles = nextB % flow == 0 ?
             flowGapAfter(nextB / flow) : burstGapCycles;
     }
     return issued;
+}
+
+uint32_t
+ArrayInputScheduler::releaseA()
+{
+    assert(nextA < totalA);
+    return nextA++;
+}
+
+uint32_t
+ArrayInputScheduler::releaseB()
+{
+    assert(nextB < totalB);
+    return nextB++;
 }
 
 void

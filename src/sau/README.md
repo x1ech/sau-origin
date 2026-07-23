@@ -147,12 +147,36 @@ passing 64x256x256 `yinglong` RTL run described in
 `RTL_TIMING_PROVENANCE.md`; the older eight fixture traces are historical
 diagnostics and are not golden acceptance inputs.
 
-The last developer-built focused checkpoint is 27/27 passing tests. The next
-input-RF readout and feeder A/B-valid skeleton plus three tests are now in the
-source tree and pass static checks, but await a developer rebuild. Resume work
-from the `Session Handoff Checkpoint` at the top of `STATUS.md`; after that
-focused verification, the next increment is the combined
-CSR-to-command-done driver before any runtime integration.
+The last developer-built focused checkpoint is 30/30 passing tests, including
+the input-RF readout and feeder A/B-valid skeleton. A combined
+`RtlCommandDriverSkeleton` and two tests are now in the source tree and pass
+static checks. The first rebuild passed 31/32 and exposed a missing registered
+feeder A/B-arbiter gate. That fix corrected the first B edge; a second run
+then exposed an extra skeleton-only core-state gate dropping B tokens across
+`D_OUT`. Removing the extra gate produced a 32/32 passing focused checkpoint.
+The first strict-runtime increment now ticks a command-local driver, uses its
+core state/input switch for state-trace projection, and requires its
+`commandDone` plus token conservation before completion. A multi-shape driver
+test now passes in the 33/33 focused checkpoint, and the updated
+`sau_model.o` compiles. After relinking, the historical baseline architecture
+and state comparators both pass. The next source increment drives strict
+results and registered mem_ctrl write requests from the command driver while
+leaving non-strict DSE scheduling unchanged; the historical baseline
+architecture/state comparators pass after that increment. The next source
+increment drives strict shared-SRAM reads and A/B admissions from the driver,
+while retaining existing address/index/data owners and leaving non-strict DSE
+unchanged; the historical baseline comparators pass after relinking. The next
+source increment appends actual driver-observed stage first/last/span and
+command-done rows to `sau_timing_ledger.csv`. The developer's focused
+checkpoint passes 33/33, and after relinking both historical baseline
+comparators pass. Both commands emit resident 3..258, stream 293..2417,
+A 269..2392, B 301..2425, result 612..2505, write 2513..2768, and
+command-done 2772. The current source removes the remaining strict aggregate
+fill/gap/completion gates; non-strict DSE retains the original timed
+schedulers. After relinking, strict architecture/state comparison, stage
+ledger inspection, constrained non-strict execution, and the four-way DSE
+monotonicity check all pass.
+Resume work from the `Session Handoff Checkpoint` at the top of `STATUS.md`.
 
 ## Statistics
 

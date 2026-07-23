@@ -134,5 +134,18 @@ TEST(ArrayInputScheduler, SupportsExtraAAndShortPathBoundaryGaps)
         std::tuple<uint64_t, char, uint32_t>{528, 'A', 287}));
 }
 
+TEST(ArrayInputScheduler, AllowsExternalPerTickRelease)
+{
+    ArrayInputScheduler scheduler(
+        3, 2, 32, 32, 32, Cycles(1), Cycles(17), Cycles(44), Cycles(36));
+
+    EXPECT_EQ(scheduler.releaseA(), 0U);
+    EXPECT_EQ(scheduler.releaseA(), 1U);
+    EXPECT_EQ(scheduler.releaseB(), 0U);
+    EXPECT_EQ(scheduler.releaseA(), 2U);
+    EXPECT_EQ(scheduler.releaseB(), 1U);
+    EXPECT_TRUE(scheduler.complete());
+}
+
 } // anonymous namespace
 } // namespace gem5::sau

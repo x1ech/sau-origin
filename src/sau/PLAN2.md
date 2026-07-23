@@ -572,11 +572,67 @@ shift/count valid、B `REGISTER_DELAY=2` valid pipe 和最终 input-switch FF，
 pre-edge snapshot 接到现有 `RtlSaEnableSkeleton`。新增三个 focused test 检查
 `register_file_rden=266`、`register_file_rvalid=267`、`data_A_valid=269`、下一次
 rden=298、`data_B_valid=301`、`input_switch_f/sa_en_i=302`、SA 首次采样=303，以及
-非法配置拒绝。静态 whitespace/style 检查通过，等待开发者增量编译。
+非法配置拒绝。开发者增量编译后的 30 个 focused test 已通过。
 
-**当前接手点：** 开发者先重建并运行 `schedule_state.test.opt`；通过后把所有已验证
-producer 连接成 CSR-to-command-done driver，随后替换 `SauModel` strict 聚合调度
-并生成实际 stage ledger。
+CSR-to-command-done 隔离增量新增 `RtlCommandDriverSkeleton`。它在每拍统一截取
+pre-edge producer 输出，把 scheduler、resident/stream 地址、共享 memory-read
+visibility、input feeder、SA-enable/execute、result serializer、output writeback 和
+physical write transport 串成一条完整链。baseline focused test 检查 2..2772 的关键
+边沿，并要求 resident 256、stream/RF/A/B/accepted-SA 2048、result/native/physical
+write 256 token 全部守恒；另一个测试拒绝不一致的组件配置。静态 whitespace/style
+检查通过。首次开发者增量编译为 31/32；baseline driver test 暴露 feeder A/B
+arbiter 少建模一层 registered `input_switch_case`，导致 resident 尾数据在 266 拍
+误发 B-valid，并连锁造成结果少 32 token、无法进入 unload。该门控已按
+`feeder.sv` 补齐，下一次运行已把首个 B-valid 修正到 301 拍，但仍只有 2007/2048
+B token 和 2016/2048 accepted-SA token。进一步对照 RTL 发现 skeleton 额外使用
+delayed core-state 关闭 B，而 RTL A/B arbiter 在 `D_OUT` 边界保持有效；该额外门控
+会累计丢失 41 个 B token，并令最后一轮停在 224/256。移除后开发者重编译，
+32/32 focused test 全部通过。
+
+第一阶段 runtime 接入已实现：strict `SauModel` 为每条命令创建并逐拍推进 driver；
+state trace 改由 driver core state/input-switch 产生，command completion 同时要求现有
+资源守恒和 driver `commandDone`，teardown 前检查 resident/stream/SA/result/physical
+write token。非 strict DSE 不变。新增 multi-shape focused test 覆盖当前 1/4/8 flow
+与 1/4/8 instruction 组合。开发者构建后 33/33 全部通过，更新后的
+`build/RISCV/sau/sau_model.o` 也已编译；`gem5.opt` 尚未重链接。
+
+首次 runtime 重链接后的 historical baseline strict simulation 正常完成，
+architecture/state comparator 均通过。下一增量已把 strict result producer 改为直接
+消费 driver `resultValid`，write issue 改为消费 driver 中 registered mem_ctrl
+write-valid/last（2513..2768）；非 strict `ResultScheduler` 时间接口保持不变，并新增
+external per-tick release 单测。该增量等待开发者编译和重链接验证。
+
+开发者编译并重链接 result/write 增量后，historical baseline strict simulation 和
+architecture/state comparator 再次全部通过。
+
+read/array 增量已实现：driver 从已有 pre-edge address snapshot 暴露共享 SRAM
+request，得到 resident 3..258、stream 293..2417 外部请求窗口。首次 focused rebuild
+发现重复增加的一层 request register 令窗口整体晚一拍，现已移除；strict
+`issueReads()` 直接
+消费该脉冲，但地址/索引和 fixed-latency response 仍由现有数据组件持有。A/B
+admission 改由 driver A/B-valid 释放，`ArrayInputScheduler` 新增不带公式 cooldown
+的 external release，仅 strict 使用。非 strict 路径不变。修正后的 focused target
+已通过 33/33，等待 runtime 重链接。
+
+read/array 增量重链接后 historical baseline strict simulation 与两个 comparator
+全部通过。实际 stage ledger 已实现：driver 内部记录 resident/stream read、A、B、
+result、mem_ctrl write 的 first/last/span 和 command-done edge，`SauModel` 在命令
+完成时追加 `actual_*` 行；原 derivation ledger 暂时保留用于来源对照。baseline
+focused test 断言全部具体窗口。开发者构建已通过 33/33，重链接后的 historical
+baseline architecture/state comparator 均通过；两条 command 的 actual 窗口一致，
+command-done edge 均为 2772。
+
+strict 聚合消费者清理已实现：ArrayPipeline 在 strict 下只保留一拍 shadow-token
+容量记账，ArrayInputScheduler/ResultScheduler 只保留结构计数，命令完成直接等待
+driver `commandDone`，旧 A-tail/result-tail 状态公式只供非 strict 使用。非 strict
+DSE 的原 timing scheduler 保持不变。
+
+开发者增量重链接后，historical baseline 两个 comparator 均通过，`actual_*`
+窗口逐项不变。constrained non-strict 与四组 DSE 仿真全部完成，DSE 单调性验证
+通过。
+
+**新的当前接手点：** strict 聚合消费者清理已经完成验证。等待当前 RTL 的新
+package 做独立 architecture/state acceptance；旧八组 trace 仍不能作为 golden。
 
 ### 6. 最终验证与交付
 

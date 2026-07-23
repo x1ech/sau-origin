@@ -56,10 +56,17 @@ ResultScheduler::canProduce(Cycles now) const
 }
 
 uint32_t
+ResultScheduler::produce()
+{
+    assert(nextOutput < totalOutputs);
+    return nextOutput++;
+}
+
+uint32_t
 ResultScheduler::produce(Cycles now)
 {
     assert(canProduce(now));
-    return nextOutput++;
+    return produce();
 }
 
 uint32_t

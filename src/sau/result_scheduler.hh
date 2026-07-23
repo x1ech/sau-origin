@@ -21,6 +21,7 @@ class ResultScheduler
     // becomes available, preserving result spacing and flow gaps.
     void deferUntil(Cycles now);
     bool canProduce(Cycles now) const;
+    uint32_t produce();
     uint32_t produce(Cycles now);
     uint32_t produced() const;
     uint32_t total() const;

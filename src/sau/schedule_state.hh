@@ -201,6 +201,29 @@ struct RtlInputFeederInputs
     RtlCoreState coreState = RtlCoreState::Idle;
     uint8_t inputSwitch = 0;
     bool memoryDataValid = false;
+    bool lastFlowTime = false;
+};
+
+struct RtlCommandDriverConfig
+{
+    RtlSchedulerConfig scheduler;
+    RtlResidentLoadConfig residentLoad;
+    RtlStreamLoadConfig streamLoad;
+    RtlInputFeederConfig inputFeeder;
+    RtlExecuteUpdateConfig execute;
+    RtlResultSerializerConfig resultSerializer;
+    RtlOutputWritebackConfig outputWriteback;
+    uint32_t sramDelay = 3;
+};
+
+struct RtlStageWindow
+{
+    bool observed = false;
+    uint64_t firstEdge = 0;
+    uint64_t lastEdge = 0;
+
+    void observe(uint64_t edge);
+    uint64_t span() const;
 };
 
 /**
@@ -440,6 +463,7 @@ class RtlSramWriteTransportSkeleton
 
     bool crossbarActive() const { return state == State::Active; }
     bool memCtrlWriteValid() const { return memCtrlWriteValidReg; }
+    bool memCtrlWriteLast() const { return memCtrlWriteLastReg; }
     bool crossbarSlaveValid() const { return crossbarSlaveValidReg; }
     bool memoryWriteAccepted() const { return memoryWriteAcceptedReg; }
     bool memoryWriteLast() const { return memoryWriteLastReg; }
@@ -512,6 +536,7 @@ class RtlInputFeederSkeleton
     bool dataAValid() const { return dataAValidReg; }
     bool dataBValid() const { return dataBValidReg; }
     uint8_t outputInputSwitch() const { return outputInputSwitchReg; }
+    bool lastFlowTimeClear() const { return lastFlowTimeClearReg; }
 
   private:
     enum class ReadState
@@ -523,6 +548,7 @@ class RtlInputFeederSkeleton
     RtlInputFeederConfig config;
     std::vector<RtlCoreState> coreStatePipeline;
     std::vector<uint8_t> inputSwitchPipeline;
+    std::vector<bool> lastFlowTimePipeline;
     std::vector<uint8_t> outputInputSwitchPipeline;
     std::vector<bool> memoryValidPipeline;
     RtlCoreState delayedCoreStateReg = RtlCoreState::Idle;
@@ -542,6 +568,8 @@ class RtlInputFeederSkeleton
     bool dataBValidReg = false;
     uint8_t inputSwitchDelayReg = 0;
     uint8_t outputInputSwitchReg = 0;
+    bool inputSwitchCaseReg = false;
+    bool lastFlowTimeClearReg = false;
 };
 
 /**
@@ -591,6 +619,152 @@ class RtlSchedulerSkeleton
     uint32_t instructionCounter = 0;
     RtlCoreState core = RtlCoreState::Idle;
     RtlInstructionState instruction = RtlInstructionState::Idle;
+};
+
+/**
+ * Isolated CSR-to-command-done timing driver for the current fixed
+ * ATB/reuse-A contract. Every component samples one shared pre-edge snapshot
+ * and commits at the end of tick(). The driver contains no golden cycles,
+ * fixture identity, matrix dimensions, addresses, or arithmetic data.
+ */
+class RtlCommandDriverSkeleton
+{
+  public:
+    explicit RtlCommandDriverSkeleton(
+        const RtlCommandDriverConfig &config);
+
+    void tick(bool startWrite = false);
+
+    RtlCoreState coreState() const { return scheduler.coreState(); }
+    bool commandDone() const { return scheduler.commandDone(); }
+    bool streamReadEnable() const
+    {
+        return currentStreamReadEnable;
+    }
+    bool memoryDataValid() const { return readPath.memoryDataValid(); }
+    bool memoryReadRequestValid() const
+    {
+        return memoryReadAcceptedReg;
+    }
+    bool memoryReadRequestLast() const
+    {
+        return memoryReadAcceptedLastReg;
+    }
+    bool memoryReadRequestIsStream() const
+    {
+        return memoryReadAcceptedStreamReg;
+    }
+    bool registerFileReadEnable() const
+    {
+        return inputFeeder.registerFileReadEnable();
+    }
+    bool registerFileReadValid() const
+    {
+        return inputFeeder.registerFileReadValid();
+    }
+    bool dataAValid() const { return inputFeeder.dataAValid(); }
+    bool dataBValid() const { return inputFeeder.dataBValid(); }
+    uint8_t outputInputSwitch() const
+    {
+        return inputFeeder.outputInputSwitch();
+    }
+    bool saEnable() const { return currentSaEnable; }
+    bool internalFinish() const { return execute.internalFinish(); }
+    bool resultValid() const { return resultSerializer.resultValid(); }
+    bool resultLast() const { return resultSerializer.resultLast(); }
+    bool nativeWriteValid() const { return outputWriteback.writeValid(); }
+    bool nativeWriteLast() const
+    {
+        return outputWriteback.writeDataLast();
+    }
+    bool memoryWriteRequestValid() const
+    {
+        return writeTransport.memCtrlWriteValid();
+    }
+    bool memoryWriteRequestLast() const
+    {
+        return writeTransport.memCtrlWriteLast();
+    }
+    bool physicalWriteAccepted() const
+    {
+        return writeTransport.memoryWriteAccepted();
+    }
+    bool physicalWriteLast() const
+    {
+        return writeTransport.memoryWriteLast();
+    }
+
+    uint64_t residentReadTokens() const { return residentReads; }
+    uint64_t streamReadTokens() const { return streamReads; }
+    uint64_t registerFileReadTokens() const { return registerFileReads; }
+    uint64_t operandATokens() const { return operandAInputs; }
+    uint64_t operandBTokens() const { return operandBInputs; }
+    uint64_t acceptedSaTokens() const { return acceptedSaInputs; }
+    uint64_t resultTokens() const { return results; }
+    uint64_t nativeWriteTokens() const { return nativeWrites; }
+    uint64_t physicalWriteTokens() const { return physicalWrites; }
+    const RtlStageWindow &residentReadWindow() const
+    {
+        return residentReadStage;
+    }
+    const RtlStageWindow &streamReadWindow() const
+    {
+        return streamReadStage;
+    }
+    const RtlStageWindow &operandAWindow() const
+    {
+        return operandAStage;
+    }
+    const RtlStageWindow &operandBWindow() const
+    {
+        return operandBStage;
+    }
+    const RtlStageWindow &resultWindow() const
+    {
+        return resultStage;
+    }
+    const RtlStageWindow &memoryWriteWindow() const
+    {
+        return memoryWriteStage;
+    }
+    bool commandDoneObserved() const { return commandDoneSeen; }
+    uint64_t commandDoneEdge() const { return commandDoneAt; }
+
+  private:
+    RtlCommandDriverConfig config;
+    RtlSchedulerSkeleton scheduler;
+    RtlResidentLoadSkeleton residentLoad;
+    RtlStreamLoadSkeleton streamLoad;
+    RtlResidentFillSkeleton readPath;
+    RtlInputFeederSkeleton inputFeeder;
+    RtlSaEnableSkeleton saEnablePath;
+    RtlExecuteUpdateSkeleton execute;
+    RtlResultSerializerSkeleton resultSerializer;
+    RtlOutputWritebackSkeleton outputWriteback;
+    RtlSramWriteTransportSkeleton writeTransport;
+    bool currentStreamReadEnable = false;
+    bool currentSaEnable = false;
+    bool memoryReadAcceptedReg = false;
+    bool memoryReadAcceptedLastReg = false;
+    bool memoryReadAcceptedStreamReg = false;
+    uint64_t residentReads = 0;
+    uint64_t streamReads = 0;
+    uint64_t registerFileReads = 0;
+    uint64_t operandAInputs = 0;
+    uint64_t operandBInputs = 0;
+    uint64_t acceptedSaInputs = 0;
+    uint64_t results = 0;
+    uint64_t nativeWrites = 0;
+    uint64_t physicalWrites = 0;
+    uint64_t currentEdge = 0;
+    RtlStageWindow residentReadStage;
+    RtlStageWindow streamReadStage;
+    RtlStageWindow operandAStage;
+    RtlStageWindow operandBStage;
+    RtlStageWindow resultStage;
+    RtlStageWindow memoryWriteStage;
+    bool commandDoneSeen = false;
+    uint64_t commandDoneAt = 0;
 };
 
 class SauSchedule

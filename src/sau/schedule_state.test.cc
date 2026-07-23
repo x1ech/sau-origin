@@ -9,6 +9,23 @@ namespace gem5::sau
 namespace
 {
 
+RtlCommandDriverConfig
+commandDriverConfig(uint32_t flowTimes = 8,
+                    uint32_t instructionTimes = 8)
+{
+    const uint32_t residentXBurst = flowTimes;
+    return {
+        {32, flowTimes, instructionTimes, 1, 1, 0, false},
+        {residentXBurst, 32, 1},
+        {1, 32, flowTimes, instructionTimes},
+        {1, 32, flowTimes, instructionTimes, 32, 3, 2, 2, 2},
+        {32, flowTimes, 0, false},
+        {32, 4, 4},
+        {1, 32, 1, instructionTimes, instructionTimes, 32, 1},
+        3,
+    };
+}
+
 TEST(SauSchedule, MapsSemanticStatesToRtlGuards)
 {
     EXPECT_STREQ(scheduleStateMapping(SauScheduleState::ResidentLoad).rtlStates,
@@ -824,6 +841,278 @@ TEST(RtlInputFeederSkeleton, RejectsInvalidConfiguration)
                  std::invalid_argument);
     EXPECT_THROW((RtlInputFeederSkeleton({1, 32, 8, 8, 32, 3, 2, 2, 0})),
                  std::invalid_argument);
+}
+
+TEST(RtlCommandDriverSkeleton, RunsBaselineCsrShapeToCommandDone)
+{
+    RtlCommandDriverSkeleton driver(commandDriverConfig());
+    uint32_t registerLoadCycle = 0;
+    uint32_t transposeLoadCycle = 0;
+    uint32_t reuseLoadCycle = 0;
+    uint32_t firstResidentReadRequestCycle = 0;
+    uint32_t finalResidentReadRequestCycle = 0;
+    uint32_t firstRfReadCycle = 0;
+    uint32_t firstRfValidCycle = 0;
+    uint32_t firstAValidCycle = 0;
+    uint32_t firstStreamReadCycle = 0;
+    uint32_t firstStreamMemoryRequestCycle = 0;
+    uint32_t finalStreamMemoryRequestCycle = 0;
+    uint32_t firstMemoryDataCycle = 0;
+    uint32_t firstBValidCycle = 0;
+    uint32_t inputSwitchCycle = 0;
+    uint32_t saEnableCycle = 0;
+    uint32_t firstSaSampleCycle = 0;
+    uint32_t firstDOutCycle = 0;
+    uint32_t firstInternalFinishCycle = 0;
+    uint32_t firstResultCycle = 0;
+    uint32_t finalResultLastCycle = 0;
+    uint32_t registerUnloadCycle = 0;
+    uint32_t firstNativeWriteCycle = 0;
+    uint32_t firstMemoryWriteRequestCycle = 0;
+    uint32_t firstPhysicalWriteCycle = 0;
+    uint32_t finalNativeWriteCycle = 0;
+    uint32_t finalMemoryWriteRequestCycle = 0;
+    uint32_t finalPhysicalWriteCycle = 0;
+    uint32_t commandDoneCycle = 0;
+    uint64_t previousAcceptedSaTokens = 0;
+    RtlCoreState previousCore = RtlCoreState::Idle;
+
+    for (uint32_t cycle = 0; cycle < 3000; ++cycle) {
+        driver.tick(cycle == 0);
+
+        if (driver.coreState() != previousCore) {
+            switch (driver.coreState()) {
+              case RtlCoreState::RegisterLoad:
+                if (registerLoadCycle == 0) {
+                    registerLoadCycle = cycle;
+                }
+                break;
+              case RtlCoreState::TransposeLoad:
+                if (transposeLoadCycle == 0) {
+                    transposeLoadCycle = cycle;
+                }
+                break;
+              case RtlCoreState::ReuseLoad:
+                if (reuseLoadCycle == 0) {
+                    reuseLoadCycle = cycle;
+                }
+                break;
+              case RtlCoreState::DOut:
+                if (firstDOutCycle == 0) {
+                    firstDOutCycle = cycle;
+                }
+                break;
+              case RtlCoreState::RegisterUnload:
+                if (registerUnloadCycle == 0) {
+                    registerUnloadCycle = cycle;
+                }
+                break;
+              case RtlCoreState::Idle:
+              case RtlCoreState::TransposeClip:
+              case RtlCoreState::FirstLoad:
+                break;
+            }
+        }
+        previousCore = driver.coreState();
+
+        if (driver.memoryReadRequestValid() &&
+            !driver.memoryReadRequestIsStream()) {
+            if (firstResidentReadRequestCycle == 0) {
+                firstResidentReadRequestCycle = cycle;
+            }
+            finalResidentReadRequestCycle = cycle;
+        }
+        if (driver.registerFileReadEnable() && firstRfReadCycle == 0) {
+            firstRfReadCycle = cycle;
+        }
+        if (driver.registerFileReadValid() && firstRfValidCycle == 0) {
+            firstRfValidCycle = cycle;
+        }
+        if (driver.dataAValid() && firstAValidCycle == 0) {
+            firstAValidCycle = cycle;
+        }
+        if (driver.streamReadEnable() && firstStreamReadCycle == 0) {
+            firstStreamReadCycle = cycle;
+        }
+        if (driver.memoryReadRequestValid() &&
+            driver.memoryReadRequestIsStream()) {
+            if (firstStreamMemoryRequestCycle == 0) {
+                firstStreamMemoryRequestCycle = cycle;
+            }
+            finalStreamMemoryRequestCycle = cycle;
+        }
+        if (driver.memoryDataValid() && firstMemoryDataCycle == 0 &&
+            cycle > 264) {
+            firstMemoryDataCycle = cycle;
+        }
+        if (driver.dataBValid() && firstBValidCycle == 0) {
+            firstBValidCycle = cycle;
+        }
+        if (driver.outputInputSwitch() != 0 && inputSwitchCycle == 0) {
+            inputSwitchCycle = cycle;
+        }
+        if (driver.saEnable() && saEnableCycle == 0) {
+            saEnableCycle = cycle;
+        }
+        if (driver.acceptedSaTokens() != previousAcceptedSaTokens &&
+            firstSaSampleCycle == 0) {
+            firstSaSampleCycle = cycle;
+        }
+        previousAcceptedSaTokens = driver.acceptedSaTokens();
+        if (driver.internalFinish() && firstInternalFinishCycle == 0) {
+            firstInternalFinishCycle = cycle;
+        }
+        if (driver.resultValid() && firstResultCycle == 0) {
+            firstResultCycle = cycle;
+        }
+        if (driver.resultLast()) {
+            finalResultLastCycle = cycle;
+        }
+        if (driver.nativeWriteValid() && firstNativeWriteCycle == 0) {
+            firstNativeWriteCycle = cycle;
+        }
+        if (driver.memoryWriteRequestValid() &&
+            firstMemoryWriteRequestCycle == 0) {
+            firstMemoryWriteRequestCycle = cycle;
+        }
+        if (driver.physicalWriteAccepted() &&
+            firstPhysicalWriteCycle == 0) {
+            firstPhysicalWriteCycle = cycle;
+        }
+        if (driver.nativeWriteLast()) {
+            finalNativeWriteCycle = cycle;
+        }
+        if (driver.memoryWriteRequestLast()) {
+            finalMemoryWriteRequestCycle = cycle;
+        }
+        if (driver.physicalWriteLast()) {
+            finalPhysicalWriteCycle = cycle;
+        }
+        if (driver.commandDone()) {
+            commandDoneCycle = cycle;
+            break;
+        }
+    }
+
+    EXPECT_EQ(registerLoadCycle, 2U);
+    EXPECT_EQ(firstResidentReadRequestCycle, 3U);
+    EXPECT_EQ(finalResidentReadRequestCycle, 258U);
+    EXPECT_EQ(transposeLoadCycle, 258U);
+    EXPECT_EQ(firstRfReadCycle, 266U);
+    EXPECT_EQ(firstRfValidCycle, 267U);
+    EXPECT_EQ(firstAValidCycle, 269U);
+    EXPECT_EQ(reuseLoadCycle, 290U);
+    EXPECT_EQ(firstStreamReadCycle, 292U);
+    EXPECT_EQ(firstStreamMemoryRequestCycle, 293U);
+    EXPECT_EQ(finalStreamMemoryRequestCycle, 2417U);
+    EXPECT_EQ(firstMemoryDataCycle, 297U);
+    EXPECT_EQ(firstBValidCycle, 301U);
+    EXPECT_EQ(inputSwitchCycle, 302U);
+    EXPECT_EQ(saEnableCycle, 302U);
+    EXPECT_EQ(firstSaSampleCycle, 303U);
+    EXPECT_EQ(firstDOutCycle, 554U);
+    EXPECT_EQ(firstInternalFinishCycle, 565U);
+    EXPECT_EQ(firstResultCycle, 612U);
+    EXPECT_EQ(finalResultLastCycle, 2505U);
+    EXPECT_EQ(registerUnloadCycle, 2507U);
+    EXPECT_EQ(firstNativeWriteCycle, 2512U);
+    EXPECT_EQ(firstMemoryWriteRequestCycle, 2513U);
+    EXPECT_EQ(firstPhysicalWriteCycle, 2515U);
+    EXPECT_EQ(finalNativeWriteCycle, 2767U);
+    EXPECT_EQ(finalMemoryWriteRequestCycle, 2768U);
+    EXPECT_EQ(finalPhysicalWriteCycle, 2770U);
+    EXPECT_EQ(commandDoneCycle, 2772U);
+
+    EXPECT_EQ(driver.residentReadTokens(), 256U);
+    EXPECT_EQ(driver.streamReadTokens(), 2048U);
+    EXPECT_EQ(driver.registerFileReadTokens(), 2048U);
+    EXPECT_EQ(driver.operandATokens(), 2048U);
+    EXPECT_EQ(driver.operandBTokens(), 2048U);
+    EXPECT_EQ(driver.acceptedSaTokens(), 2048U);
+    EXPECT_EQ(driver.resultTokens(), 256U);
+    EXPECT_EQ(driver.nativeWriteTokens(), 256U);
+    EXPECT_EQ(driver.physicalWriteTokens(), 256U);
+
+    EXPECT_EQ(driver.residentReadWindow().firstEdge, 3U);
+    EXPECT_EQ(driver.residentReadWindow().lastEdge, 258U);
+    EXPECT_EQ(driver.residentReadWindow().span(), 256U);
+    EXPECT_EQ(driver.streamReadWindow().firstEdge, 293U);
+    EXPECT_EQ(driver.streamReadWindow().lastEdge, 2417U);
+    EXPECT_EQ(driver.streamReadWindow().span(), 2125U);
+    EXPECT_EQ(driver.operandAWindow().firstEdge, 269U);
+    EXPECT_EQ(driver.operandAWindow().lastEdge, 2392U);
+    EXPECT_EQ(driver.operandAWindow().span(), 2124U);
+    EXPECT_EQ(driver.operandBWindow().firstEdge, 301U);
+    EXPECT_EQ(driver.operandBWindow().lastEdge, 2425U);
+    EXPECT_EQ(driver.operandBWindow().span(), 2125U);
+    EXPECT_EQ(driver.resultWindow().firstEdge, 612U);
+    EXPECT_EQ(driver.resultWindow().lastEdge, 2505U);
+    EXPECT_EQ(driver.resultWindow().span(), 1894U);
+    EXPECT_EQ(driver.memoryWriteWindow().firstEdge, 2513U);
+    EXPECT_EQ(driver.memoryWriteWindow().lastEdge, 2768U);
+    EXPECT_EQ(driver.memoryWriteWindow().span(), 256U);
+    EXPECT_TRUE(driver.commandDoneObserved());
+    EXPECT_EQ(driver.commandDoneEdge(), 2772U);
+}
+
+TEST(RtlCommandDriverSkeleton, RejectsInconsistentComponentConfiguration)
+{
+    auto config = commandDriverConfig();
+    config.execute.flowLoops = 7;
+    EXPECT_THROW((RtlCommandDriverSkeleton(config)), std::invalid_argument);
+}
+
+TEST(RtlCommandDriverSkeleton, ConservesCurrentFlowInstructionShapes)
+{
+    struct Shape
+    {
+        uint32_t flowTimes;
+        uint32_t instructionTimes;
+    };
+    constexpr Shape Shapes[] = {
+        {1, 1},
+        {1, 8},
+        {4, 8},
+        {8, 1},
+        {8, 4},
+        {8, 8},
+    };
+
+    for (const auto &shape : Shapes) {
+        RtlCommandDriverSkeleton driver(
+            commandDriverConfig(shape.flowTimes, shape.instructionTimes));
+        for (uint32_t cycle = 0;
+             cycle < 20000 && !driver.commandDone(); ++cycle) {
+            driver.tick(cycle == 0);
+        }
+
+        const uint64_t residentTokens =
+            static_cast<uint64_t>(shape.flowTimes) * 32;
+        const uint64_t inputTokens = residentTokens *
+            shape.instructionTimes;
+        const uint64_t operandATokens = inputTokens +
+            (residentTokens == 32 ? 32 : 0);
+        const uint64_t outputTokens =
+            static_cast<uint64_t>(shape.instructionTimes) * 32;
+        EXPECT_TRUE(driver.commandDone())
+            << "flow=" << shape.flowTimes
+            << " instructions=" << shape.instructionTimes;
+        EXPECT_EQ(driver.residentReadTokens(), residentTokens);
+        EXPECT_EQ(driver.streamReadTokens(), inputTokens);
+        EXPECT_EQ(driver.operandATokens(), operandATokens);
+        EXPECT_EQ(driver.operandBTokens(), inputTokens);
+        EXPECT_EQ(driver.acceptedSaTokens(), inputTokens);
+        EXPECT_EQ(driver.resultTokens(), outputTokens);
+        EXPECT_EQ(driver.nativeWriteTokens(), outputTokens);
+        EXPECT_EQ(driver.physicalWriteTokens(), outputTokens);
+        EXPECT_TRUE(driver.residentReadWindow().observed);
+        EXPECT_TRUE(driver.streamReadWindow().observed);
+        EXPECT_TRUE(driver.operandAWindow().observed);
+        EXPECT_TRUE(driver.operandBWindow().observed);
+        EXPECT_TRUE(driver.resultWindow().observed);
+        EXPECT_TRUE(driver.memoryWriteWindow().observed);
+        EXPECT_TRUE(driver.commandDoneObserved());
+    }
 }
 
 TEST(RtlExecuteUpdateSkeleton, CountsEnabledSaEdgesAndPipelinesExecuteDone)

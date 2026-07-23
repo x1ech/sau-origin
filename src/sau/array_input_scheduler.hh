@@ -26,6 +26,8 @@ class ArrayInputScheduler
 
     uint32_t issueA();
     uint32_t issueB();
+    uint32_t releaseA();
+    uint32_t releaseB();
     void advanceCycle();
 
     uint32_t issuedA() const;
