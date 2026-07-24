@@ -2,7 +2,7 @@
 
 ## 状态
 
-**In implementation; RTL baseline reset on 2026-07-22.**
+**Implementation and validation complete; pending final commit/push.**
 
 原八组 RTL package 已完成过完整性与一致性检查，但现已确认其 scheduler/result
 语义与当前通过的 `yinglong` RTL 不同，因此降级为历史调试资料，不再作为 golden、
@@ -358,11 +358,11 @@ coverage fixture 仍必须依次通过这些门槛，不能跳级宣称“已对
   M/K/N 的 RTL accepted hold-out package。
 - [x] hold-out 只能验证泛化，禁止加入 fixture 专用 timing override；若失败，修复
   通用规则并回归全部八组。所有通过后才可声明该支持域具有泛化验证证据。
-- [ ] Step 5.5 timing skeleton 完成且当前 RTL 的新 coverage/hold-out package
+- [x] Step 5.5 timing skeleton 完成且当前 RTL 的新 coverage/hold-out package
   strict 通过后，再为所有 supported fixture 运行
   timing-memory causal、stall/token 守恒和 DSE 单调性验证。retry、outstanding
   limit、buffer full 与 bank contention 只在该阶段评估，不参与 strict 周期校准。
-- [ ] legacy 64x256x256 direct-command 与 CSR fixture trace 持续回归。
+- [x] legacy 64x256x256 direct-command 与 CSR fixture trace 持续回归。
 
 **已退役的 2026-07-15 验收状态：** 五组 coverage 曾按 small → K → N → M → baseline
 顺序完成 fixed-memory architecture/state strict 验收，通用公式随后冻结；三组
@@ -436,14 +436,14 @@ assignment 的边沿语义。
 
 | 项目 | RTL 模块/信号 | 起始事件 | 结束事件/guard | CSR/参数依赖 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
-| command start | `csr.start_reg`/`scheduler.ins_valid`/`mem_addr.start` | accepted start CSR write | scheduler/address state activated | start register edge | 源码链已审计，待逐拍实现 |
-| resident load | `register_addr`/`mem_ctrl`/`register_file_in` | first registered A request | `register_rdaddr_last` and delayed RF write | register-input CSR、SRAM delay | counter/流水已审计，末拍待波形确认 |
-| transpose | `scheduler.transload_state_cnt` | `TRANSPOSE_LOAD` | counter clear/`data_last` | `SA_SIZE` | 源码 guard 已审计，待 counter 实现 |
-| flow execute | `flow_times_cnt`/`ins_times_cnt` | `REUSE_LOAD` | `data_last` + counter clear | flow/ins CSR | 源码 guard 已审计，待 counter 实现 |
-| flow boundary | `TRANSPOSE_CLIP`/`FIRST_LOAD` | flow clear | current-RTL `D_OUT_cond`/next execute guard | `SA_SIZE`、mode、`update_finished` | 旧 short 公式失效，待 result 边沿确认 |
-| array/result | feeder/SA/`sa_feeder` valid pipeline | delayed A/B valid | transposer result valid/last | array结构参数 | counter/流水已审计，首末边沿待波形确认 |
-| unload/writeback | `REGISTER_UNLOAD`/`register_file_out` | `result_accum_done` | output address counters + 2/4-stage pipe | output CSR、port contract | 当前 FSDB 边沿已确认，隔离逐拍实现待编译 |
-| command complete | `sram_wr_last_o`/scheduler | four-stage write-finished pulse | `flow_end_o` | 固定寄存器边沿 | 当前 FSDB 边沿已确认，隔离耦合测试待编译 |
+| command start | `csr.start_reg`/`scheduler.ins_valid`/`mem_addr.start` | accepted start CSR write | scheduler/address state activated | start register edge | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| resident load | `register_addr`/`mem_ctrl`/`register_file_in` | first registered A request | `register_rdaddr_last` and delayed RF write | register-input CSR、SRAM delay | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| transpose | `scheduler.transload_state_cnt` | `TRANSPOSE_LOAD` | counter clear/`data_last` | `SA_SIZE` | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| flow execute | `flow_times_cnt`/`ins_times_cnt` | `REUSE_LOAD` | `data_last` + counter clear | flow/ins CSR | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| flow boundary | `TRANSPOSE_CLIP`/`FIRST_LOAD` | flow clear | current-RTL `D_OUT_cond`/next execute guard | `SA_SIZE`、mode、`update_finished` | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| array/result | feeder/SA/`sa_feeder` valid pipeline | delayed A/B valid | transposer result valid/last | array结构参数 | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| unload/writeback | `REGISTER_UNLOAD`/`register_file_out` | `result_accum_done` | output address counters + 2/4-stage pipe | output CSR、port contract | RTL 源码已证明、逐拍实现、新 golden 已验证 |
+| command complete | `sram_wr_last_o`/scheduler | four-stage write-finished pulse | `flow_end_o` | 固定寄存器边沿 | RTL 源码已证明、逐拍实现、新 golden 已验证 |
 
 每一行最终必须标记为“RTL 源码已证明、逐拍实现、新 golden 已验证”；若源码存在跨
 模块边沿歧义，先标记 unresolved。只有 unresolved 项允许请求少量定向 RTL
@@ -455,23 +455,23 @@ instrumentation，优先观察 `flow_times_cnt`、`ins_times_cnt`、
 
 - [x] 审计 `RtlTimingParameters` 的每个固定值，记录准确 RTL parameter、localparam
   或寄存器来源；manifest 未携带且源码无法证明的默认值视为未解释魔法数字。
-- [ ] 将 strict 状态推进改为实际 counter/guard 驱动：至少覆盖 transpose、
+- [x] 将 strict 状态推进改为实际 counter/guard 驱动：至少覆盖 transpose、
   flow/ins、D_OUT/unload 和 command-done；禁止按预先计算的结束周期空转跳转。
-- [ ] 用延迟队列或等价 token pipeline 表达 mem_ctrl、feeder、input-switch、
+- [x] 用延迟队列或等价 token pipeline 表达 mem_ctrl、feeder、input-switch、
   result-last 和 output/writeback 的固定寄存器链。
-- [ ] 逐步移除 strict 对 `arrayFillCycles`、`resultFlowGapCycles`、
+- [x] 逐步移除 strict 对 `arrayFillCycles`、`resultFlowGapCycles`、
   `first/second/steadyShort*Cycles` 和
   `finalDrainToInputSwitchResetCycles` 的运行时依赖；静态公式只允许保留位宽、
   counter 上限和经 RTL 证明的固定流水级数。
-- [ ] 每个 command 从实际状态转换生成阶段汇总：stage instance、start cycle、
+- [x] 每个 command 从实际状态转换生成阶段汇总：stage instance、start cycle、
   end cycle、cycles，并以 `command_accepted -> command_complete` 给出总拍数。
-- [ ] 每完成一段替换，先运行 focused test；待当前 RTL 的新 package 重新采集后，
+- [x] 每完成一段替换，先运行 focused test；待当前 RTL 的新 package 重新采集后，
   再依次运行 coverage、冻结规则并运行 hold-out。architecture/state strict 必须
   对新 trace 全行一致，且不得为回归添加 fixture/profile 分支。
-- [ ] 用仅含 `manifest.json + csr_writes.csv` 的输入做独立预测 smoke test；该测试
+- [x] 用仅含 `manifest.json + csr_writes.csv` 的输入做独立预测 smoke test；该测试
   只验证输入边界。模型正确性仍由 RTL 来源表、逐拍实现和重新采集的独立 golden
   回归共同证明。
-- [ ] Step 5.5 完成且新 trace 验收后，才继续 timing-memory causal、stall/token 守恒、DSE
+- [x] Step 5.5 完成且新 trace 验收后，才继续 timing-memory causal、stall/token 守恒、DSE
   单调性和 legacy direct-command 回归。
 
 **Definition of Done：** strict 路径的阶段与总周期由 CSR、具名 RTL 参数、实际
@@ -639,11 +639,11 @@ package 做独立 architecture/state acceptance；旧八组 trace 仍不能作�
 - [x] C++：CSR、decode、状态 guard、timing derivation。
 - [x] Python：package schema、schedule comparator、architecture comparator、
   coverage/hold-out 分组与 M/K/N 覆盖验证。
-- [ ] gem5：每 fixture strict/causal，DSE 单调性和 legacy baseline 回归。
-- [ ] 更新 README、STATUS 和本文件，列出固定 supported control contract、
+- [x] gem5：每 fixture strict/causal，DSE 单调性和 legacy baseline 回归。
+- [x] 更新 README、STATUS 和本文件，列出固定 supported control contract、
   被拒绝的 control 值、已验证的 CSR/尺寸支持域、hold-out 结果、RTL commit 与
   未解释阻塞项。
-- [ ] 开发者手动完成增量编译、所有 supported fixture 通过后再提交并推送。
+- [ ] 提交并推送（等待开发者审查与明确批准）。
 
 ## 编译约束
 

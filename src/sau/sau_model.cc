@@ -214,6 +214,7 @@ SauModel::SauModel(const Params &params)
       calibrationMemory(params.calibration_memory),
       calibrationReadLatencyCycles(params.calibration_read_latency_cycles),
       strictTiming(params.strict_timing),
+      fixtureReplay(!params.csr_fixture.empty()),
       rtlTiming({params.rtl_sa_size, params.rtl_register_depth,
                  params.rtl_sram_delay, params.rtl_sram_data_width,
                  params.rtl_mem_address_delay,
@@ -264,7 +265,7 @@ SauModel::SauModel(const Params &params)
                  (readIssueWidth != rtlStorageTiming.issueWidth ||
                   writeIssueWidth != rtlStorageTiming.issueWidth),
              "strict SAU timing requires the RTL single-issue SRAM port");
-    if (strictTiming) {
+    if (fixtureReplay) {
         fixtureCommands = loadCsrFixture(params.csr_fixture, rtlTiming);
         panic_if(fixtureCommands.size() != commandCount,
                  "SAU CSR fixture command count does not match command_count");
@@ -1045,8 +1046,8 @@ SauModel::activeStorageIssueWidth() const
 unsigned
 SauModel::activeBStagingBeats() const
 {
-    return timingPolicy() ? timingPolicy()->bStagingBeats :
-                            inputBufferEntries;
+    return strictTiming && timingPolicy() ? timingPolicy()->bStagingBeats :
+                                           inputBufferEntries;
 }
 
 void
@@ -1618,7 +1619,7 @@ SauModel::commandCycle() const
 SauCommand
 SauModel::buildCommandForIndex(uint32_t index) const
 {
-    if (strictTiming) {
+    if (fixtureReplay) {
         return fixtureCommands.at(index).decoded.command;
     }
     auto command = startupCommand;
@@ -1635,7 +1636,7 @@ SauModel::submitNextCommand()
     panic_if(nextCommandIndex >= commandCount,
              "SAU synthetic command index exceeds command count");
     activeCommandIndex = nextCommandIndex;
-    if (strictTiming) {
+    if (fixtureReplay) {
         activeTimingPolicy =
             fixtureCommands.at(nextCommandIndex).decoded.timingPolicy;
     } else {

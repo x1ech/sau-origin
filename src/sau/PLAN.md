@@ -8,6 +8,23 @@
 
 **技术栈：** C++17、gem5 SimObject/Python 配置、gem5 timing port 与事件队列、gem5 statistics、GoogleTest、Python 3 `unittest`、SystemVerilog/VCS。
 
+## 当前执行状态（2026-07-24 补记）
+
+本文件记录的是首里程碑及其早期 CSR 后续任务。当前状态：
+
+- Tasks 2–11 已完成实现、验证和阶段提交；首里程碑提交
+  `50d42ef51c`、状态提交 `f303ee71c5` 已进入当前分支。
+- Task 1 所需的真实 RTL baseline 已通过后来采用的 FSDB 导出与 golden-package
+  流程完成，并已在当前 RTL 上重新采集、校验；但本计划最初写的
+  `+sau_trace` testbench collector、`timing_trace` Make target 和独立 RTL
+  instrumentation commit 没有落在当前 `/home/xch/work/npu_lpnpu`，因此对应具体
+  checklist 保持未勾选，不能用等价产物冒充原实现步骤。
+- Task 12 的 CSR 字段整理、config/command 边界、baseline decode 和单元测试已由
+  `PLAN2.md` 完成；live CPU/CSR 总线、指令 decode 和中断仍未实现。
+- “确认测试先失败/确认编译先失败”是历史过程证据。无法从当前仓库状态追溯的红灯
+  步骤保持未勾选；这不表示对应最终功能或测试仍未完成。
+- 新的功能数据通路工作以 `PLAN3.md` 为准，尚未开始实现。
+
 ---
 
 ## 1. 范围与执行规则
@@ -228,7 +245,7 @@ timing_trace: compile
 	@grep -q "command_complete" $(TRACE_CSV)
 ```
 
-- [ ] **步骤 4：运行 RTL 基线**
+- [x] **步骤 4：运行 RTL 基线**
 
 ```bash
 make -f sim/vcs/script/case_sau_regress/Makefile timing_trace
@@ -237,6 +254,10 @@ make -f sim/vcs/script/case_sau_regress/Makefile timing_trace
 预期：仿真出现 `TEST PASSED`，CSV 非空，至少有一个命令开始，且
 `command_accepted` 与 `command_complete` 数量一致。
 若缺少 VCS，必须记录命令与缺失工具，不得伪造 golden trace。
+
+完成说明：真实 RTL 仿真和 baseline 采集已经完成，当前八组 package 均包含真实
+CSR、architecture/state trace 和可复现性信息。采集最终采用 FSDB 导出与
+golden-package 流程，而不是本任务最初设想的 `timing_trace` Make target。
 
 - [ ] **步骤 5：提交 RTL instrumentation**
 
@@ -256,7 +277,7 @@ git commit -m "test: emit SAU cycle timing trace"
 - 新建 `util/sau/compare_trace_test.py`
 - 新建 `tests/gem5/sau/ref/int8_gemm.csv`
 
-- [ ] **步骤 1：复制真实 RTL trace**
+- [x] **步骤 1：复制真实 RTL trace**
 
 ```bash
 mkdir -p tests/gem5/sau/ref
@@ -264,7 +285,7 @@ cp ../npu_lpnpu/sim/vcs/build/sau_regress/int8_gemm_timing.csv \
    tests/gem5/sau/ref/int8_gemm.csv
 ```
 
-- [ ] **步骤 2：先写失败测试**
+- [x] **步骤 2：先写失败测试**
 
 测试必须覆盖：
 
@@ -282,7 +303,7 @@ python3 -m unittest util.sau.compare_trace_test -v
 
 预期：因 `compare_rows` 尚不存在而失败。
 
-- [ ] **步骤 4：实现比较器**
+- [x] **步骤 4：实现比较器**
 
 `read_trace()` 校验七列表头，要求至少一个 `command_accepted`，并以第一个
 `command_accepted` 为 cycle 0 归一化。多 command trace 合法，通过
@@ -296,13 +317,13 @@ python3 util/sau/compare_trace.py \
     --mode strict EXPECTED.csv ACTUAL.csv
 ```
 
-- [ ] **步骤 5：验证测试通过**
+- [x] **步骤 5：验证测试通过**
 
 ```bash
 python3 -m unittest util.sau.compare_trace_test -v
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add util/sau tests/gem5/sau/ref/int8_gemm.csv
@@ -320,7 +341,7 @@ git commit -m "test: add SAU timing trace comparator"
 - 新建 `src/sau/command.{hh,cc}`
 - 新建 `src/sau/command.test.cc`
 
-- [ ] **步骤 1：注册 GoogleTest**
+- [x] **步骤 1：注册 GoogleTest**
 
 ```python
 Import("*")
@@ -328,7 +349,7 @@ Source("command.cc")
 GTest("command.test", "command.test.cc", "command.cc")
 ```
 
-- [ ] **步骤 2：先写失败测试**
+- [x] **步骤 2：先写失败测试**
 
 覆盖合法命令，以及：
 
@@ -345,7 +366,7 @@ GTest("command.test", "command.test.cc", "command.cc")
 scons build/ALL/sau/command.test.opt -j4
 ```
 
-- [ ] **步骤 4：实现校验**
+- [x] **步骤 4：实现校验**
 
 公开接口：
 
@@ -358,14 +379,14 @@ base 地址对齐。
 
 所有乘法先用 64-bit 做溢出检查，再缩窄。
 
-- [ ] **步骤 5：运行测试**
+- [x] **步骤 5：运行测试**
 
 ```bash
 scons build/ALL/sau/command.test.opt -j4
 ./build/ALL/sau/command.test.opt
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add src/sau
@@ -382,7 +403,7 @@ git commit -m "feat: define SAU timing command"
 - 新建 `src/sau/address_generator.test.cc`
 - 修改 `src/sau/SConscript`
 
-- [ ] **步骤 1：先写 A preload → B streaming 顺序测试**
+- [x] **步骤 1：先写 A preload → B streaming 顺序测试**
 
 基准输入：
 
@@ -406,7 +427,7 @@ B: base + instruction * instructionStrideBytes
 scons build/ALL/sau/address_generator.test.opt -j4
 ```
 
-- [ ] **步骤 3：实现游标式 generator**
+- [x] **步骤 3：实现游标式 generator**
 
 接口：
 
@@ -427,13 +448,13 @@ class AddressGenerator
 的 Operand-B streaming beat。`last` 标记每次外部 stream occurrence 的最后
 一个 beat。
 
-- [ ] **步骤 4：运行测试**
+- [x] **步骤 4：运行测试**
 
 ```bash
 ./build/ALL/sau/address_generator.test.opt
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add src/sau
@@ -450,7 +471,7 @@ git commit -m "feat: generate SAU operand beats"
 - 新建 `src/sau/a_register_file.test.cc`
 - 修改 `src/sau/SConscript`
 
-- [ ] **步骤 1：注册并先写失败测试**
+- [x] **步骤 1：注册并先写失败测试**
 
 加入：
 
@@ -486,7 +507,7 @@ scons build/ALL/sau/a_register_file.test.opt -j4
 
 预期：因 `ARegisterFileIn` 尚未定义而失败。
 
-- [ ] **步骤 3：实现抽象接口**
+- [x] **步骤 3：实现抽象接口**
 
 ```cpp
 class ARegisterFileIn
@@ -511,14 +532,14 @@ class ARegisterFileIn
 的虚拟 Operand-A beat，因为 array input trace 是 SAU 内部事件，不是外部 SRAM
 访问。
 
-- [ ] **步骤 4：运行测试**
+- [x] **步骤 4：运行测试**
 
 ```bash
 scons build/ALL/sau/a_register_file.test.opt -j4
 ./build/ALL/sau/a_register_file.test.opt
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add src/sau/a_register_file.hh src/sau/a_register_file.cc \
@@ -536,7 +557,7 @@ git commit -m "feat: model SAU A register file input"
 - 新建 `src/sau/token_pipeline.test.cc`
 - 修改 `src/sau/SConscript`
 
-- [ ] **步骤 1：先写失败测试**
+- [x] **步骤 1：先写失败测试**
 
 覆盖：
 
@@ -554,7 +575,7 @@ git commit -m "feat: model SAU A register file input"
 scons build/ALL/sau/token_pipeline.test.opt -j4
 ```
 
-- [ ] **步骤 3：实现接口**
+- [x] **步骤 3：实现接口**
 
 ```cpp
 class TokenBuffer
@@ -581,13 +602,13 @@ class ArrayPipeline
 };
 ```
 
-- [ ] **步骤 4：运行测试**
+- [x] **步骤 4：运行测试**
 
 ```bash
 ./build/ALL/sau/token_pipeline.test.opt
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add src/sau
@@ -605,7 +626,7 @@ git commit -m "feat: model SAU token pipeline"
 - 新建 `src/sau/sau_model.{hh,cc}`
 - 修改 `src/sau/SConscript`
 
-- [ ] **步骤 1：声明 `SauModel`**
+- [x] **步骤 1：声明 `SauModel`**
 
 必须包含：
 
@@ -619,7 +640,7 @@ git commit -m "feat: model SAU token pipeline"
 - trace 文件与 `exit_on_done`；
 - synthetic A/B/output 地址、beat、flow 和 instruction 参数。
 
-- [ ] **步骤 2：注册构建项**
+- [x] **步骤 2：注册构建项**
 
 ```python
 SimObject("Sau.py", sim_objects=["SauModel"])
@@ -628,7 +649,7 @@ Source("sau_model.cc")
 DebugFlag("SAU")
 ```
 
-- [ ] **步骤 3：实现 `TraceWriter`**
+- [x] **步骤 3：实现 `TraceWriter`**
 
 ```cpp
 void emit(uint64_t cycle, EventKind event, uint64_t commandId,
@@ -638,7 +659,7 @@ void emit(uint64_t cycle, EventKind event, uint64_t commandId,
 
 文件为空字符串时禁用。`CommandComplete` 后 flush。
 
-- [ ] **步骤 4：实现可构建的 idle model**
+- [x] **步骤 4：实现可构建的 idle model**
 
 `SauModel` 继承 `ClockedObject`，实现：
 
@@ -651,13 +672,13 @@ void emit(uint64_t cycle, EventKind event, uint64_t commandId,
 
 startup 构造 synthetic command，计算 `workItems`，校验后接收。
 
-- [ ] **步骤 5：构建**
+- [x] **步骤 5：构建**
 
 ```bash
 scons build/ALL/gem5.opt -j4
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add src/sau
@@ -674,7 +695,7 @@ git commit -m "feat: add SAU timing SimObject"
 - 修改 `src/sau/sau_model.{hh,cc}`
 - 修改 `src/sau/SConscript`
 
-- [ ] **步骤 1：先加入 outstanding/blocked invariant**
+- [x] **步骤 1：先加入 outstanding/blocked invariant**
 
 要求：
 
@@ -682,7 +703,7 @@ git commit -m "feat: add SAU timing SimObject"
 - read/write outstanding 不得越界；
 - outstanding 只在请求被接受后增加。
 
-- [ ] **步骤 2：实现 `SauMemoryPort`**
+- [x] **步骤 2：实现 `SauMemoryPort`**
 
 ```cpp
 class SauMemoryPort : public RequestPort
@@ -704,12 +725,12 @@ class SauMemoryPort : public RequestPort
 每个 packet 使用准确的 32-byte 大小。write payload 清零。发送失败时仅保留一个
 blocked packet；retry 成功后才发出 accepted 回调。
 
-- [ ] **步骤 3：保证响应只在下一 SAU 边沿可见**
+- [x] **步骤 3：保证响应只在下一 SAU 边沿可见**
 
 `recvTimingResp()` 只入队并在需要时调度 `nextCycle()`，不得直接修改
 `InputBuffer`。
 
-- [ ] **步骤 4：构建全部目标**
+- [x] **步骤 4：构建全部目标**
 
 ```bash
 scons build/ALL/sau/command.test.opt \
@@ -718,7 +739,7 @@ scons build/ALL/sau/command.test.opt \
       build/ALL/gem5.opt -j4
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add src/sau
@@ -733,7 +754,7 @@ git commit -m "feat: issue SAU timing memory requests"
 
 - 修改 `src/sau/sau_model.{hh,cc}`
 
-- [ ] **步骤 1：增加调度所需成员状态**
+- [x] **步骤 1：增加调度所需成员状态**
 
 在 `src/sau/sau_model.hh` 中加入：
 
@@ -798,7 +819,7 @@ writesAccepted = 0;
 这里必须保留 A 外部 preload 与 A 阵列输入复用的分层，不要再把每个
 A array input 都建模成一次外部 SRAM read。
 
-- [ ] **步骤 2：固定每个时钟边沿的执行顺序**
+- [x] **步骤 2：固定每个时钟边沿的执行顺序**
 
 ```cpp
 consumeResponses();
@@ -810,7 +831,7 @@ updatePhase();
 accountCycle();
 ```
 
-- [ ] **步骤 3：实现 read response 消费**
+- [x] **步骤 3：实现 read response 消费**
 
 `consumeResponses()` 将 `visibleMemoryResponses` 分流到对应资源：
 
@@ -840,7 +861,7 @@ B response -> availableB queue
 A array input -> 从已 resident 的 ARegisterFileIn 虚拟生成
 ```
 
-- [ ] **步骤 4：实现 A 复用 + B streaming 的阵列接收**
+- [x] **步骤 4：实现 A 复用 + B streaming 的阵列接收**
 
 `advanceArray()` 只有在以下条件同时满足时才接收一个 work token：
 
@@ -892,7 +913,7 @@ arrayPipeline.accept(activeCommand->id, nextArrayIndex,
 beat within flow -> next flow -> next instruction
 ```
 
-- [ ] **步骤 5：实现结果和写回**
+- [x] **步骤 5：实现结果和写回**
 
 每个完成的 work token 产生一个 output token。写地址为：
 
@@ -905,7 +926,7 @@ response 时输出。如果 `trySend()` 返回 false，port 已经接管一个 b
 packet 等待 retry；scheduler 不能继续从 `outputBuffer` 重发同一个 output
 token。
 
-- [ ] **步骤 6：实现外部 read/write issue**
+- [x] **步骤 6：实现外部 read/write issue**
 
 `issueReads()` 只从 `readGenerator` 发送外部 SRAM read：
 
@@ -945,7 +966,7 @@ Beat writeBeat{
 `writesAccepted` 只能在 `requestAccepted()` 中递增，因为 retry 接受可能发生在
 之后。
 
-- [ ] **步骤 7：实现 phase 与完成**
+- [x] **步骤 7：实现 phase 与完成**
 
 ```text
 OperandLoad → ArrayActive → ArrayDrain → Writeback → Complete
@@ -964,12 +985,12 @@ phase 规则：
 `command_complete` 与切到 `Complete` 同拍发出。若 `exit_on_done=true`，调用
 `exitSimLoop("SAU command complete")`。
 
-- [ ] **步骤 8：实现 drain**
+- [x] **步骤 8：实现 drain**
 
 仅当无 blocked packet、无 outstanding request 且模型 idle/complete 时返回
 `Drained`。首阶段不序列化执行中的命令。
 
-- [ ] **步骤 9：加入守恒断言**
+- [x] **步骤 9：加入守恒断言**
 
 每拍检查：
 
@@ -984,7 +1005,7 @@ assert(availableB.size() <= visibleReadBeats);
 
 完成时要求 buffer 和 array pipeline 为空，命令期望计数全部相等。
 
-- [ ] **步骤 10：如可行，增加 focused SauModel scheduler 单测**
+- [x] **步骤 10：如可行，增加 focused SauModel scheduler 单测**
 
 如果不需要复制大量 gem5 Python config，就加一个小测试覆盖：
 
@@ -996,7 +1017,7 @@ assert(availableB.size() <= visibleReadBeats);
 如果这个测试在当前结构下太重，就在 `STATUS.md` 说明原因，并把端到端验证放到
 任务 9 standalone simulation。
 
-- [ ] **步骤 11：运行全部 C++/Python 单测**
+- [x] **步骤 11：运行全部 C++/Python 单测**
 
 ```bash
 scons build/RISCV/sau/address_generator.test.opt \
@@ -1016,7 +1037,7 @@ scons build/RISCV/sau/address_generator.test.opt \
 python3 -m unittest util.sau.compare_trace_test -v
 ```
 
-- [ ] **步骤 12：提交**
+- [x] **步骤 12：提交**
 
 ```bash
 git add src/sau/sau_model.hh src/sau/sau_model.cc
@@ -1157,7 +1178,7 @@ git diff --check
 预期：所有测试 PASS，`build/RISCV/gem5.opt` 编译通过。如果 host 没有可选的
 Capstone/HDF5 库，对应 warning 可以接受。
 
-- [ ] **步骤 6：在任务 9 中比较 gem5 standalone trace**
+- [x] **步骤 6：在任务 9 中比较 gem5 standalone trace**
 
 任务 9 能生成 gem5 trace 后运行：
 
@@ -1170,7 +1191,7 @@ python3 util/sau/compare_trace.py --mode causal \
 完整标定前，至少要求 event order 与 stream/beat metadata 能对齐；strict cycle
 accuracy 留到任务 10。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add src/sau docs/superpowers/plans src/sau/STATUS.md
@@ -1186,7 +1207,7 @@ git commit -m "feat: model SAU matmul transpose timing path"
 - 新建 `configs/example/sau_timing.py`
 - 新建 `tests/gem5/sau/test_sau.py`
 
-- [ ] **步骤 1：建立独立配置**
+- [x] **步骤 1：建立独立配置**
 
 系统包含：
 
@@ -1201,7 +1222,7 @@ git commit -m "feat: model SAU matmul transpose timing path"
 CLI 必须暴露 memory latency/variance/bandwidth、beat/flow、buffer、array
 capacity 和 outstanding 参数。
 
-- [ ] **步骤 2：运行固定内存**
+- [x] **步骤 2：运行固定内存**
 
 ```bash
 ./build/ALL/gem5.opt \
@@ -1215,7 +1236,7 @@ capacity 和 outstanding 参数。
 
 预期：退出原因是 `SAU command complete`，trace 包含完整事件。
 
-- [ ] **步骤 3：运行受限内存**
+- [x] **步骤 3：运行受限内存**
 
 ```bash
 ./build/ALL/gem5.opt \
@@ -1229,19 +1250,19 @@ capacity 和 outstanding 参数。
 
 预期：仍能完成，总周期更长，且至少一个 memory/backpressure stall 非零。
 
-- [ ] **步骤 4：注册两个 quick test**
+- [x] **步骤 4：注册两个 quick test**
 
 使用 `gem5_verify_config` 注册 fixed 和 constrained 两个配置，验证退出码和
 `SAU command complete`。
 
-- [ ] **步骤 5：运行系统测试**
+- [x] **步骤 5：运行系统测试**
 
 ```bash
 cd tests
 ./main.py run --skip-build gem5/sau
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add configs/example/sau_timing.py tests/gem5/sau
@@ -1288,7 +1309,7 @@ git commit -m "test: run SAU timing model with memory backpressure"
     --trace=m5out/sau-rtl-match/sau.csv
 ```
 
-- [ ] **步骤 2：记录当前 causal profile 差异**
+- [x] **步骤 2：记录当前 causal profile 差异**
 
 ```bash
 python3 util/sau/compare_trace.py --mode causal \
@@ -1583,7 +1604,7 @@ pre-commit run --files src/sau configs/example/sau_timing.py \
 `git diff --check` 通过。当前环境未安装 `pre-commit` 或 `clang-format`，未擅自
 安装依赖。
 
-- [ ] **步骤 6：提交首里程碑（等待 Git 作者信息）**
+- [x] **步骤 6：提交首里程碑**
 
 ```bash
 git add src/sau configs/example/sau_timing.py tests/gem5/sau \
@@ -1643,7 +1664,7 @@ calibration-only memory cadence 或 strict cycle calibration。当前 direct-com
 - 增加对应 `src/sau/*.test.cc`
 - 更新 `src/sau/README.md` 和 `src/sau/STATUS.md`
 
-- [ ] **步骤 1：整理 RTL/软件侧 CSR 字段定义**
+- [x] **步骤 1：整理 RTL/软件侧 CSR 字段定义**
 
 从 RTL 和软件启动流程中记录当前 baseline 真实依赖的寄存器字段，至少包括：
 
@@ -1656,7 +1677,7 @@ calibration-only memory cadence 或 strict cycle calibration。当前 direct-com
 
 字段语义必须来自 RTL/软件上下文，不能只根据 gem5 当前 command 反推。
 
-- [ ] **步骤 2：定义 CSR config 与 command 的边界**
+- [x] **步骤 2：定义 CSR config 与 command 的边界**
 
 新增独立结构表达原始或已规整的 SAU CSR 配置，例如 `SauCsrConfig` 或同等命名。
 它应与 `SauCommand` 分离：
@@ -1667,7 +1688,7 @@ calibration-only memory cadence 或 strict cycle calibration。当前 direct-com
 
 direct-command 注入路径继续保留，用于 Task 10 标定、单元测试和未来回归。
 
-- [ ] **步骤 3：实现 baseline decode**
+- [x] **步骤 3：实现 baseline decode**
 
 先只支持当前 int8 GEMM baseline。decode 后必须生成与现有 `--rtl-profile`
 一致的：
@@ -1681,7 +1702,7 @@ direct-command 注入路径继续保留，用于 Task 10 标定、单元测试�
 不在本步骤实现数值计算，也不把 transpose 做成完整功能模型；只把它作为
 mode-derived timing/dataflow 选择的一部分。
 
-- [ ] **步骤 4：增加 decode 单元测试**
+- [x] **步骤 4：增加 decode 单元测试**
 
 至少覆盖：
 

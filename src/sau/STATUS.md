@@ -99,8 +99,8 @@ resident read, stream read, A, B, result, and mem_ctrl write plus the actual
 command-done edge to the timing ledger. The old derivation rows remain for
 provenance comparison. The latest source cleanup also removes the remaining
 strict aggregate fill/gap/completion consumers while preserving the original
-non-strict DSE schedulers. It awaits developer relinking and regression.
-Step 5.5 still needs new-current-trace acceptance.
+non-strict DSE schedulers. Developer relinking, current-trace acceptance, and
+the CSR-only prediction smoke test now pass; Step 5.5 is complete.
 
 The latest implementation adds the input-RF read/feeder coupling from the
 already exported current-FSDB edges:
@@ -506,9 +506,10 @@ comparator without a hold-out-specific timing change.
 | hold-out | `int8_gemm_64x256x128_n_holdout` | 2 | 8 | 9,742 |
 
 The eight current packages are now imported under `tests/gem5/sau/ref` and
-registered as RISC-V quick strict tests. The complete SAU quick run passes
-36/36 checks across 14 suites, including simulation, exit-regex,
-architecture, and state verification for all eight fixtures.
+registered as RISC-V quick strict and timing-memory causal tests. The final
+SAU quick run passes 63/63 checks across 23 suites, including strict
+architecture/state verification, causal/backpressure verification, legacy
+direct-command compatibility, fixed/constrained runs, and DSE simulations.
 
 ## Task Progress
 
@@ -526,7 +527,7 @@ architecture, and state verification for all eight fixtures.
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
-| PLAN2. CSR-driven Int8 GEMM RTL alignment | Step 5.5 current RTL acceptance complete | All five current coverage and three hold-out packages were captured from passing RTL, imported, and registered. The full 14-suite SAU quick run passes 36/36 checks. |
+| PLAN2. CSR-driven Int8 GEMM RTL alignment | Implementation and validation complete; pending commit/push | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
 
 ## Historical PLAN2 RTL Fixture Inventory
 
@@ -1044,8 +1045,97 @@ Results:
 
 ## Next Steps
 
-1. When new current-baseline packages are available, use them for independent
-   architecture/state strict acceptance; do not compare against the old eight
-   traces as golden.
-2. After Step 5.5 and new-trace acceptance, resume timing-memory causal,
-   backpressure, DSE, and legacy direct-command regression.
+### PLAN.md checklist reconciliation — 2026-07-24
+
+The original `PLAN.md` checklist has been reconciled against this status
+record, the current source/tests, and milestone commits. Tasks 2 through 11
+are now marked complete, including the previously stale Task 8.5 standalone
+comparison/commit, Task 10 causal-profile checkpoint, and Task 11 milestone
+commit. Task 12 steps 1 through 4 are marked complete because PLAN2 delivered
+the CSR field model, config/command boundary, baseline decode, and focused
+tests.
+
+Unchecked items are intentional: the original Task 1 `+sau_trace` testbench
+instrumentation and `timing_trace` Make target were superseded by the
+FSDB/golden-package capture path and are not present in the current RTL
+repository; historical red-test observations cannot be reconstructed from
+the final tree; live CPU/CSR bus integration remains deferred. These do not
+invalidate the completed timing milestone.
+
+### PLAN3 functional-data stage — 2026-07-24
+
+Requirements for the next stage are captured in `PLAN3.md`. The stage adds a
+JSON-selected CSR and memory-image workload, real read/write payloads, and an
+RTL-structured int8 GEMM datapath through input storage, transpose/reuse,
+32x32 PE accumulation, result serialization, output accumulation/saturation,
+and persistent memory writeback.
+
+Unlike PLAN2's accepted timing domain, the PLAN3 target is not fixed to
+`trans_mode=01, reuse_mode=01`: all four RTL GEMM transpose modes and the
+three scheduler-defined reuse modes must be selected by CSR. Other CSR fields
+that affect int8 GEMM are likewise functional controls rather than fixture
+constants. In particular, the full 5-bit `cutbit=0..31` domain must drive the
+RTL-equivalent signed arithmetic shift and int8 saturation; the current
+fixture's `cutbit=8` is only one validation point. CPU integration, int16,
+convolution, standalone transpose, and matrix addition remain out of scope.
+Implementation has not started.
+
+### Timing-memory causal checkpoint — 2026-07-24
+
+The first post-Step-5.5 item is complete. The standalone
+configuration now separates CSR fixture replay from strict fixed-SRAM timing:
+`--rtl-profile FIXTURE --timing-memory` replays the fixture-derived commands
+and `TimingPolicy` through `SystemXBar + SimpleMemory`. The eight supported
+fixtures are registered as causal timing-memory suites. Their verifier checks
+the architecture trace with the causal comparator, exact command/read/write
+token counts against the RTL package, configured outstanding limits, and the
+presence of real retry/outstanding/starvation pressure.
+
+Static verification passed:
+
+```text
+python3 -m py_compile configs/example/sau_timing.py tests/gem5/sau/test_sau.py
+python3 -m unittest util.sau.compare_trace_test \
+    util.sau.verify_dse_test util.sau.validate_fixture_test -v
+python3 util/style.py --modifications \
+    src/sau/sau_model.hh src/sau/sau_model.cc
+git diff --check
+```
+
+The Python suites passed 14/14. Per `src/sau/AGENTS.md`, Codex did not compile
+gem5; the developer incrementally rebuilt `build/RISCV/gem5.opt`.
+
+The smallest 32x32x32 run completed with one command, 64 reads, 32 writes,
+maximum outstanding read/write counts of 2, and nonzero retry, outstanding
+limit, and input-starvation stalls. All eight supported fixtures then passed
+causal comparison and the conservation/pressure verifier. The K-sweep exposed
+that a data event can observe a different phase snapshot when B backpressure
+changes event interleaving; the causal comparator now preserves the exact
+phase-transition and command-boundary phase sequence while allowing that
+legitimate data-event snapshot change. Positive and negative comparator tests
+cover this distinction.
+
+The initial complete SAU quick run passed **60/60 checks across 22 suites**:
+eight strict fixture suites, eight causal timing-memory suites,
+fixed/constrained direct-command runs, and four DSE simulations.
+Comparator/DSE/fixture Python unit tests passed 16/16.
+
+The formal post-Step-5.5 DSE verifier also passes. Increasing array capacity
+from 1 to 16 reduced `commandCycles` from 174 to 137 and removed 62
+array-capacity stall cycles. Increasing output FIFO entries from 1 to 8 did
+not increase the 668 command cycles; both configurations retained the expected
+output-full pressure.
+
+The historical two-command 64x256x256 direct-command parameters were recovered
+from milestone commit `50d42ef51c` and rerun through calibration memory. The
+trace contains the same 18,446 data rows as the current CSR baseline, with two
+completed commands, 4,608 reads, and 512 writes. Causal comparison passes.
+Strict comparison is intentionally not its acceptance criterion: the aggregate
+direct-command DSE scheduler finishes 34 cycles later than the current per-tick
+RTL driver and has a different independent event interleaving. A permanent
+quick suite now checks its causal lanes and exact command/read/write counts.
+After adding that suite, the final complete SAU quick run passed **63/63
+checks across 23 suites**.
+
+1. Review the pending source, test, comparator, and documentation changes.
+2. Commit and push only after developer approval.

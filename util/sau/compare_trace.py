@@ -10,8 +10,9 @@ normalizes all cycles so the first `command_accepted` row is cycle 0.
 `compare_rows()` supports:
 
 * strict: every normalized field must match exactly;
-* causal: command-local dataflow lanes and their dependencies must match,
-  while independent memory request and response events may interleave.
+* causal: command-local dataflow lanes, phase-transition sequence, and
+  dependencies must match, while independent events may interleave and data
+  events may observe a different phase snapshot under backpressure.
 """
 
 import argparse
@@ -42,7 +43,12 @@ VALID_PHASES = {
     "complete",
 }
 VALID_MODES = {"strict", "causal"}
-CAUSAL_SEQUENCE_FIELDS = ("address", "beat", "phase")
+CAUSAL_SEQUENCE_FIELDS = ("address", "beat")
+CAUSAL_PHASE_ANCHOR_EVENTS = {
+    "phase_changed",
+    "command_accepted",
+    "command_complete",
+}
 
 
 class TraceFormatError(ValueError):
@@ -183,7 +189,10 @@ def _compare_causal(expected_rows, actual_rows, errors):
             )
         for index, (expected, actual) in enumerate(
                 zip(expected_lane, actual_lane)):
-            for field in CAUSAL_SEQUENCE_FIELDS:
+            fields = CAUSAL_SEQUENCE_FIELDS
+            if key[1] in CAUSAL_PHASE_ANCHOR_EVENTS:
+                fields += ("phase",)
+            for field in fields:
                 if expected[field] != actual[field]:
                     errors.append(
                         f"causal lane {key} item {index}: {field} mismatch: "

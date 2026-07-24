@@ -165,6 +165,21 @@ class TraceComparatorTest(unittest.TestCase):
 
         self.assertEqual([], compare_rows(expected, actual, mode="causal"))
 
+    def test_causal_allows_data_event_phase_snapshot_to_move(self):
+        actual = [dict(row) for row in ROWS]
+        actual[6]["phase"] = "array_drain"
+
+        self.assertEqual([], compare_rows(ROWS, actual, mode="causal"))
+        self.assertNotEqual([], compare_rows(ROWS, actual, mode="strict"))
+
+    def test_causal_rejects_phase_transition_sequence_change(self):
+        actual = [dict(row) for row in ROWS]
+        actual[4]["phase"] = "array_drain"
+
+        errors = compare_rows(ROWS, actual, mode="causal")
+
+        self.assertTrue(any("phase mismatch" in error for error in errors))
+
     def test_causal_rejects_response_before_its_request(self):
         actual = [dict(row) for row in ROWS]
         actual[2], actual[3] = actual[3], actual[2]

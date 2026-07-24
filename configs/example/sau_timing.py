@@ -44,6 +44,14 @@ parser.add_argument(
     default="",
     help="Run one RTL CSR fixture in strict timing mode",
 )
+parser.add_argument(
+    "--timing-memory",
+    action="store_true",
+    help=(
+        "Replay --rtl-profile commands through SystemXBar and SimpleMemory "
+        "for causal/backpressure validation"
+    ),
+)
 
 parser.add_argument("--beat-bytes", type=positive_int, default=32)
 parser.add_argument("--a-beats", type=positive_int, default=256)
@@ -129,6 +137,11 @@ parser.add_argument(
 
 args = parser.parse_args()
 
+if args.timing_memory and not args.rtl_profile:
+    parser.error("--timing-memory requires --rtl-profile")
+if args.timing_memory and args.calibration_memory:
+    parser.error("--timing-memory cannot be combined with --calibration-memory")
+
 strict_timing_options = {
     "--beat-bytes",
     "--read-issue-width",
@@ -154,10 +167,18 @@ if args.rtl_profile:
         token.split("=", 1)[0] for token in sys.argv[1:]
         if token.split("=", 1)[0] in strict_timing_options
     }
-    if supplied:
+    timing_memory_options = {
+        "--read-issue-width",
+        "--write-issue-width",
+        "--input-buffer-entries",
+    }
+    rejected = supplied
+    if args.timing_memory:
+        rejected -= timing_memory_options
+    if rejected:
         parser.error(
-            "strict --rtl-profile derives timing from CSR/RTL and rejects "
-            "overrides: " + ", ".join(sorted(supplied))
+            "--rtl-profile derives internal timing from CSR/RTL and rejects "
+            "overrides: " + ", ".join(sorted(rejected))
         )
 
     fixture = os.path.abspath(args.rtl_profile)
@@ -182,7 +203,8 @@ if args.rtl_profile:
     args.rtl_profile = fixture
     args.memory_size = "1GiB"
     args.command_count = manifest["command_count"]
-    args.calibration_memory = True
+    args.calibration_memory = not args.timing_memory
+    args.strict_timing = not args.timing_memory
     args.rtl_sa_size = elaboration["SA_SIZE"]
     args.rtl_register_depth = elaboration["REGDEPTH"]
     args.rtl_sram_delay = elaboration["SRAM_DELAY"]
@@ -192,6 +214,7 @@ if args.rtl_profile:
     # timing independently derives this value from rtl_sram_delay.
     args.calibration_read_latency_cycles = args.rtl_sram_delay + 1
 else:
+    args.strict_timing = False
     args.rtl_sa_size = 32
     args.rtl_register_depth = 256
     args.rtl_sram_delay = 3
@@ -209,7 +232,13 @@ if args.rtl_profile and not args.state_trace:
 
 print(
     "SAU timing mode: " +
-    ("strict CSR fixture" if args.rtl_profile else "non-strict direct-command/DSE")
+    (
+        "CSR fixture timing-memory"
+        if args.rtl_profile and args.timing_memory
+        else "strict CSR fixture"
+        if args.rtl_profile
+        else "non-strict direct-command/DSE"
+    )
 )
 
 system = System(
@@ -258,7 +287,7 @@ system.sau = SauModel(
     calibration_memory=args.calibration_memory,
     calibration_read_latency_cycles=args.calibration_read_latency_cycles,
     csr_fixture=args.rtl_profile,
-    strict_timing=bool(args.rtl_profile),
+    strict_timing=args.strict_timing,
     rtl_sa_size=args.rtl_sa_size,
     rtl_register_depth=args.rtl_register_depth,
     rtl_sram_delay=args.rtl_sram_delay,

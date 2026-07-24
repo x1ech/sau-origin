@@ -59,8 +59,10 @@ The validated control domain is int8 GEMM with `trans_mode=01` and
 rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
 64x256x128) then passed without fixture-specific timing adjustment.
 
-All eight packages are registered as RISC-V quick strict tests. Run the full
-SAU quick set with:
+All eight packages are registered as RISC-V quick strict and timing-memory
+causal tests. Together with the permanent legacy direct-command regression,
+fixed/constrained runs, and DSE simulations, the full quick set contains 23
+suites and currently passes 63/63 checks:
 
 ```bash
 cd tests
@@ -92,6 +94,20 @@ cause. A mismatch is diagnostic evidence, not a reason to add a profile delay.
 Without `--rtl-profile`, SAU is an explicitly non-strict direct-command/DSE
 run. It sends requests through `SystemXBar` and `SimpleMemory`, so retry,
 latency variance, bandwidth, and outstanding limits can affect timing.
+
+To replay a supported CSR fixture through that timing-memory path, combine
+`--rtl-profile FIXTURE` with `--timing-memory`. Causal comparison preserves
+each command-local event/address/beat lane, the phase-transition sequence, and
+explicit request/response/token dependencies. A data event may observe a
+different instantaneous phase when backpressure changes otherwise-independent
+event interleaving.
+
+The quick suite also retains the original two-command 64x256x256
+direct-command profile as `sau-legacy-direct-command`. It must remain causally
+equivalent to the current baseline package, including exact event, address,
+beat, and token counts. It is intentionally not a strict-cycle oracle:
+post-Step-5.5 strict timing is owned by CSR replay and the per-tick RTL command
+driver, while direct-command timing remains the aggregate non-strict DSE path.
 
 ```bash
 ./build/RISCV/gem5.opt \
@@ -173,8 +189,9 @@ schedulers. After relinking, strict architecture/state comparison, stage
 ledger inspection, constrained non-strict execution, and the four-way DSE
 monotonicity check all pass.
 The 2026-07-24 current-RTL recapture passes all eight architecture and state
-strict comparisons. The full SAU quick run passes 36/36 checks across 14
-suites.
+strict comparisons. All eight timing-memory causal/backpressure suites and the
+legacy direct-command causal regression also pass. The full SAU quick run
+passes 63/63 checks across 23 suites.
 
 ## Statistics
 
