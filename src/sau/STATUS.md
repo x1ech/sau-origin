@@ -1080,6 +1080,120 @@ fixture's `cutbit=8` is only one validation point. CPU integration, int16,
 convolution, standalone transpose, and matrix addition remain out of scope.
 Implementation has not started.
 
+PLAN3 was reviewed and revised before implementation. The authoritative
+datapath is now the currently instantiated
+`SA_CORE -> sa_element/feeder + register_file_in ->
+sa_execute/sa_feeder -> transposer_tiny -> SA_ENGINE -> SA_ROW ->
+SA_PE_array -> SA_PE -> register_file_out` hierarchy; retained legacy
+`trans2sa_top/SA_TOP/SA_row_unit/SA_pe` sources are explicitly excluded.
+The plan now models the current PE's 24-bit saturating accumulator rather than
+wraparound, separates the output register file's 16-bit arithmetic boundary,
+and requires a pre-implementation Step 0 to freeze the CSR legal-domain table,
+write payloads, byte order, and final-memory golden. Strict fixed-SRAM and
+timing-memory runs each have one explicit data authority. New transpose/reuse
+and flow modes must first extend the resource model and pass the selected
+per-tick boundary oracle checks before their payload behavior can be promoted.
+
+A second modeling-level review clarified that PLAN3 is not a line-by-line RTL
+translation. The target is a CSR-driven, resource-constrained, data-bit-exact
+cycle model. It must preserve finite capacity, port contention, throughput,
+latency, backpressure, retry/outstanding behavior, state lifetime, transaction
+ordering, payload, and strict boundary timing, while allowing RTL-internal
+wires and architecturally invisible registers to be combined. Step 0 now
+freezes a resource abstraction contract and state-lifetime table. The existing
+`RtlCommandDriverSkeleton` is a strict regression oracle for boundary events,
+not a second functional execution state machine; accepted transactions advance
+control metadata and payload together in the new resource model.
+
+The follow-up convergence pass makes raw CSR writes the only executable
+configuration semantics: CSV references and optional inline JSON records both
+normalize to one `SauCsrWrite` replay/decode path, while `csr_snapshot.json` is
+cross-check data only. New transpose/reuse/flow modes compare the resource
+model directly against RTL boundary traces through a generic comparator;
+`RtlCommandDriverSkeleton` remains an `01/01` regression and is not expanded
+into a second multi-mode controller. PLAN3 also requires sparse memory backing
+for the 1-GiB address range, explicit 256/8/24/16-bit data conversion
+boundaries, and RTL-derived mode interaction equivalence classes.
+
+The clarified implementation target is broader than adding one transpose
+special case. PLAN3 now brings the complete legal int8-GEMM CSR domain into
+the typed resource-dispatch framework before datapath bring-up. The existing
+`01/01` fixture remains a regression and the first full end-to-end golden, but
+is no longer an implementation gate. Resources are implemented and validated
+in RTL order: input/register storage, transpose/reuse, systolic-array fixed
+point behavior, serializer/output storage, then multi-command integration.
+The first non-default milestone is `trans_mode=2 (ABTD)`: real B payload must
+pass through the finite transposer resource and emerge in RTL-equivalent
+transposed order, with bank occupancy, stalls, latency, and cycles accounted
+even before downstream end-to-end validation is complete. RTL legality and
+model validation maturity are tracked separately.
+
+The latest review makes path coverage derive from the RTL datapath rather than
+from brute-force CSR enumeration. Step 0 now records each elaborated RTL
+guard/mux/case path, the CSR fields selecting it, selected finite resources,
+port/capacity effects, and observable boundaries. Every legal CSR combination
+must map to a known path, while tests cover each structural path, field
+boundary, key interaction, and independent legal hold-out instead of all
+numeric Cartesian products. Architecturally visible bank/port conflicts remain
+in scope; only bitcell/analog implementation details are excluded.
+
+PLAN3 also explicitly tests a legal but unintended configuration: identical
+memory and CSR except `trans_mode=1` versus `trans_mode=2`. gem5 must not infer
+or correct user intent; each case independently matches the result, write
+payload, boundary cycles, and command-done cycle of RTL using the same CSR.
+Strict fixed-SRAM requires exact total cycles under the same memory
+request-accept/response schedule. Timing-memory may add cycles, but every
+difference must be attributable to observable memory latency, retry,
+queue/outstanding stalls, or propagated backpressure.
+
+The final pre-implementation clarification closes five execution ambiguities
+without changing PLAN3 scope. Sequential workloads now reject a start that
+arrives before the active command completes and its writes are visible,
+at preflight when determinable or at the conflicting cycle under dynamic
+timing-memory stalls.
+Dedicated busy/start tests may replay overlapping raw writes, but gem5 must
+match RTL accepted/ignored behavior and never queue an unaccepted start for
+later execution. `rtl_legal_unimplemented` is distinct from RTL-illegal:
+complete workloads fail before producing results or trusted performance, while
+module bring-up may report only the boundary maturity it has actually reached.
+
+Each workload/golden is bound to the RTL commit and function/timing-affecting
+elaboration parameters, including `ROW_NUM/COL_NUM/OUTPUTDW/SRAM_DELAY` and
+clock period, and is rejected on mismatch. A datapath path may be implemented
+only after its own RTL boundary golden is available; unrelated future paths do
+not block progress. Timing-memory retry/late-response behavior is resource
+local rather than a global freeze: blocked packets remain stable, address
+counters advance only on acceptance, independent buffered work continues, and
+dependent stalls propagate through real backpressure. Diagnostic reasons may
+overlap, but total stall cycles use one frozen primary-cause priority.
+
+The frozen PLAN3 JSON example was corrected to the current fixture contract:
+`SRAM_DELAY=3`. The workload schema now also carries an explicit
+`"manifest": "manifest.json"` path so the required RTL commit/elaboration
+preflight has a defined golden-manifest source.
+
+### PLAN3 Step 0 complete — 2026-07-24
+
+The pre-implementation RTL/data contract is frozen in `PLAN3_STEP0.md`.
+It records the active hierarchy and elaboration parameters, finite-resource
+contract, state lifetime, compositional transpose/reuse/flow path table, CSR
+raw support domain, stall attribution order, and golden readiness. In
+particular, a real VCS run establishes that raw `reuse_mode=11` is executable:
+both reuse bits are asserted, the command completes, and all 1024 result bytes
+match the software reference.
+
+Four self-checking packages were added under
+`tests/gem5/sau/functional_ref`: ATBD/reuse-A at cutbit 8, the same path at
+cutbit 1, an ABTD B/transposer boundary fixture, and the reuse=11 probe. Each
+package contains the pre-simulation memory image, NPI-extracted boundary
+changes, testbench compare, address-ordered final output bytes, simulation log,
+RTL/simulator manifest, and SHA-256 inventory. The two cutbit cases and
+reuse=11 are 1024/1024 end-to-end matches. The ABTD image intentionally retains
+ATBD software layout, so its 1005 mismatches are recorded and explicitly not
+used as a mathematical oracle; its B/transposer and output boundaries are the
+golden. `util/sau/build_plan3_step0_package.py` reproduces the package layout.
+No gem5 model behavior was changed.
+
 ### Timing-memory causal checkpoint — 2026-07-24
 
 The first post-Step-5.5 item is complete. The standalone

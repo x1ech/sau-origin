@@ -2,7 +2,7 @@
 
 ## 状态
 
-**需求已确认，尚未开始实现。**
+**需求已确认，建模层次审核修订完成，尚未开始实现。**
 
 本计划承接 `PLAN2.md` 已完成的 CSR 解码、逐拍控制、地址请求和时序对齐工作。
 `PLAN2` 的完成结果继续作为时序回归基线，但其“固定
@@ -43,16 +43,56 @@ CSR start
 - 上述两项是本阶段仅有的固定算子/精度边界。除 RTL 明确判定非法的组合外，
   其他参与 int8 GEMM 的 CSR 字段都必须按 raw 配置产生真实行为，不能固定为当前
   fixture 的数值。
-- 启动方式：JSON 引用 CSR 写入或 CSR snapshot；所有配置仍由
-  `SauCsrConfig` 按 `csr.sv` 位域解码，JSON 不定义第三套独立字段编码。
-- command：允许多个 command，但同一时刻只运行一个；前一 command 完成并写回
-  后才启动下一 command。
+- 启动方式：JSON 引用或直接包含 raw CSR writes；两种形式都先规范化为同一种
+  `SauCsrWrite` 序列，再由 `SauCsrConfig` 按 `csr.sv` 位域 replay/decode。
+  `csr_snapshot.json` 只作为解码结果的交叉检查，不直接启动 command。
+- command：允许多个顺序 command，但同一时刻只运行一个。只有按 RTL
+  ready/busy/start 条件实际 accepted 的 start 才能形成 command；gem5 不得把
+  busy 期间未接受的 start 私自排队并在以后补执行。
 - memory：所有 command 共享一个持久 memory image。前一 command 的写回对后续
   command 可见。
-- 时序：保留现有 strict RTL 时序行为；加入数据后不能破坏已通过的
-  architecture/state trace。
+- 时序分为两种合同：
+  - **strict fixed-SRAM：** 在相同 raw CSR、memory image、clock 和 memory
+    request-accept/response schedule 下，所选资源边界事件及 command-done
+    总拍数必须与 RTL 一致；
+  - **timing-memory：** 总拍数允许因 gem5 memory/xbar 的 latency、retry、排队和
+    outstanding 限制不同于 fixed-SRAM RTL，但额外周期必须能完全归因到可观测的
+    memory stall/backpressure；相同 request-accept/response schedule 下仍应回到
+    strict 拍数。
 - 数据 trace：默认关闭以优先保证仿真速度。本阶段只预留接口，不把完整内部数据
   trace 作为完成条件。
+
+RTL 合法性与模型验证成熟度必须分开：
+
+| 状态 | 含义 |
+| --- | --- |
+| `rtl_illegal` | 权威接口明确非法或切换到本阶段外算子，拒绝 |
+| `decoded` | raw CSR 已按 RTL 位域解码并完整保留 |
+| `rtl_legal_unimplemented` | RTL 合法，但命中的资源路径尚未实现到可执行级别 |
+| `resource_timed` | 相关资源的容量、transaction 和周期已与 RTL 边界对齐 |
+| `data_functional` | 相关模块的输入/输出 payload 已 bit-exact 对齐 |
+| `end_to_end_validated` | 最终 write payload 和 memory 已与 RTL 对齐 |
+
+合法的 int8 GEMM 配置不能仅因为当前 golden 尚未闭合就被当成
+`rtl_illegal`。实施和测试可以按模块逐级提升验证成熟度；仿真输出必须明确当前
+配置已通过的最高级别，不能把部分实现的结果标成 end-to-end correct。
+
+完整 workload 命中 `rtl_legal_unimplemented` 时必须在产生任何结果或可信性能统计
+前 fail-fast，并报告缺失的 RTL 路径/资源；不能回退默认 mode 或继续输出错误的
+final memory。模块级 bring-up 可以只运行已实现边界，但必须明确其最高成熟度，
+不得冒充完整 command。
+
+模型不得判断或修正用户“本来想配置什么”。对任一合法 raw CSR，即使其
+`trans_mode/reuse_mode/sa_flow_mode` 与输入数据布局不匹配，gem5 也必须忠实执行
+该 raw 配置。正确性定义为：
+
+```text
+gem5(same raw CSR, same memory, same memory handshake/response schedule)
+    == RTL(same raw CSR, same memory, same memory handshake/response schedule)
+```
+
+不要求错误配置与用户原本期望配置产生相同结果或相同拍数，只要求它们分别与相同
+配置的 RTL 对齐。
 
 ### 2.2 Int8 GEMM 内必须由 CSR 选择的 RTL 路径
 
@@ -73,8 +113,13 @@ CSR start
 | `01` | 复用 Operand-A |
 | `10` | 复用 Operand-B |
 
-`reuse_mode=11` 在当前 RTL 中没有明确的第四种复用语义，本阶段必须显式拒绝，
-不得猜测或映射到其他模式。若后续获得明确 RTL 定义和 testcase，再单独确认范围。
+`reuse_mode=11` 不能在没有证据时直接映射或拒绝。当前端口注释只定义
+`00/01/10`，但组合逻辑仍会观察两个 bit。实施前必须在 Step 0 通过软件接口定义、
+真实 CSR testcase 和 RTL 行为确定其归类：
+
+- 若权威软件/架构接口明确规定 `11` 为 reserved，则模型显式拒绝；
+- 若真实 CSR 可以启动且 RTL 会运行，则模型必须复现该 raw 配置的实际行为；
+- 不得仅依据现有 fixture 没有使用 `11` 就决定其语义。
 
 `sa_flow_mode` 按 RTL 的 `CNORMAL/CTRANS/RETAIN/TRETAIN` 行为影响结果顺序和
 output SRAM 是否累加，不能在功能模型中固定成当前 fixture 的值。
@@ -93,7 +138,8 @@ signed 24-bit MAC result
 模型必须逐项复现 `SA_pkg::sat_truncate_func` 的 `>>>`、符号扩展、overflow 检查和
 返回位布局，不能把 cutbit 固定为 8，也不能用浮点缩放或最终统一量化替代。
 
-以下字段同样不能固定为现有 golden 的数值：
+以下字段同样不能固定为现有 golden 的数值，但必须先区分“GEMM 内自由配置”
+和“会把数据通路切换到其他算子”的值：
 
 - `register_mode`、`sa_flow_mode`、`conv_kernal` 和 `stride_flag` 在
   `pe_work_mode=MATMUL, shift_flag=0` 下仍可到达的控制效果；
@@ -102,16 +148,22 @@ signed 24-bit MAC result
 - input、vertical、register-input、output 的全部
   x/y/flow/instruction step、burst 和 cycle。
 
-它们必须覆盖 RTL 对 int8 GEMM 定义的合法取值；若某个 raw 值在 RTL 中会形成
-零长度、越界或未定义组合，模型应根据同一条 RTL 约束明确拒绝，而不是因为现有
-fixture 没用过就拒绝。`pe_work_mode` 必须是 MATMUL，`shift_flag` 必须为 0；
-卷积、单独转置、矩阵加法和 int16 均明确拒绝。
+实施前必须形成逐字段支持域表，至少记录 raw 位宽、当前 RTL 消费位置、int8 GEMM
+合法域、保留/非法条件和对应 golden。特别是 `register_mode=10` 会影响
+single-column 路径，`conv_kernal>=3` 会使当前 `sa_feeder` 的 `conv_mode`
+成立，不能未经调查就把它们当作普通 GEMM 参数，也不能因为当前 fixture 为 0
+就硬编码为 0。
+
+合法 GEMM 值必须按 RTL 工作；会切换到 CONV/DW/INT16 等本阶段外数据通路的组合
+必须根据权威接口约束显式拒绝。`pe_work_mode` 必须是 MATMUL，`shift_flag`
+必须为 0；卷积、单独转置、矩阵加法和 int16 均明确不在本阶段。
 
 ### 2.3 不在本阶段
 
 - CPU 指令 decode、CSR 总线接入、中断和操作系统集成；
 - INT16、CONV、独立 TRANSPOSE、ADD；
-- SRAM bitcell、bank 冲突或模拟电路级行为；
+- SRAM bitcell、模拟电路和物理实现细节；但任何会影响 transaction 接受、端口
+  竞争、吞吐、stall 或可见周期的 bank/port 冲突属于本阶段，必须建模；
 - 为未实现算子添加通用计算图；
 - 默认开启逐 PE、逐 accumulator 的大体积数据 trace。
 
@@ -122,21 +174,105 @@ fixture 没用过就拒绝。`pe_work_mode` 必须是 MATMUL，`shift_flag` 必�
 - `hardware/src/sa_element/csr.sv`
 - `mem_addr.sv`、`mem_ctrl.sv`、`register_addr.sv`
 - `register_file_in.sv`、`padding_shifter.sv`、`feeder.sv`
-- `hardware/src/sa_execute/transposer.v`
-- `trans2sa_top.v`、`sa_feeder.sv`、`SA_ENGINE.sv`、`SA_TOP.v`
-- `SA_row_unit.v`、`SA_pe.v`
+- `hardware/src/sa_execute/sa_feeder.sv`
+- `transposer_tiny.v`
+- `SA_ENGINE.sv`、`SA_ROW.sv`、`SA_PE_array.sv`、`SA_PE.sv`
+- `SA_pkg.sv`
 - `hardware/src/sa_element/register_file_out.sv`
+
+当前 elaborated hierarchy 固定为：
+
+```text
+SA_CORE
+  -> sa_element/feeder + register_file_in
+  -> sa_execute/sa_feeder
+  -> transposer_tiny
+  -> SA_ENGINE
+  -> SA_ROW
+  -> SA_PE_array
+  -> SA_PE
+  -> register_file_out
+```
+
+`trans2sa_top.v`、`SA_TOP.v`、`SA_row_unit.v`、`SA_pe.v` 属于仓库中仍保留的旧
+数据通路文件，不作为本阶段实现依据。只有证明当前 elaboration 实例化了某文件，
+才能把它加入权威路径。
+
+### 3.1 建模层次
+
+本阶段实现的是 **CSR 驱动、资源约束感知、数据 bit-exact、边界时序准确的逐拍
+高层模型**，不是 SystemVerilog 的逐模块或逐寄存器 C++ 翻译。
+
+必须与 RTL 等价的内容包括：
+
+- CSR 对控制路径和数据路径的实际语义；
+- memory request/response 的地址、payload、顺序、accepted/retry 和 outstanding；
+- input/output buffer 的有限容量、端口数、占用、RAW 和 backpressure；
+- transpose/reuse 资源的 bank ownership、吞吐、阻塞和有效数据顺序；
+- systolic array 的并行规模、接受速率、流水延迟、有效列和结果产生顺序；
+- 每个有架构影响的定点位宽边界、clear/retain 和 command 间状态；
+- writeback 可见性以及 command done 的资源完成条件。
+
+允许抽象的内容包括：
+
+- 不改变功能结果、资源冲突、吞吐、阻塞传播或可见周期的组合 wire；
+- 仅服务 RTL 时序收敛、但可以被等价总延迟表示的内部寄存器；
+- generate 层级、always block、门控时钟和无架构影响的临时信号；
+- 具体的 SystemVerilog 模块/对象数量。实现可用连续数组和统一逐拍更新表示
+  32×32 PE 资源，不要求创建 1024 个逐信号 RTL 对象。
+
+若合并某段 RTL 内部状态，必须证明合并后在相关资源边界上的 transaction 顺序、
+容量、吞吐、阻塞、payload 和可见周期不变。不得用直接 `C=A*B`、无限容量队列或
+预先写死的完成延迟代替资源模型。
+
+### 3.2 资源状态与逐拍推进
+
+“唯一权威状态”指同一个架构事实不能由两套独立进度重复决定，不要求每个 RTL
+寄存器都在 C++ 中有一一对应对象。资源职责划分如下：
+
+| 状态/行为 | 唯一权威资源 |
+| --- | --- |
+| command 阶段和完成判定 | command controller/scheduler |
+| read/write 地址循环 | address generator |
+| request 接受、retry、response 和 outstanding | memory port |
+| input 数据、valid label、容量和端口占用 | input buffer/register-file |
+| transpose/reuse 数据、bank 和可用性 | transpose/reuse resource |
+| operand token、流水占用、accumulator 和 result token | systolic-array resource |
+| output 数据、累加、容量和 unload | output datapath |
+| 外部数据的最终可见内容 | 当前运行所选的唯一 memory authority |
+
+控制器可以向资源发出 request/enable，但只有资源实际接受 transaction 时，相关
+地址、token 和计数才能共同推进。每拍统一遵守：
+
+```text
+读取当前状态
+  -> controller/address generator 提出候选 transaction
+  -> 各有限资源根据容量、端口、ready/retry 判断是否接受
+  -> accepted transaction 同时携带控制元数据和真实 payload
+  -> 计算各资源 next state
+  -> 在拍末统一 commit
+```
+
+`RtlCommandDriverSkeleton` 保留为现有 `01/01` 控制路径的回归 oracle，不与新模型
+并行维护另一套功能执行进度。bring-up 阶段用它逐拍检查关键资源边界事件；最终执行
+由上述资源模型负责。模型不要求内部状态与 skeleton 或 RTL 逐寄存器相同，只要求
+被选为 strict 边界的 transaction、资源占用、payload 和周期等价。
+
+### 3.3 正确性原则
 
 实现遵守以下原则：
 
 1. 地址和取数范围来自 CSR counter/step/burst/valid/last 逻辑，不从 M/K/N
    重新推导运行时行为。
-2. 每个数据 token 携带真实 payload；控制 valid/last 与 payload 使用同一个逐拍
-   状态推进，避免时序模型和功能模型各自维护一套进度。
-3. 固定位宽运算必须在每个 RTL 截断点执行 signed extension、wrap、cutbit 和
-   saturation；不能先用无限精度完成 GEMM 后统一量化。
-4. transpose、reuse、serializer 和 output accumulation 都保留独立状态存储，
-   其边界与 RTL 模块一致；不要求复制无架构影响的临时 wire 或门级网表。
+2. 每个 accepted 数据 token 同时携带控制元数据和真实 payload；同一资源只维护
+   一套 transaction 进度，避免控制模型和功能模型各自决定数据是否已经移动。
+3. 固定位宽运算必须在每个 RTL 截断点执行 signed extension、saturation、wrap
+   和 cutbit；不能先用无限精度完成 GEMM 后统一量化。当前 `SA_PE` 的 24-bit
+   accumulator 使用 `saturate_add_signed`，不是 wrap；`register_file_out`
+   的 16-bit lane 加法、随后 int8 saturation 必须作为另一个独立位宽边界实现。
+4. transpose、reuse、array pipeline、serializer 和 output accumulation 分别保留
+   会影响容量、竞争、吞吐、阻塞或结果的资源状态；允许合并对这些行为不可见的
+   RTL 临时状态。
 5. fixture/test ID、M/K/N 或 golden 值不得出现在功能分支中。
 
 ## 4. Workload JSON 合同
@@ -146,6 +282,15 @@ fixture 没用过就拒绝。`pe_work_mode` 必须是 MATMUL，`shift_flag` 必�
 ```json
 {
   "schema_version": 1,
+  "rtl_contract": {
+    "commit": "<git-sha>",
+    "row_num": 32,
+    "col_num": 32,
+    "output_dw": 24,
+    "sram_delay": 3,
+    "clock_period_ps": 1667
+  },
+  "manifest": "manifest.json",
   "csr_source": {
     "type": "writes_csv",
     "path": "csr_writes.csv"
@@ -165,20 +310,74 @@ fixture 没用过就拒绝。`pe_work_mode` 必须是 MATMUL，`shift_flag` 必�
 }
 ```
 
+等价的 inline raw-write 形式复用同一记录字段：
+
+```json
+{
+  "csr_source": {
+    "type": "raw_writes",
+    "writes": [
+      {
+        "cycle": 0,
+        "csr_addr": "0x...",
+        "csr_operation": "0x...",
+        "csr_wdata": "0x...",
+        "accepted": true
+      }
+    ]
+  }
+}
+```
+
 要求：
 
 - 相对路径相对于 workload JSON 所在目录解析。
+- `rtl_contract` 必须绑定生成 golden 的 RTL commit 和所有影响功能/周期的
+  elaboration 参数，至少包含 `ROW_NUM/COL_NUM/OUTPUTDW/SRAM_DELAY` 与 clock
+  period；若后续路径表发现其他有影响参数，也必须纳入。
+- `manifest` 必须明确指向对应 RTL golden package 的 `manifest.json`，相对路径按
+  workload JSON 所在目录解析。
+- 仿真开始前必须将 `rtl_contract` 与 gem5 resource config、golden manifest
+  逐项校验；缺失或不一致立即报错，不能进入 command。
 - JSON 由 `configs/example/sau_timing.py` 使用 Python 标准库解析并完成 schema
   校验；C++ SimObject 只接收规范化后的 CSR source、memory image、dump/compare
   路径和范围，不引入新的 JSON 依赖。
-- `csr_source.type` 首先支持 `writes_csv`；可选支持已有
-  `csr_snapshot.json`，但 snapshot 仍必须转换成 `SauCsrConfig` 状态再启动。
+- `csr_source.type` 支持 `writes_csv` 和可选的 `raw_writes`。`raw_writes` 直接
+  包含与 CSV 相同的 `cycle/csr_addr/csr_operation/csr_wdata/accepted` 记录；
+  Python 必须把两种形式规范化为完全相同的 `SauCsrWrite` 序列，C++ 只保留一条
+  replay/decode/start 路径。
+- `csr_snapshot.json` 是非执行性 artifact，只用于检查 raw replay 后的
+  `SauCsrConfig`；不得绕过 CSR 位域、write order 或 accepted-start 语义直接构造
+  command。
 - memory loader 必须明确 byte order、每行宽度、地址单位和空洞填充值，并用现有
   RTL `memory.hex`/`memory_mod_*.hex` 做交叉测试。
+- `size_bytes` 表示可访问地址范围，不表示必须等量分配 backing store。strict
+  `FunctionalMemory` 使用稀疏 page/range 存储，不在启动时分配、清零或最终扫描
+  完整 1 GiB；未加载空洞按合同填充值，dump/compare 只访问显式 range。
 - JSON 可包含比较范围，但不能包含直接作为运行输入的期望矩阵结果。
 - 配置不完整、地址越界、重叠格式冲突或不支持的 CSR mode 在仿真开始前报错。
 - 旧 `--rtl-profile` timing-only 入口继续可用；功能 workload 是新增入口，不能
   破坏现有 23 个 quick suite。
+
+功能数据只能有一个权威存储，不能让本地 backing store 与 `SimpleMemory` 在同一
+运行中分别演化：
+
+- **strict fixed-SRAM 运行：** `FunctionalMemory` 是唯一数据真源。固定延迟响应
+  从其中取 256-bit payload，strict write 在 RTL 可见的本地提交边沿更新它。
+- **timing-memory 运行：** 下游 gem5 memory 是唯一数据真源。仿真开始命令前，
+  使用同一 request port 的 functional packet 将 memory image 装入下游 memory；
+  运行时 read payload 只取 timing response packet，write payload 只通过真实
+  timing write packet 提交。
+- timing-memory 的下一 command 和最终 compare 必须等待全部 write response，
+  或证明目标 memory 在 request accepted 时已经具有同等可见性；不能在未定义的
+  accepted 时刻额外更新一份镜像。
+- timing-memory 最终结果使用 functional read packet 从下游 memory 读回；
+  strict 结果直接从 `FunctionalMemory` dump。两条路径使用同一个 range comparator
+  和 byte-order 合同。
+
+`csr_snapshot.json` 只能复用现有 snapshot schema，并且必须能按 command id/order
+与 raw replay 结果对应。snapshot 不表达的 raw CSR operation、write order 和
+accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三套启动规则。
 
 预计修改：
 
@@ -189,174 +388,306 @@ fixture 没用过就拒绝。`pe_work_mode` 必须是 MATMUL，`shift_flag` 必�
 
 ## 5. 实施步骤
 
-### Step 1：建立功能 memory 与 payload 合同
+### Step 0：冻结当前 RTL、CSR 支持域和功能 golden
 
-- [ ] 定义固定 32-byte beat payload 类型，规定地址与 lane 的小端映射。
-- [ ] loader 读取 RTL memory image，建立可检查边界的持久 byte-addressable backing
-  store。
-- [ ] strict fixed-SRAM 路径的读响应返回真实 256-bit payload，写请求携带真实
-  256-bit payload 并更新 backing store。
-- [ ] timing-memory 路径扩展 `SauMemoryPort`：保存读响应 data，写 packet 不再
-  `memset(0)`；payload 与原 `Beat` 元数据一同返回。
-- [ ] 提供仿真结束后的 memory range dump/compare，错误报告首个不同地址、
-  expected byte 和 actual byte。
+这是实现前置条件，不允许边写模型边猜测。
+
+- [x] 从当前 elaboration/仿真日志确认实际 hierarchy 和参数：
+  `SA_CORE -> sa_element/feeder + register_file_in ->
+  sa_execute/sa_feeder -> transposer_tiny -> SA_ENGINE -> SA_ROW ->
+  SA_PE_array -> SA_PE -> register_file_out`。
+- [x] 冻结资源抽象合同：为 controller、address generator、memory port、
+  input buffer、transpose/reuse、systolic array、output datapath 分别记录容量、
+  端口、吞吐、延迟、accepted 条件、backpressure 路径、stall 原因/归因优先级和
+  strict comparison 边界。
+- [x] 建立状态生命周期表，明确 input buffer、transposer bank、array pipeline/
+  accumulator、output SRAM、地址计数和 valid/last 在 reset、accepted start、
+  command done 及四种 `sa_flow_mode` 下的清理或保留条件。
+- [x] 从当前 RTL 条件分支建立 mode/资源行为等价类表，覆盖
+  `trans_mode × reuse_mode × sa_flow_mode` 对 input-switch、bank ownership、
+  result transpose、retain/clear、serializer 和 completion guard 的交互；测试
+  可以按等价类收敛，不要求无依据地机械穷举所有笛卡尔积。
+- [x] 等价类必须从当前 elaborated RTL 的 mux/select、case、counter guard、
+  enable/ready、clear/retain 和 completion 条件静态推导，形成路径表：
+
+  ```text
+  path_id,rtl_guard,csr_fields,selected_resources,
+  capacity_or_port_effect,boundary_events,representative_fixture
+  ```
+
+  每个合法 CSR 组合都必须能映射到某个已知 RTL 路径；测试负责验证每条结构路径、
+  每个字段边界和关键交互，不枚举数值不同但走向相同的组合。
+- [x] 路径表记录 boundary golden 的来源和 readiness。实现某条路径前，该路径所需
+  的 read/input/resource/output 边界 golden 必须已取得并绑定 RTL contract；
+  不要求等待尚未进入实现的其他路径全部采集完成。
+- [x] 建立逐字段 CSR 支持域表：
+
+  ```text
+  field,raw_width,rtl_consumers,int8_gemm_legal_values,
+  reserved_or_operator_switch,validation_fixture
+  ```
+
+  至少覆盖 `trans_mode`、`reuse_mode`、`sa_flow_mode`、`register_mode`、
+  `conv_kernal`、`stride_flag`、`cutbit`、flow/loop、padding/valid window 和
+  全部 step/burst/cycle。
+- [x] 对 `reuse_mode=11` 做真实 RTL/软件契约判定；没有证据前不归类。
+- [x] 为当前 `32x32x32, trans=01, reuse=01, cutbit=8` 采集：
+  initial memory、CSR、完整 256-bit read/write address+payload+valid+last、
+  output address range 和最终 output memory dump。
+- [x] 为小规模 `trans_mode=2 (ABTD)` testcase 采集 B memory read payload、
+  transposer input/output payload、bank/ready/valid/last 边界和对应周期，作为
+  Step 3 的第一个非默认模块级 golden。
+- [x] 额外采集同一路径 `cutbit=1` 的最终 output/write payload，证明 cutbit
+  不是 fixture 常量。
+- [x] 确认现有 `memory.hex` 是初始 image，而不是仿真结束后的 memory；所有文件
+  记录 RTL commit、仿真命令和 SHA-256。
+
+若需要读取 FSDB，必须按 `/home/xch/work/npi_fsdb_probe/README.md` 使用工具。
+
+验收：
+
+- 当前实例化层级、资源抽象合同、状态生命周期、RTL 路径/等价类表、CSR 支持域表、
+  ABTD transposer golden 和两组 cutbit golden 均已落盘；
+- 当前准备实现的每条路径均已有可复现 boundary golden 和匹配的 RTL contract；
+- golden 能独立确定 byte order、输出范围及每个 write beat 的 256-bit 数据；
+- 不再依赖不存在的 `memory_expected.hex` 或仅凭 `matmul_compare.csv` 猜测 packing。
+
+### Step 1：建立唯一的功能 memory 与 payload 合同
+
+- [ ] 定义明确的定点数据类型/视图和转换边界：
+
+  ```text
+  MemoryBeat256          外部 32-byte read payload
+  OperandVector32x8      32-lane signed-int8 operand
+  AccumulatorVector32x24 32-lane signed 24-bit PE/snapshot state
+  OutputVector32x16      32-lane signed 16-bit output-RF state
+  WriteBeat256           int8 saturation 后的外部 32-byte write payload
+  ```
+
+  类型可以共享底层连续存储，但不得省略位宽、signed 语义、小端 lane 映射及发生
+  sign-extension、wrap、saturation 的转换位置。
+- [ ] loader 读取 RTL memory image，建立有边界检查、稀疏 page/range backing 的
+  byte-addressable `FunctionalMemory`；地址范围可以是 1 GiB，但物理分配只覆盖
+  已加载或已写入的页。
+- [ ] strict fixed-SRAM 只从 `FunctionalMemory` 取 read payload，并在 RTL
+  对应提交边沿写入；固定 read-visible 周期保持不变。
+- [ ] timing-memory 初始化时用 functional packet 把同一 image 写入下游 memory；
+  扩展 `SauMemoryPort` 保存 read response data，write packet 不再填零。
+- [ ] timing request 被拒绝后，blocked packet 的 address/payload/last/command
+  metadata 保持不变，address generator 只有在 request accepted 时推进。
+- [ ] response 延迟或 outstanding 满不能无条件冻结整个 SAU：已有 buffered token
+  且不依赖该 response 的资源继续推进；只有缺少输入、端口被占用或下游满的相关
+  资源停止，并通过真实 ready/backpressure 链传播。
+- [ ] 每拍可保留多个原始 stall 原因用于诊断，但总 stall cycle 按 Step 0 冻结的
+  primary-cause 优先级只归因一次；至少区分 memory retry、response latency/
+  starvation、outstanding limit、input/transposer/array/output backpressure。
+- [ ] timing-memory 的 read/write/final compare 只访问下游 memory，不维护第二份
+  运行时镜像；下一 command 前处理 write 可见性屏障。
+- [ ] 提供统一的 range dump/compare，报告首个不同地址、expected/actual byte
+  以及所属 256-bit beat/lane。
 
 验收：
 
 - memory image round-trip 与 RTL byte order 单测；
-- fixed-memory 和 timing-memory 的读写 payload 单测；
-- 同地址 RAW、跨 beat 边界、多个 command 共享写回结果单测；
+- 稀疏 memory 的空洞填充值、跨 page 访问、边界错误及 range-only dump/compare
+  单测；不得因 1 GiB 地址范围产生 1 GiB eager allocation；
+- strict 和 timing-memory 各自的真实 payload 读写单测；
+- blocked/retry packet 保持 payload 不变；
+- retry、延迟 response 和 outstanding-limit 测试证明独立资源可继续推进、相关资源
+  正确冻结，且 stall 主因不重复计数；
+- 同地址 RAW、跨 beat 边界和 write visibility barrier 单测；
 - 原 timing-only 测试的地址、事件和统计不变。
 
-### Step 2：将 CSR 解码从“固定路径”扩展为 Int8 GEMM mode dispatch
+### Step 2：建立全合法 Int8 GEMM CSR 驱动与资源分发框架
 
-- [ ] `SauCommand` 保存原始且类型化的 `trans_mode`、`reuse_mode`、
-  `sa_flow_mode`、`register_mode`、cutbit、padding、valid window 及所有地址循环
-  配置；不得只保存压扁后的 beat 数。
-- [ ] `SauCsrConfig::decode()` 仅接受 MATMUL + int8，支持四种
-  `trans_mode`、三种 `reuse_mode` 和 RTL 定义的四种 output flow mode。
-- [ ] 建立 mode dispatch/table，使 scheduler、feeder、transposer、array 和
-  output path 都读取相同的 decoded control。
-- [ ] 对 `reuse_mode=11`、非 MATMUL、int16 和字段组合不变量提供包含 raw CSR
-  值的明确错误。
-- [ ] 不使用“与当前 fixture 默认值相同”作为合法性条件；为 cutbit、
-  flow/loop、padding/valid window 和各级 step/burst/cycle 建立源自 RTL 位宽及
-  counter guard 的合法域。
-- [ ] 地址 generator 从 CSR 的 x/y/flow/instruction counter、step、burst 和
-  padding/valid window 推进，不依赖 M/K/N。
+代码结构从本步骤起不得以 `01/01` 作为实现限制；`01/01` 仅是已有 regression。
 
-验收：
-
-- 四种 transpose × 三种 reuse 的 decode/dispatch 单测；
-- `cutbit=0/1/8/15/23/31` 均能通过 decode 并保持 raw 值；
-- 合法的非默认 flow/loop、padding、valid window 和 step/burst/cycle 配置不会
-  因不等于现有 fixture 而被拒绝；
-- 每种地址循环在边界、last、padding 和回绕处与 RTL 小规模序列一致；
-- 不支持配置必须失败，不能回退到 `01/01`。
-
-### Step 3：实现带数据的输入前端
-
-- [ ] `register_file_in` 建立与 RTL 深度、地址和有效位一致的真实 payload 存储。
-- [ ] 实现 padding shifter、valid window、读写 pointer、flow/instruction 地址
-  更新以及 RTL 对应的 pipeline register。
-- [ ] feeder 按 scheduler 的 `input_switch` 和 reuse mode 选择 resident/stream
-  operand；每个 A/B valid token 同时携带 32 个 signed int8 lane。
-- [ ] transposer 建立 RTL 相同的行存储、ready/valid/last 和四种
-  `trans_mode` 数据排列。
-- [ ] 将现有 `RtlCommandDriverSkeleton` 的控制脉冲与新的 payload datapath
-  连接，删除只按 index 生成虚拟 A/B token 的 strict 功能路径。
+- [ ] `SauCsrConfig::decode()` 按 Step 0 支持域表解码所有 RTL 合法的 int8 GEMM
+  配置，不使用“等于当前 fixture 默认值”作为合法性条件。
+- [ ] `SauCommand` 保存 raw/type-safe 的 `trans_mode`、`reuse_mode`、
+  `sa_flow_mode`、`register_mode`、`cutbit`、flow/loop、padding/valid window
+  和全部 step/burst/cycle，不再只保存压扁后的 beat 数。
+- [ ] 为 controller、address generator、input、transpose/reuse、array、output
+  和 writeback 定义共享的 typed resource config；每个资源只消费 RTL 中实际连接
+  到它的字段，禁止在模块内部重新解释 raw CSR。
+- [ ] 地址 generator 从 raw x/y/flow/instruction counter、step、burst、
+  padding/valid window 推进，不使用 M/K/N 或 fixture 分支。
+- [ ] 建立验证成熟度记录，区分 decoded/resource-timed/data-functional/
+  end-to-end；合法配置不能因为尚未达到 end-to-end 就伪装成 RTL illegal。
+- [ ] 保留现有 `RtlSchedulerSkeleton/RtlCommandDriverSkeleton` 的 `01/01`
+  regression；新 mode 不在 skeleton 中复制控制状态机，而是通过通用
+  boundary-trace comparator 与 RTL golden 对比。
+- [ ] `reuse=11`、`register_mode`、`conv_kernal`、`stride_flag` 按 Step 0 分类；
+  只有权威接口判定非法或切换到阶段外算子的组合才在 decode 阶段拒绝。
 
 验收：
 
-- 用小型确定数据分别验证 `ABD/ATBD/ABTD/ABDT` 的 lane 顺序；
-- 验证不复用、复用 A、复用 B 时外部读取次数、内部重放内容和 valid/last；
-- 输入前端加入 payload 后，现有 strict architecture/state trace 仍逐拍通过。
+- 四种 `trans_mode`、三种明确 `reuse_mode`、四种 `sa_flow_mode` 以及
+  `cutbit=0..31` 均能无损通过 raw CSR -> config -> command -> resource config；
+- 改变任一合法字段时，对应 resource config 必须改变，不能回退到 `01/01`；
+- 每个合法配置都能依据 CSR 字段和 RTL guard 映射到 Step 0 路径表中的确定资源
+  走向；相同路径的数值组合共享实现，不按 fixture 或具体 raw 数值分支；
+- 地址循环在边界、last、padding 和回绕处与 RTL focused sequence 一致；
+- 非法配置打印完整 raw CSR 和权威拒绝原因；
+- 原 `01/01` skeleton 与 timing regression 不退化。
 
-### Step 4：实现 32×32 systolic array 的逐拍定点数据通路
+### Step 3：实现配置驱动的 input、transpose 与 reuse 资源
 
-- [ ] 按 RTL PE 行列连接建立 32×32 PE state，不调用矩阵乘法库。
-- [ ] 每个 PE 实现 signed int8 乘法、RTL accumulator 位宽、寄存器更新顺序、
-  clear/retain 条件和溢出 wrap。
-- [ ] 按 `SA_ENGINE/SA_TOP/SA_row_unit/SA_pe` 的 enable、Flag、row/column
-  sequence 和 pipeline latency 推进数据。
-- [ ] 对 24-bit signed MAC 结果逐 lane 执行
-  `SA_pkg::sat_truncate_func`：算术右移动态 `cutbit`，检查移位后的高位是否为
-  正确符号扩展，并按 int8 边界饱和；cutbit 在 RTL 对应层级和周期生效。
-- [ ] result token 同时携带 RTL 输出 payload、row sequence、valid 和 last。
+- [ ] `register_file_in` 建立与 RTL 容量、端口、地址、valid label 一致的真实
+  payload 存储。
+- [ ] 实现 padding/valid window、读写 pointer、flow/instruction 地址更新及会影响
+  accepted、backpressure 或边界周期的 pipeline 行为。
+- [ ] controller 和 feeder 通过 accepted transaction 推进 A/B token；每个 token
+  携带真实 32-lane signed-int8 payload。
+- [ ] 实现 `ABD/ATBD/ABTD/ABDT` 对应的 input-switch、`transposer_tiny` 有限
+  bank、ownership、ready/rden/valid/last、flush/preflush 和 lane 顺序。
+- [ ] 实现不复用、复用 A、复用 B 的外部读取、内部存储/重放和 valid/last；
+  `reuse=11` 按 Step 0 的权威结论实现或拒绝。
+- [ ] 为 transposer/reuse 增加 input/output token、busy cycle、bank occupancy、
+  input/output stall 和首入到首出的 latency stats。
 
-验收：
-
-- 单 PE 的正负数、最大/最小值、乘积溢出、累加溢出和 cutbit 边界测试；
-- 对同一组非零 MAC 数据分别运行 `cutbit=0/1/8/15/23/31`，逐位对比 RTL
-  `sat_truncate_func`；至少包含右移后正常值、正饱和、负饱和和负数算术右移；
-- 2～3 个可手算的小 tile 验证 wavefront、skew、clear 和 retain；
-- 32×32×32 fixture 的 array 输出 token 数、周期及 payload 与 RTL 中间/最终
-  golden 一致。
-
-### Step 5：实现结果序列化、output SRAM 累加与真实写回
-
-- [ ] 按 `trans2sa_top` 的 result transpose/serializer 顺序生成输出。
-- [ ] 实现 `register_file_out` 的 local write pointer 及
-  x/y/flow/instruction 地址循环。
-- [ ] 精确实现 output SRAM 的读后写、相邻周期 RAW forwarding 和两个 SRAM
-  half 的路由。
-- [ ] `CNORMAL/CTRANS` 不读取旧结果做累加；
-  `RETAIN/TRETAIN` 按 `sa_flow_mode[1]` 与旧 output SRAM 值做 16-bit lane
-  累加。
-- [ ] int8 写回按 RTL `sat_signed8` 对每个 signed 16-bit lane 饱和，再按 RTL
-  unload 顺序组装真实 256-bit write payload。
-- [ ] write accepted 后更新共享 backing memory；command complete 仍等待 RTL
-  write-finished 链和 token/payload conservation。
-
-验收：
-
-- `-129/-128/127/128` 饱和边界；
-- output SRAM 同址连续写的 RAW forwarding；
-- 四种 `sa_flow_mode` 的顺序/累加差异；
-- 每个写地址、256-bit write data、last 和最终 memory bytes 与 RTL 一致。
-
-### Step 6：多 command 顺序执行与持久状态
-
-- [ ] workload 中多个 accepted start 按 CSR cycle/order 排队。
-- [ ] 活跃 command 未完成时不得启动下一 command；fixture 若重叠 start，给出
-  明确错误。
-- [ ] 外部 memory 在 command 间持久；内部 register/output SRAM 的保留或清除
-  严格跟随 RTL reset、start、flow mode 和 clear 信号。
-- [ ] 验证 command 2 可以读取 command 1 的写回，同时不存在 command 间残留
-  token、valid 或错误 accumulator 污染。
-
-验收：
-
-- 两 command 独立地址测试；
-- command 2 消费 command 1 输出的链式测试；
-- retain 与 non-retain 跨 command 边界测试；
-- 每个 command 的 timing、payload 和完成顺序分别守恒。
-
-### Step 7：RTL golden 分级收敛
-
-功能正确性分三层验收，不能只比较软件 GEMM：
-
-1. **Bring-up**：`32×32×32`、`trans_mode=01`、`reuse_mode=01`，使用现有
-   `memory.hex` 和 `matmul_compare.csv`，先闭合完整读算写。
-2. **现有形状回归**：`64×256×256` baseline，验证多 command/multi-flow；
-   `64×128×256` 验证不同 K 累加深度。
-3. **mode coverage**：为四种 transpose 和三种 reuse 至少各准备一个真实 RTL
-   golden；组合测试集必须覆盖 scheduler 注释中的不同 input-switch 序列。
-   `CNORMAL/CTRANS/RETAIN/TRETAIN` 各至少一个真实 golden。
-
-每个功能 fixture 至少保存或引用：
-
-- 原始 CSR writes/snapshot；
-- 初始 memory image；
-- RTL commit、仿真命令和 checksum；
-- 最终 output memory range 或完整 expected memory image；
-- 可选的 read/write payload trace，用于定位首个分歧。
-
-golden 收敛顺序：
+第一个非默认里程碑固定为 `trans_mode=2 (ABTD)`：
 
 ```text
-CSR snapshot
+真实 B memory payload
+  -> input/register resource
+  -> transposer bank
+  -> 按 RTL 顺序输出 B^T token
+```
+
+即使 array/output 尚未达到 end-to-end，mode 2 也必须能独立达到
+`data_functional`：B 输入/输出 payload 与 RTL 一致，转置资源消耗的周期、占用和
+backpressure 被计入仿真。
+
+验收：
+
+- 每个外部 read address 对应的 256-bit payload 与 RTL 一致；
+- `trans_mode=2` 的 B/B^T lane、token、valid/last、bank 占用和周期逐边界匹配 RTL；
+- 四种 transpose 与三种明确 reuse 均有 focused payload/resource test；
+- Step 0 input/transpose/reuse 等价类中的每个结构分支都有 RTL boundary golden；
+- fixture ID、矩阵尺寸或 golden 值不进入资源实现分支。
+
+### Step 4：实现配置驱动的 systolic-array 与定点计算资源
+
+- [ ] 建立等价于当前
+  `SA_ENGINE -> SA_ROW -> SA_PE_array -> SA_PE` 的 32×32 有限计算资源；使用固定
+  大小连续状态和统一逐拍更新，不要求创建逐 RTL 实例对象，也不调用矩阵乘法库。
+- [ ] 每个 PE 实现 signed int8 乘法、乘法流水、wstrb/enable、clear 条件以及
+  当前 RTL 的 24-bit `saturate_add_signed` accumulator。
+- [ ] 保留影响接受速率、wavefront、有效列、结果顺序和周期的 macro-row/column
+  staircase、snapshot 与 row streaming；不可见寄存器可用等价流水延迟表示。
+- [ ] `cutbit=0..31` 全范围直接来自 CSR；对 24-bit signed MAC 逐 lane 执行
+  `SA_pkg::sat_truncate_func` 的算术右移、符号扩展检查和 int8 饱和。
+- [ ] `register_mode`、`conv_kernal`、`stride_flag` 只实现 Step 0 证明仍属于
+  int8 GEMM 的控制效果；切换到阶段外算子的组合明确拒绝。
+
+验收：
+
+- 单 PE 覆盖正负乘积、24-bit 正/负饱和、clear 和连续累加；
+- `cutbit=0/1/8/15/23/31` 覆盖正常右移、负数算术右移及正/负饱和；
+- 不同 transpose/reuse token 顺序进入 array 后，admission、wavefront、result
+  token 和周期与对应 RTL boundary golden 一致；
+- 所有 Step 0 判定为 GEMM 内合法的 array 控制分支都有 focused test。
+
+### Step 5：实现配置驱动的 serializer、output RF 与真实写回
+
+- [ ] 按 `trans_mode` 和 `sa_flow_mode` 实现结果 serializer/transpose 顺序。
+- [ ] 实现 `register_file_out` 的 x/y/flow/instruction pointer、两个 SRAM half、
+  read-after-write forwarding 和有限端口行为。
+- [ ] 实现 `CNORMAL/CTRANS/RETAIN/TRETAIN` 的 output SRAM 清理/保留、16-bit
+  two's-complement lane wrap accumulation 及 unload/completion guard。
+- [ ] 按 RTL `sat_signed8` 对每个 16-bit lane 饱和，组装真实 256-bit write
+  payload；strict/timing-memory 分别按 Step 1 的唯一数据真源提交。
+- [ ] command complete 必须等待相应 result、output、writeback 和 memory
+  visibility 条件，不使用预设完成周期。
+
+验收：
+
+- output SRAM 覆盖 16-bit lane 溢出、同址 RAW forwarding 和
+  `-129/-128/127/128` int8 饱和边界；
+- `CNORMAL/CTRANS/RETAIN/TRETAIN` 各有真实 golden，并覆盖它们与 transpose/
+  reuse 的结构交互；
+- `32x32x32, trans=01, reuse=01, cutbit=8` 与 `cutbit=1` 作为首个完整
+  end-to-end checkpoint，write payload 和最终 memory 逐字节匹配 RTL；
+- 随后每个 Step 0 mode 结构等价类至少有一个真实 RTL end-to-end golden。
+
+### Step 6：合法配置集成覆盖、多 command 与持久状态
+
+- [ ] 默认 sequential workload 必须保证下一 start 在前一 command 完成且写回可见
+  后出现；静态可判定时在仿真开始前拒绝，受 timing-memory 动态 stall 影响而无法
+  预判时，在冲突 start 到达的当拍报错并停止，不能缓存该 start。
+- [ ] 专门验证 busy/start RTL 行为的 workload 可保留重叠 raw write，但必须逐拍
+  复现 RTL 的 ready/accepted/ignored 结果；未 accepted 的 start 不进入 host queue，
+  不得在当前 command 完成后补执行。
+- [ ] strict functional memory 在 command 间持久；timing-memory 在 write
+  visibility barrier 后再启动下一 command。
+- [ ] 内部 input/transposer/array/output 状态严格跟随 RTL reset、start、
+  `sa_flow_mode` 和 clear/retain 条件。
+- [ ] 验证 command 2 可以读取 command 1 写回，且没有残留 token/valid 或错误
+  accumulator 污染。
+- [ ] 四种 transpose × 三种明确 reuse 都有 focused test；端到端测试按 Step 0
+  的 `trans/reuse/flow` 结构等价类覆盖，不以当前 fixture 组合替代合法域。
+- [ ] 增加“合法但不符合用户意图”的成对测试：保持 memory 和其他 CSR 相同，仅将
+  `trans_mode=1` 改为 `trans_mode=2`。gem5 不修正输入布局或回退 mode；两个 case
+  的 result、write payload、资源边界周期和 command-done 分别匹配同配置 RTL，
+  但不要求两个 case 彼此相同。
+
+验收：
+
+- 两 command 独立地址、链式依赖、retain 与 non-retain 测试通过；
+- sequential workload 的重叠 start rejection，以及专用 busy/start testcase 的
+  accepted/ignored command 数和周期与 RTL 一致；
+- 每个 command 的 timing、payload、memory visibility 和完成顺序分别守恒；
+- 实现支持全部合法 CSR 到 RTL 路径表的映射；验证覆盖每条结构路径、每个字段的
+  最小/最大/回绕等边界、关键 guard 交互和未参与开发的合法 hold-out，不要求枚举
+  所有 raw CSR 笛卡尔积；
+- 所有 Step 0 结构路径达到 end-to-end validated，成对错误配置测试分别与 RTL
+  的结果和拍数一致；
+- 新 mode 直接使用通用 comparator 对比 RTL boundary golden，不依赖第二套
+  command-driver 状态机。
+
+### Step 7：规模回归、性能与文档
+
+功能正确性按以下顺序收敛：
+
+1. 小规模 `trans_mode=2`：B -> B^T transposer 模块 payload/资源时序闭环；
+2. `32x32x32, trans=01, reuse=01`：首个完整读算写闭环；
+3. 同路径 `cutbit=1`：动态量化验证；
+4. 其余合法 transpose/reuse/flow 的 focused 和结构等价类覆盖；
+5. `64x256x256` baseline：多 command/multi-flow；
+6. `64x128x256`：不同 K 累加深度。
+
+每个功能 fixture 必须保存或引用：
+
+- 原始 CSR writes，以及 raw replay 后的 snapshot 交叉检查；
+- 初始 memory image；
+- RTL commit、仿真命令和 checksum；
+- 完整 output memory range；
+- 256-bit write address/payload/valid/last；
+- mode bring-up 所需的最小中间边界 payload。
+
+golden 调试顺序固定为：
+
+```text
+raw CSR writes
+ -> replay/decode + snapshot cross-check
  -> read address + read payload
- -> A/B token payload
- -> array result payload
+ -> register/transposer A/B payload
+ -> PE/macro result payload
  -> output SRAM/unload payload
  -> write address + write payload
  -> final memory bytes
 ```
 
-若最终值不同，必须定位第一个不同的模块边界/周期；不得修改 expected 结果或绕过
-中间数据通路。
-
-### Step 8：回归、性能与文档
-
 - [ ] 原 23 个 timing quick suite、63 个检查全部继续通过。
 - [ ] 新增 focused functional tests 和 workload end-to-end tests。
-- [ ] 默认不输出逐拍数据 trace；只保留按 command/地址范围过滤的可选 debug
-  开关作为后续诊断接口。
-- [ ] 统计增加实际读/写 payload beat 数和功能比较结果，但不改变已有 stats 名称
-  语义。
-- [ ] 更新 `README.md` 和 `STATUS.md`：说明 workload 格式、支持 mode、运行命令、
-  验证结果和未支持配置。
+- [ ] 默认不输出逐拍数据 trace；debug trace 必须按 command、周期范围和模块过滤。
+- [ ] 在 trace 关闭时按固定命令记录 `32x32x32` 和 `64x256x256` 的 wall-clock、
+  peak RSS、simulated cycles 和 host memory allocation 热点，形成可重复性能基线；
+  后续若出现明显退化必须定位原因。
+- [ ] 统计增加 payload beat 和功能 compare 结果，但不改变已有 stats 名称语义。
+- [ ] 更新 `README.md` 和 `STATUS.md`：说明 workload、支持域、运行命令、
+  验证结果和明确未支持配置。
 
 ## 6. 预计修改文件
 
@@ -380,7 +711,8 @@ CSR snapshot
 
 - `functional_memory.{hh,cc}`：RTL memory image、持久 backing store 与
   dump/compare；
-- `data_beat.hh`：固定宽度 payload 与 lane 操作；
+- `data_beat.hh`：外部 beat、operand、24-bit accumulator、16-bit output 和 lane
+  转换边界；
 - `input_datapath.{hh,cc}`：input RF、padding、feeder 数据状态；
 - `transposer.{hh,cc}`：RTL 转置存储与输出；
 - `systolic_array.{hh,cc}`：PE array 固定位宽逐拍状态；
@@ -406,31 +738,78 @@ scons build/RISCV/gem5.opt \
 
 本阶段只有同时满足以下条件才算完成：
 
-1. JSON + CSR 可以启动一个或多个顺序 int8 GEMM command，无需 CPU。
-2. 支持四种 RTL `trans_mode`、三种已定义 `reuse_mode`，且 CSR 改变会真实改变
-   取数、transpose/reuse 数据路径和结果。
-3. `cutbit=0..31` 由 CSR 动态驱动 RTL 等价的 signed arithmetic shift 和 int8
-   saturation；其他合法 GEMM CSR 参数也不能被固定成现有 fixture 数值。
-4. 地址、valid/last、状态和周期来自 RTL 结构；现有 strict timing 回归不退化。
-5. 每次 memory read 返回真实 payload，每次 write 携带真实 payload；写回不再为零。
-6. PE、accumulator、cutbit、output accumulate、RAW forwarding、signed saturation
-   和 byte layout 与 RTL 一致。
-7. `32×32×32` bring-up、`64×256×256` baseline、`64×128×256` K hold-out 的最终
-   memory 指定范围逐字节匹配 RTL。
-8. 新增的 transpose/reuse/flow/cutbit mode golden 覆盖通过；未支持配置明确拒绝。
-9. 多 command 顺序、共享 memory 可见性和内部状态边界通过测试。
-10. 原 timing quick suite 与新增 functional suite 全部通过，且无 fixture、
-   尺寸或 golden 值硬编码。
+1. JSON 中引用或包含的 raw CSR writes 统一经过
+   `SauCsrWrite` -> `SauCsrConfig` replay/decode，可以启动一个或多个顺序 int8
+   GEMM command，无需 CPU；snapshot 不构成第二条执行路径。
+2. workload/golden 绑定并校验 RTL commit、`ROW_NUM/COL_NUM/OUTPUTDW/SRAM_DELAY`、
+   clock 和其他有影响 elaboration 参数；当前实际 RTL hierarchy、逐字段 CSR
+   支持域和功能 golden 均有可复现证据，旧/未实例化 datapath 不作为实现来源。
+3. 资源抽象合同、状态生命周期和 mode 等价类已冻结；模型反映有限容量、端口竞争、
+   吞吐、延迟、backpressure、retry、outstanding 和 command 间依赖，但不要求
+   逐寄存器翻译 RTL。
+4. 所有权威接口判定为合法的 int8 GEMM 配置均可进入同一配置驱动资源框架；
+   合法性与 decoded/resource-timed/data-functional/end-to-end 验证成熟度分离，
+   不因当前 golden 未闭合而伪报 RTL illegal；完整 workload 命中
+   `rtl_legal_unimplemented` 时 fail-fast，不输出错误 final memory 或可信性能。
+5. 支持四种 RTL `trans_mode`、三种明确定义的 `reuse_mode`，且 CSR 改变会真实
+   改变逐拍控制、取数、transpose/reuse 数据路径和结果；`trans_mode=2` 的真实
+   B -> B^T payload 与资源周期通过独立边界验收，`reuse=11` 已按权威契约处理。
+6. `cutbit=0..31` 由 CSR 动态驱动 RTL 等价的 signed arithmetic shift 和 int8
+   saturation；其他合法 GEMM CSR 参数也不能固定成现有 fixture 数值。
+7. 地址、valid/last、input-switch 和完成条件由资源状态与 accepted transaction
+   决定；每个资源/mode 都通过通用 comparator 与对应 RTL boundary golden
+   比较，不依赖第二套 command-driver 状态机。
+8. 对相同 raw CSR、memory 和 memory request-accept/response schedule，strict
+   边界事件、command-done 总拍数、write payload 和最终 memory 与 RTL 一致；
+   合法但不符合用户意图的配置不被修正，并分别匹配相同错误配置的 RTL。
+9. timing-memory 相对 fixed-SRAM RTL 的额外周期均可由 memory latency、retry、
+   queue/outstanding stall 和 backpressure 解释；给定相同
+   request-accept/response schedule 时恢复 strict 拍数。blocked packet 保持不变，
+   独立资源继续推进，相关资源按真实依赖冻结，stall 主因不重复计数。
+10. strict 与 timing-memory 每次运行都只有一个数据真源；每次 read 返回真实
+   payload，每次 write 携带真实 payload，写回不再为零。
+11. 当前 `SA_PE` 的 24-bit saturating accumulator、cutbit、
+   `register_file_out` 16-bit lane 运算、RAW forwarding、int8 saturation 和
+   byte layout 与 RTL 一致。
+12. `32x32x32` 的 `cutbit=8` 与 `cutbit=1`、`64x256x256` baseline、
+   `64x128x256` K hold-out 的最终 memory 指定范围逐字节匹配 RTL。
+13. 全部合法 CSR 可映射到由 RTL guard 静态推导的已知资源路径；测试覆盖每条结构
+    路径、字段边界、关键交互和合法 hold-out，不要求穷举相同路径的数值组合；
+    每条路径在实现前已有绑定 RTL contract 的对应 boundary golden。
+14. transpose/reuse/flow 的 focused test 和结构交互等价类 golden 覆盖通过；
+    非法或 reserved 配置依据支持域表明确拒绝。
+15. 默认 workload 只接受顺序 start，静态可判定时 preflight 拒绝，动态冲突在
+    start 到达当拍报错；专用重叠-start testcase 严格复现 RTL 的
+    accepted/ignored 行为，任何未接受 start 都不由 gem5 延后补执行。多 command
+    顺序、共享 memory 可见性和内部状态边界通过测试。
+16. 原 timing quick suite 与新增 functional suite 全部通过，且无 fixture、
+    尺寸或 golden 值硬编码；trace 关闭时已有规模运行性能基线。
 
 ## 9. 主要风险与控制
 
 - **RTL 注释与实际行为可能不一致**：以当前 RTL source 和真实 testcase 波形为准；
   需要看 FSDB 时按 `/home/xch/work/npi_fsdb_probe/README.md` 使用专用工具。
-- **mode 组合数量较多**：先闭合 `01/01` 的全数据链路，再按同一模块边界扩展；
-  但最终 DoD 不允许只支持 `01/01`。
+- **仓库同时保留新旧 datapath**：每个实现来源都必须能沿当前 elaborated hierarchy
+  从 `SA_CORE` 追到实例，禁止依据未实例化的同名旧模块实现。
+- **mode 组合数量较多**：接口和状态结构从一开始由完整合法 CSR 驱动，验证按资源
+  模块和 Step 0 RTL 路径表逐步收敛；所有合法组合必须映射到已知路径，但测试只需
+  覆盖结构路径、字段边界、关键交互和 hold-out。`01/01` 只是首个完整
+  end-to-end golden，不能成为实现分支或合法域。
+- **CSR raw 值不等于合法算子配置**：`reuse=11`、`register_mode`、
+  `conv_kernal` 等先由 Step 0 支持域表分类，不能猜测接受或拒绝。
 - **位宽错误可能只在极值暴露**：每个截断/溢出位置都要有正负极值 focused test，
   最终值比较不能替代这些测试。
 - **大规模逐 PE 仿真速度**：数据 trace 默认关闭；PE 使用固定大小连续存储和
-  预分配状态，不在每拍分配对象。只有证明不改变逐拍寄存器语义时才允许机械优化。
-- **旧 calibration memory 没有真实数据**：功能 memory 接入必须同时保留 strict
-  固定延迟和真实 payload，不得为取数据而改用另一套时序。
+  预分配状态，不在每拍分配对象。允许合并不可见内部状态，但必须保持资源容量、
+  竞争、吞吐、阻塞、payload 和 strict 边界周期。
+- **抽象不足或过度**：不逐信号翻译 RTL，也不使用直接 GEMM 或无限资源捷径；
+  每个抽象都以 Step 0 的资源合同和边界 comparison 证明其保真范围。
+- **oracle 演变为第二套模型**：skeleton 只保留已有 `01/01` 回归；新 mode 使用
+  通用 boundary-trace comparator 直接对比 RTL golden，不在 oracle 中复制控制
+  状态机。
+- **大地址空间导致 eager allocation**：memory address range 与物理 backing
+  分离，strict memory 使用稀疏 page/range，最终只比较显式范围。
+- **strict/timing-memory 数据分叉**：两类运行分别使用明确的唯一数据真源，并共享
+  image parser、byte-order 和 comparator；不得在一个运行中维护两份可写镜像。
+- **现有 artifact 没有完整 final-memory 文件**：Step 0 未采集 write payload 和
+  output memory dump 前，不开始 datapath 实现，也不宣称 byte-exact 验收。

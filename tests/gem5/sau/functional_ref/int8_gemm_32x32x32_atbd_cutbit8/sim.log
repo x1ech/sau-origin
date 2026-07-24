@@ -1,0 +1,161 @@
+Command: /home/xch/work/npu_lpnpu/sim/vcs/build/yinglong/./simv -l /home/xch/work/npu_lpnpu/sim/vcs/build/yinglong/sim.log -ucli +assert_enable +fsdb+autofsdb -i /home/xch/work/npu_lpnpu/sim/vcs/script/case_yinglong/simv_verdi.tcl
+Chronologic VCS simulator copyright 1991-2022
+Contains Synopsys proprietary information.
+Compiler version T-2022.06_Full64; Runtime version T-2022.06_Full64;  Jul 24 14:52 2026
+ucli% # simv_verdi.tcl â Verdi waveform dump script for case_yinglong
+ucli% global env
+ucli% puts "FSDB file: $env(FSDB_NAME).fsdb"
+FSDB file: yinglong.fsdb
+ucli% puts "Top module: $env(SIM_TB_NAME)"
+Top module: top_yinglong_tb
+ucli% fsdbDumpfile "$env(FSDB_NAME).fsdb"
+*Verdi* Loading libsscore_vcs202206.so
+FSDB Dumper for VCS, Release Verdi_T-2022.06, Linux x86_64/64bit, 05/29/2022
+(C) 1996 - 2022 by Synopsys, Inc.
+*Verdi* FSDB WARNING: The FSDB file already exists. Overwriting the FSDB file may crash the programs that are using this file.
+*Verdi* : Create FSDB file 'yinglong.fsdb'
+ucli% fsdbDumpvars 0 "$env(SIM_TB_NAME)" "+all"
+*Verdi* : Begin traversing the scope (top_yinglong_tb), layer (0).
+*Verdi* : Enable +all dumping.
+*Verdi* : End of traversing.
+ucli% fsdbDumpMDA
+*Verdi* : Begin traversing the MDAs, layer (0).
+*Verdi* : Enable +mda and +packedmda dumping.
+*Verdi* : End of traversing the MDAs.
+ucli% run
+[0] ============================================================
+[0]   top_yinglong_tb: boot/NPU run mode
+[0] ============================================================
+ahb_test instantiated and connected objects
+ahb_yinglong_test instantiated
+
+Warning-[STASKW_RMIEAFK] Illegal entry
+/home/xch/work/npu_lpnpu/sim/testbench/tb/top_yinglong_tb.sv, 1085
+  More number of entries found at file 
+  ../../../../software/benchmarks/yinglong_sau_test/build/instruction.hex line
+  4097 while executing $readmem.
+  Please ensure that the file has proper number of entries.
+  The array name is 
+  top_yinglong_tb.u_qspi.gen_sram_bank[0].i_sram._vcs_tc_sram_0001_sram , size
+  4096.
+
+[100000] QSPI Bank0 [sau_test/instruction.hex] SRAM[0-3]: ffc10113291501370003000000001000 de867119a001928234428293291102b7 ceded0dad2d6d4d2d6ced8cadaa6dca2 0613d22ec232c0bac6eec8eacae6cce2
+[100000] QSPI Bank1 [sau_test/memory_mod_0.hex] SRAM[0-3]: f9cef7f21bed11e8e60ce000e9e829fa 0032340c02280acdd222bafacffcf6fc e90bb50ef8fff7fed406e50ed5eee402 b44106e935e4d220d62b18ff20eb000b
+[100000] QSPI Bank2 [sau_test/memory_mod_1.hex] SRAM[0-3]: 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000
+[100000] QSPI Bank3 [sau_test/memory_mod_2.hex] SRAM[0-3]: 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000
+[100000] QSPI Flash initialized from yinglong_sau_test: instr→Bank0  data(mod_0/1/2)→Bank1/2/3
+ahb_test: doing configuration but nothing to do
+
+================================= ahb-npu csr test =================================
+
+Writing to AHB: addr=0x4001e008, data=0x20010000, burst=0
+[SCOREBOARD] Expected Write: addr=0x4001e008, data=0x20010000
+Writing to AHB: addr=0x4001e00c, data=0x20010004, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e008, Data=0x20010000, Burst=0, Resp=0 @113000
+[CHECKER] ✅ Write OK: addr=0x4001e008, data=0x20010000
+[SCOREBOARD] Expected Write: addr=0x4001e00c, data=0x20010004
+Writing to AHB: addr=0x4001e010, data=0x0, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e00c, Data=0x20010004, Burst=0, Resp=0 @154000
+[CHECKER] ✅ Write OK: addr=0x4001e00c, data=0x20010004
+[SCOREBOARD] Expected Write: addr=0x4001e010, data=0x00000000
+Writing to AHB: addr=0x4001e014, data=0x100, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e010, Data=0x00000000, Burst=0, Resp=0 @196000
+[CHECKER] ✅ Write OK: addr=0x4001e010, data=0x00000000
+[SCOREBOARD] Expected Write: addr=0x4001e014, data=0x00000100
+Writing to AHB: addr=0x4001e018, data=0x20010010, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e014, Data=0x00000100, Burst=0, Resp=0 @238000
+[CHECKER] ✅ Write OK: addr=0x4001e014, data=0x00000100
+[SCOREBOARD] Expected Write: addr=0x4001e018, data=0x20010010
+Writing to AHB: addr=0x4001e01c, data=0x20010014, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e018, Data=0x20010010, Burst=0, Resp=0 @279000
+[CHECKER] ✅ Write OK: addr=0x4001e018, data=0x20010010
+[SCOREBOARD] Expected Write: addr=0x4001e01c, data=0x20010014
+Writing to AHB: addr=0x4001e020, data=0x2, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e01c, Data=0x20010014, Burst=0, Resp=0 @321000
+[CHECKER] ✅ Write OK: addr=0x4001e01c, data=0x20010014
+[SCOREBOARD] Expected Write: addr=0x4001e020, data=0x00000002
+Writing to AHB: addr=0x4001e024, data=0x4, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e020, Data=0x00000002, Burst=0, Resp=0 @363000
+[CHECKER] ✅ Write OK: addr=0x4001e020, data=0x00000002
+[SCOREBOARD] Expected Write: addr=0x4001e024, data=0x00000004
+Writing to AHB: addr=0x4001e028, data=0x8, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e024, Data=0x00000004, Burst=0, Resp=0 @404000
+[CHECKER] ✅ Write OK: addr=0x4001e024, data=0x00000004
+[SCOREBOARD] Expected Write: addr=0x4001e028, data=0x00000008
+Writing to AHB: addr=0x4001e02c, data=0xc, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e028, Data=0x00000008, Burst=0, Resp=0 @446000
+[CHECKER] ✅ Write OK: addr=0x4001e028, data=0x00000008
+[SCOREBOARD] Expected Write: addr=0x4001e02c, data=0x0000000c
+Writing to AHB: addr=0x4001e000, data=0x19, burst=0
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e02c, Data=0x0000000c, Burst=0, Resp=0 @488000
+[CHECKER] ✅ Write OK: addr=0x4001e02c, data=0x0000000c
+
+================================= delay =================================
+
+[SCOREBOARD] Expected Write: addr=0x4001e000, data=0x00000019
+[MONITOR] Write detected: Type=AHB_WRITE, Addr=0x4001e000, Data=0x00000019, Burst=0, Resp=0 @529000
+[CHECKER] ✅ Write OK: addr=0x4001e000, data=0x00000019
+Reading from AHB: addr=0x4001e008, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e008, expected_data=0x20010000
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e008, Data=0x20010000, Burst=0, Resp=0 @621000
+[CHECKER] ✅ Read Data OK: addr=0x4001e008, data=0x20010000
+Reading from AHB: addr=0x4001e00c, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e00c, expected_data=0x20010004
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e00c, Data=0x20010004, Burst=0, Resp=0 @713000
+[CHECKER] ✅ Read Data OK: addr=0x4001e00c, data=0x20010004
+Reading from AHB: addr=0x4001e010, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e010, expected_data=0x00000000
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e010, Data=0x00000000, Burst=0, Resp=0 @804000
+[CHECKER] ✅ Read Data OK: addr=0x4001e010, data=0x00000000
+Reading from AHB: addr=0x4001e014, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e014, expected_data=0x00000100
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e014, Data=0x00000100, Burst=0, Resp=0 @896000
+[CHECKER] ✅ Read Data OK: addr=0x4001e014, data=0x00000100
+Reading from AHB: addr=0x4001e018, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e018, expected_data=0x20010010
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e018, Data=0x20010010, Burst=0, Resp=0 @988000
+[CHECKER] ✅ Read Data OK: addr=0x4001e018, data=0x20010010
+Reading from AHB: addr=0x4001e01c, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e01c, expected_data=0x20010014
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e01c, Data=0x20010014, Burst=0, Resp=0 @1079000
+[CHECKER] ✅ Read Data OK: addr=0x4001e01c, data=0x20010014
+Reading from AHB: addr=0x4001e020, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e020, expected_data=0x00000002
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e020, Data=0x00000002, Burst=0, Resp=0 @1171000
+[CHECKER] ✅ Read Data OK: addr=0x4001e020, data=0x00000002
+Reading from AHB: addr=0x4001e024, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e024, expected_data=0x00000004
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e024, Data=0x00000004, Burst=0, Resp=0 @1263000
+[CHECKER] ✅ Read Data OK: addr=0x4001e024, data=0x00000004
+Reading from AHB: addr=0x4001e028, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e028, expected_data=0x00000008
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e028, Data=0x00000008, Burst=0, Resp=0 @1354000
+[CHECKER] ✅ Read Data OK: addr=0x4001e028, data=0x00000008
+Reading from AHB: addr=0x4001e02c, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e02c, expected_data=0x0000000c
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e02c, Data=0x0000000c, Burst=0, Resp=0 @1446000
+[CHECKER] ✅ Read Data OK: addr=0x4001e02c, data=0x0000000c
+Reading from AHB: addr=0x4001e004, burst=0
+[SCOREBOARD] Expected Read: addr=0x4001e004, expected_data=0x00000001
+
+================================= ahb-npu csr test end =================================
+
+[MONITOR] Read detected: Type=AHB_READ, Addr=0x4001e004, Data=0x00000001, Burst=0, Resp=0 @1538000
+[CHECKER] ✅ Read Data OK: addr=0x4001e004, data=0x00000001
+=== SCOREBOARD REPORT ===
+Write Count: 11
+Read Count: 11
+Error Count: 0
+*** ALL TESTS PASSED ***
+========================
+[110855000] NPU done detected (TRIGGER_NPU_DONE)
+[110955000] Wrote matmul_compare.csv and matmul_mismatches.csv (mismatches=0, expected=0x29120800, actual=0x29120c00, elems=1024)
+============================================================
+[110955000]   *** TEST PASSED (npu_done) ***
+============================================================
+$finish called from file "/home/xch/work/npu_lpnpu/sim/testbench/tb/top_yinglong_tb.sv", line 430.
+$finish at simulation time            210954701
+           V C S   S i m u l a t i o n   R e p o r t 
+Time: 210954701 ps
+CPU Time:     12.340 seconds;       Data structure size:  11.1Mb
+Fri Jul 24 14:53:00 2026

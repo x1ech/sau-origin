@@ -1,0 +1,62 @@
+{
+  "csr_modes": {
+    "conv_kernal": 0,
+    "cutbit": 8,
+    "pe_work_mode": 0,
+    "register_mode": 0,
+    "reuse_mode": 3,
+    "sa_flow_mode": 0,
+    "shift_flag": 0,
+    "stride_flag": 0,
+    "trans_mode": 1
+  },
+  "elaboration_params": {
+    "ADDR_DELAY": 2,
+    "COL_NUM": 32,
+    "OUTPUTDW": 24,
+    "REGDEPTH": 256,
+    "ROW_NUM": 32,
+    "SA_SIZE": 32,
+    "SRAM_DATA_WIDTH": 256,
+    "SRAM_DELAY": 3,
+    "clock_period_ns": 1.667
+  },
+  "fixture_name": "int8_gemm_32x32x32_reuse11_probe",
+  "fixture_role": "reuse11_contract_probe",
+  "matrix": {
+    "k": 32,
+    "m": 32,
+    "n": 32
+  },
+  "memory_contract": {
+    "boundary_trace": "boundary.csv",
+    "external_beat_bytes": 32,
+    "final_output": "final_output_memory.hex",
+    "initial_image": "initial_memory.hex",
+    "initial_image_semantics": "pre-simulation firmware data image",
+    "output_base": "0x29120c00",
+    "output_byte_order": "ascending byte address, one int8 byte per line",
+    "output_end_exclusive": "0x29121000",
+    "output_size_bytes": 1024
+  },
+  "operation": "int8_gemm",
+  "replay": {
+    "firmware_build": "make all mod3 SAU_TEST_CASE=1",
+    "simulation": "env SIM_TB_NAME=top_yinglong_tb FSDB_NAME=<name> <simv> -l sim.log -ucli +assert_enable +fsdb+autofsdb -i sim/vcs/script/case_yinglong/simv_verdi.tcl +firmware=<firmware-build-dir>",
+    "waveform_reader": "/home/xch/work/npi_fsdb_probe/src/npi_fsdb_probe"
+  },
+  "result": {
+    "element_count": 1024,
+    "software_reference_is_oracle": true,
+    "software_reference_mismatches": 0
+  },
+  "rtl_contract": {
+    "fsdb_path": "/home/xch/work/npu_lpnpu/tmp/plan3_step0_runs/reuse11/reuse11.fsdb",
+    "fsdb_sha256": "c5a8e56adaa36739fb5bce06e9c6090856b8ecc0fe29a83f4321338edd5a8164",
+    "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
+    "npu_worktree_diff_sha256": "e1d76a682f147c0451d28857becb11f37dd65eee1402d48d2f27f5c420c5185c",
+    "simulator": "VCS T-2022.06_Full64",
+    "simv_sha256": "c8048098eb5237ffe5e39bb54d917fd4fe9ef501757f30ef07433854e498df57"
+  },
+  "schema_version": 1
+}
