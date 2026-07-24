@@ -21,12 +21,12 @@ From the gem5 worktree, build the RISC-V optimized binary incrementally:
 scons --ignore-style build/RISCV/gem5.opt -j4
 ```
 
-## Historical RTL CSR fixture replay
+## Current RTL CSR fixture replay
 
-The profiles under `tests/gem5/sau/ref` belong to a retired RTL baseline.
-They may be replayed for debugging the legacy model, but their architecture
-and diagnostic CSV files are not current golden timing and must not be used
-for strict acceptance. New current-baseline profiles are pending recapture.
+The eight profiles under `tests/gem5/sau/ref` were recaptured from the current
+`npu_lpnpu` RTL on 2026-07-24. Their source artifacts, simulator identity, and
+hashes are recorded in each package manifest. They are the current strict
+architecture and semantic-state acceptance fixtures.
 
 ```bash
 ./build/RISCV/gem5.opt \
@@ -40,9 +40,8 @@ python3 util/sau/compare_trace.py --mode strict \
     m5out/sau-rtl-strict/sau.csv
 ```
 
-Historically, this produced exit cause `SAU command complete` and no comparator
-output. That result is not evidence of alignment to the current RTL. The
-profile path replays `csr_writes.csv`, loads named RTL
+This produces exit cause `SAU command complete`; a successful comparator emits
+no output. The profile path replays `csr_writes.csv`, loads named RTL
 elaboration parameters from `manifest.json`, and writes
 `sau_timing_ledger.csv` alongside the trace. It rejects all timing overrides.
 
@@ -54,15 +53,14 @@ Operand-B requests and becomes resident in `ARegisterFileIn` before array
 execution. SRAM banks, crossbar contention, retry, and variable latency are
 intentionally reserved for non-strict system-memory runs.
 
-The historically tested control domain was int8 GEMM with `trans_mode=01` and
+The validated control domain is int8 GEMM with `trans_mode=01` and
 `reuse_mode=01`. Five coverage shapes (32x32x32, 64x32x256, 64x256x32,
 32x256x256, and 64x256x256) were used to derive and freeze the structural
 rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
-64x256x128) then passed without fixture-specific timing adjustment. This is
-evidence for the retired RTL only, not the current baseline.
+64x256x128) then passed without fixture-specific timing adjustment.
 
-The eight retired packages are no longer registered as RISC-V quick strict
-tests. The remaining SAU quick tests still run with:
+All eight packages are registered as RISC-V quick strict tests. Run the full
+SAU quick set with:
 
 ```bash
 cd tests
@@ -137,17 +135,15 @@ All timing knobs in this section are DSE controls. Their use prints
 
 ## Current RTL per-tick work
 
-Step 5.5 is replacing the retired aggregate strict timing formulas with
-source-driven per-edge components. The isolated scheduler, resident/stream
-address generators, resident fill, SA-enable/execute path, result serializer,
-and output writeback plus native SRAM transport skeleton are implemented in
-`schedule_state.{hh,cc}`. They do not yet alter `SauModel` runtime behavior.
-The authoritative baseline is the
-passing 64x256x256 `yinglong` RTL run described in
-`RTL_TIMING_PROVENANCE.md`; the older eight fixture traces are historical
-diagnostics and are not golden acceptance inputs.
+Step 5.5 replaced the retired aggregate strict timing formulas with
+source-driven per-edge components. The scheduler, resident/stream address
+generators, resident fill, SA-enable/execute path, result serializer, output
+writeback, and native SRAM transport are integrated into strict
+`SauModel` execution through the command-local driver in
+`schedule_state.{hh,cc}`.
 
-The last developer-built focused checkpoint is 30/30 passing tests, including
+Implementation history: the developer-built focused checkpoint reached 30/30
+passing tests, including
 the input-RF readout and feeder A/B-valid skeleton. A combined
 `RtlCommandDriverSkeleton` and two tests are now in the source tree and pass
 static checks. The first rebuild passed 31/32 and exposed a missing registered
@@ -176,7 +172,9 @@ fill/gap/completion gates; non-strict DSE retains the original timed
 schedulers. After relinking, strict architecture/state comparison, stage
 ledger inspection, constrained non-strict execution, and the four-way DSE
 monotonicity check all pass.
-Resume work from the `Session Handoff Checkpoint` at the top of `STATUS.md`.
+The 2026-07-24 current-RTL recapture passes all eight architecture and state
+strict comparisons. The full SAU quick run passes 36/36 checks across 14
+suites.
 
 ## Statistics
 

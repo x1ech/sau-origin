@@ -1,62 +1,89 @@
 {
-  "schema_version": 1,
-  "fixture_name": "int8_gemm_32x32x32_single_flow",
-  "fixture_role": "coverage",
-  "precision": "int8",
-  "operation": "GEMM",
-  "matrix": {
-    "m": 32,
-    "k": 32,
-    "n": 32
-  },
-  "trans_mode": "0x1",
-  "reuse_mode": "0x1",
-  "command_count": 1,
-  "flow_loop_times": 1,
-  "cutbit": 8,
-  "sa_rows": 32,
-  "sa_cols": 32,
-  "sram_data_bits": 256,
+  "architecture_row_count": 295,
   "beat_bytes": 32,
+  "command_count": 1,
+  "command_start_cycles": [
+    29112
+  ],
+  "command_start_rows": [
+    7
+  ],
+  "csr_acceptance": "csr_we && csr_ready at a sampled SAU clock posedge; writes are ordered by clock then waveform column order",
+  "csr_write_count": 7,
+  "cutbit": 8,
+  "diagnostic_row_count": 267,
   "elaboration_params": {
-    "SA_SIZE": 32,
-    "ROW_NUM": 32,
+    "ADDR_DELAY": 2,
     "COL_NUM": 32,
     "REGDEPTH": 256,
-    "SRAM_DELAY": 3,
-    "ADDR_DELAY": 2,
+    "ROW_NUM": 32,
+    "SA_SIZE": 32,
     "SRAM_DATA_WIDTH": 256,
-    "clock_period_ns": 1.666
+    "SRAM_DELAY": 3,
+    "clock_period_ns": 1.667
   },
-  "reset_length_ns": 100,
-  "trace_cycle_0_definition": "Cycle zero = first clk_acc posedge after rst_n_acc deassertion",
-  "csr_accepted_semantics": "csr_we && (addr[11:4]==0x20) && csr_ready at same clk posedge",
-  "csr_start_cycle": 29112,
-  "core_start_cycle": 29112,
-  "start_delay_cycles": 0,
+  "fixture_name": "int8_gemm_32x32x32_single_flow",
+  "fixture_role": "coverage",
+  "flow_loop_times": 1,
+  "fsdb_path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/yinglong.fsdb",
+  "matrix": {
+    "k": 32,
+    "m": 32,
+    "n": 32
+  },
   "npu_repo_head": "d894466f15ea84cffab5596fa87fc33767c78361",
-  "npu_worktree_diff_sha256": "d6ed12d39d0078f1246ba4e03773b9c0350896de4810b7a88cc580e7752f618f",
+  "npu_worktree_diff_sha256": "e483c886c6a276c86c29e0c751669fd6c94296d671d6a1dffe20af94d5689a5e",
+  "operation": "GEMM",
+  "precision": "int8",
+  "reset_length_ns": 100,
+  "reuse_mode": "0x1",
+  "run_command": "make yinglong_sim && make yinglong_run",
+  "sa_cols": 32,
+  "sa_rows": 32,
+  "schema_version": 1,
+  "simulation_result": "TEST PASSED; zero matmul mismatches",
   "simulator": "VCS",
   "simulator_version": "VCS T-2022.06_Full64",
-  "run_command": "make -C sim/vcs/script/case_yinglong sim FIRMWARE_DIR=software/benchmarks/yinglong_sau_test/build",
-  "fsdb_path": "sim/vcs/build/yinglong/yinglong.fsdb",
-  "extraction_method": "npi_fsdb_probe + Python. Architecture/diagnostic from SAU internal signals. CSR snapshot decoded from csr_writes.csv raw wdata (verified against RTL csr.sv field layout).",
-  "testcase_dir": "/home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test/build",
-  "testcase_sha256": {
-    "instruction.hex": "544fa9fc6e93fec92b1dec4db0af1db8e64f9ae96bd2aaed1d85562f0abbac9d",
-    "memory.hex": "5b638f4773d1188458d9eb671a1b355f4065ad4573c27e869d451fbd3f55f584",
-    "memory_mod_0.hex": "06510d5a6bcd136dc1adbfde0e5ea1108dd38b58774ce2ffb79e964b1d5547ef",
-    "memory_mod_1.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1",
-    "memory_mod_2.hex": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+  "source_artifacts_sha256": {
+    "firmware/instruction.hex": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/firmware/instruction.hex",
+      "sha256": "7cc7d52574266efe638cbdcf568181346f7ba74596295973904dd845aefe6787"
+    },
+    "firmware/memory.hex": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/firmware/memory.hex",
+      "sha256": "5c741422b9a62f83b2ffd0b96e0eb86d00cade8af4e740b7c696596c301acaf5"
+    },
+    "firmware/memory_mod_0.hex": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/firmware/memory_mod_0.hex",
+      "sha256": "11d0468f6672a98a15737b034bc9b5d0749b7c881b5d3480636593d1005c8f11"
+    },
+    "firmware/memory_mod_1.hex": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/firmware/memory_mod_1.hex",
+      "sha256": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+    },
+    "firmware/memory_mod_2.hex": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/firmware/memory_mod_2.hex",
+      "sha256": "800d7cba121ce823a04851e557c4b151a54c5ae98e2646d06815551720152ae1"
+    },
+    "fsdb": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/yinglong.fsdb",
+      "sha256": "7b81511c72d33ab2d9c84d2c069a5291fde07a70dbba0a403ec99597dd973ac1"
+    },
+    "sampled_csv": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/golden_32x32x32_sampled.csv",
+      "sha256": "03a8d265b0bf076d2f10a271103b2ba0a12ddfde27efba7ac1174f87613eb43c"
+    },
+    "sim_log": {
+      "path": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/sim.log",
+      "sha256": "38ddcf268a310d4c1ad4301a76f7a4b431253f076890afe036fb2e2c0a50d69a"
+    }
   },
-  "architecture_row_count": 295,
-  "diagnostic_row_count": 272,
-  "csr_write_count": 7,
-  "artifacts_sha256": {
-    "csr_writes.csv": "9d5a5fe619f1f3a9ff9a34cb6efde330f375abf605f80223ac07c6ce075c6dbe",
-    "csr_snapshot.json": "4a9705ef139ddef96a4010ea5dc60fb57042ebd5aaf044813f911e0b059823df",
-    "architecture.csv": "41c98c17c649b25f0b046dbdf218973266cbf17ce1d5986268f5e315c30673c4",
-    "diagnostic.csv": "b311da5e790bad5254a2ff470aae391c536c01fbd6af7c723341829fc0df67be",
-    "manifest.json": "56ac487586c7ae5d653dae1c858aeab1c91401bcb6357942011d8b0369f5a05d"
-  }
+  "sram_data_bits": 256,
+  "sweep_dimension": null,
+  "testcase_dir": "/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources/int8_gemm_32x32x32_single_flow/firmware",
+  "trace_cycle_zero": {
+    "definition": "first sampled SAU clock posedge in FSDB",
+    "fsdb_time_ps": 1250
+  },
+  "trans_mode": "0x1"
 }

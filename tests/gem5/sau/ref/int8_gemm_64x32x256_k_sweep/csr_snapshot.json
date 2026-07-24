@@ -2,7 +2,7 @@
   {
     "command_id": 1,
     "start_write_cycle": 28914,
-    "start_write_row": 1,
+    "start_write_row": 7,
     "trans_mode": "0x1",
     "reuse_mode": "0x1",
     "vertical_address": "0x29120800",
@@ -67,7 +67,7 @@
   {
     "command_id": 2,
     "start_write_cycle": 30163,
-    "start_write_row": 8,
+    "start_write_row": 14,
     "trans_mode": "0x1",
     "reuse_mode": "0x1",
     "vertical_address": "0x29120800",

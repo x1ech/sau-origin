@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-23
+Last updated: 2026-07-24
 
 ## Goal
 
@@ -470,11 +470,51 @@ Design and implementation references:
 - The memory contract was corrected on 2026-07-03 from a legacy 128-bit
   assumption to the active RTL's 256-bit interface.
 
+## Current RTL Golden Recapture — 2026-07-24
+
+The current `npu_lpnpu` RTL and firmware flow has now produced all five
+coverage and three hold-out Int8 GEMM packages requested by
+`RTL_GOLDEN_PACKAGE_REQUEST.md`. The source-side package copies are preserved
+at:
+
+```text
+/home/xch/work/npu_lpnpu/tmp/current_rtl_golden
+```
+
+The corresponding FSDB, sampled clock trace, firmware image, simulation log,
+matmul comparison, and generated testcase header are preserved per fixture at:
+
+```text
+/home/xch/work/npu_lpnpu/tmp/rtl_golden_sources
+```
+
+Every RTL run reported `TEST PASSED` and zero matmul mismatches. Every package
+passes `validate_fixture.py` and its local `SHA256SUMS`. Replaying each package
+directly from the staging directory with the already-linked strict gem5 model
+also passes both the full architecture comparator and the normalized state
+comparator without a hold-out-specific timing change.
+
+| Role | Fixture | Commands | Flows/command | Architecture rows |
+| --- | --- | ---: | ---: | ---: |
+| coverage | `int8_gemm_32x32x32_single_flow` | 1 | 1 | 295 |
+| coverage | `int8_gemm_64x32x256_k_sweep` | 2 | 1 | 3,278 |
+| coverage | `int8_gemm_64x256x32_n_sweep` | 2 | 8 | 3,214 |
+| coverage | `int8_gemm_32x256x256_m_sweep` | 1 | 8 | 9,223 |
+| coverage | `int8_gemm_64x256x256_baseline` | 2 | 8 | 18,446 |
+| hold-out | `int8_gemm_96x256x256_m_holdout` | 3 | 8 | 27,669 |
+| hold-out | `int8_gemm_64x128x256_k_holdout` | 2 | 4 | 9,742 |
+| hold-out | `int8_gemm_64x256x128_n_holdout` | 2 | 8 | 9,742 |
+
+The eight current packages are now imported under `tests/gem5/sau/ref` and
+registered as RISC-V quick strict tests. The complete SAU quick run passes
+36/36 checks across 14 suites, including simulation, exit-regex,
+architecture, and state verification for all eight fixtures.
+
 ## Task Progress
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| 1. Capture deterministic RTL timing reference | Superseded / recapture required | The 2026-07-07 packages are retained as historical diagnostics but are no longer golden. The current 64x256x256 `yinglong` run establishes internal edge provenance; new acceptance packages still need capture. |
+| 1. Capture deterministic RTL timing reference | Complete | All eight requested current-RTL packages are imported with their source artifacts preserved; package, hash, architecture, and state validation pass. |
 | 2. Add the common trace comparator | Complete | Adds `util/sau/compare_trace.py` and unit tests. Strict mode compares every normalized field; causal mode compares event order and metadata while allowing latency shifts with nondecreasing actual cycles. |
 | 3. Add command types and admission validation | Complete | Commit `b61ec79f60`; defines stable command/token types and validates the first-milestone contract. |
 | 4. Implement deterministic beat generation | Complete / calibrated | Commit `6b3fc7165a`; later calibrated after Task 1 so external reads are A preload once per instruction, then B streaming per flow. |
@@ -486,12 +526,13 @@ Design and implementation references:
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
-| PLAN2. CSR-driven Int8 GEMM RTL alignment | Step 5.5 in progress / baseline reset | Current-RTL scheduler and feeder/execute isolated skeletons are updated. The old five coverage and three hold-out results are historical; all eight profiles have been removed from quick strict registration until current-baseline packages are captured. |
+| PLAN2. CSR-driven Int8 GEMM RTL alignment | Step 5.5 current RTL acceptance complete | All five current coverage and three hold-out packages were captured from passing RTL, imported, and registered. The full 14-suite SAU quick run passes 36/36 checks. |
 
-## Retired PLAN2 RTL Fixture Inventory
+## Historical PLAN2 RTL Fixture Inventory
 
-These packages are historical diagnostics, not current golden oracles. They
-used the fixed PLAN2 control contract: int8 GEMM,
+The previous package versions are retained in Git history as historical
+diagnostics, not current golden oracles. They used the fixed PLAN2 control
+contract: int8 GEMM,
 `trans_mode=01`, `reuse_mode=01`.
 
 | Role | Fixture | M × K × N |

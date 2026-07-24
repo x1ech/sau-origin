@@ -2,7 +2,6 @@
   {
     "command_id": 1,
     "start_write_cycle": 28914,
-    "core_start_cycle": 28914,
     "start_write_row": 7,
     "trans_mode": "0x1",
     "reuse_mode": "0x1",
@@ -17,7 +16,7 @@
     "conv_kernal": "0x0",
     "stride_flag": 0,
     "shift_flag": 0,
-    "cutbit": 13,
+    "cutbit": 8,
     "input": {
       "x_step": 0,
       "x_burst": 1,

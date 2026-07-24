@@ -1,6 +1,6 @@
 # SAU RTL Timing Provenance
 
-Last audited: 2026-07-22
+Last audited: 2026-07-24
 
 ## Baseline and scope
 
@@ -8,8 +8,8 @@ Step 5.5 uses the current files under `/home/xch/work/npu_lpnpu` together with
 the passing `sim/vcs/build/yinglong/simv` waveform as its authoritative RTL
 baseline. The previously audited `/home/xch/workspace/npu_lpnpu` snapshot and
 all eight traces attributed to it are retired from golden/oracle status. The
-hashes below identify the source snapshot required by the next RTL build and
-trace package:
+hashes below identify the current source snapshot used by the 2026-07-24 RTL
+build and eight newly captured trace packages:
 
 | File | SHA256 |
 | --- | --- |
@@ -32,10 +32,11 @@ The first implementation target remains the control contract already accepted
 by the gem5 decoder: INT8 matmul, 32x32 SA, ATB/reuse-A, non-shift and
 non-keep output.  Other RTL modes must not be inferred from this audit.
 
-The eight imported fixture packages are historical diagnostics only. They
-must not be used as golden timing, strict acceptance, calibration input, or a
-completion gate for this baseline. New packages require these source hashes
-and an explicit simulator/build identity.
+The eight packages under `tests/gem5/sau/ref` were recaptured from this source
+snapshot with VCS T-2022.06_Full64. Their manifests record the RTL worktree,
+firmware, FSDB, sampled trace, and simulator identities. Five coverage
+packages pass strict comparison; the unchanged model then passes all three
+hold-outs without fixture-specific timing adjustment.
 
 ## Proven structural parameters
 
@@ -386,10 +387,9 @@ formulas must be replaced from current RTL source and new independent traces:
    `write_finished` is four explicit registers after the last two-stage output
    address/data pipeline.  The old writeback/completion sums do not express
    this control path.
-## Boundary edges in the captured waveform export
+## Boundary edges in the current waveform export
 
-The following old package edges are retained only as historical diagnostics;
-they are not current golden observations:
+The following edges are observations from the current 2026-07-24 packages:
 
 | Case/command | Observed signal path and edge |
 | --- | --- |

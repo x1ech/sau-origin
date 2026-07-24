@@ -109,11 +109,17 @@ def verify_sau_rtl_profile(name):
     )
 
 
-# The eight profiles previously registered here were captured from a retired
-# scheduler/result RTL baseline. Keep the files as historical diagnostics, but
-# do not use them as strict acceptance oracles. New profiles may be registered
-# only after their source hashes and simulator build match
-# src/sau/RTL_TIMING_PROVENANCE.md.
+for rtl_profile in (
+    "int8_gemm_32x32x32_single_flow",
+    "int8_gemm_64x32x256_k_sweep",
+    "int8_gemm_64x256x32_n_sweep",
+    "int8_gemm_32x256x256_m_sweep",
+    "int8_gemm_64x256x256_baseline",
+    "int8_gemm_96x256x256_m_holdout",
+    "int8_gemm_64x128x256_k_holdout",
+    "int8_gemm_64x256x128_n_holdout",
+):
+    verify_sau_rtl_profile(rtl_profile)
 
 
 verify_sau_config(
