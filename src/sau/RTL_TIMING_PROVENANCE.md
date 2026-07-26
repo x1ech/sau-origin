@@ -446,3 +446,46 @@ sram_wr_last_ma flow_end
 All waveform conclusions must record the command-relative positive-edge index,
 the observed signal transition, and the source guard that caused it.  Golden
 cycle totals alone are insufficient.
+
+## Step 3/4 payload-source freeze from fetched history — 2026-07-26
+
+The PLAN3 Step 3/4 payload implementation needs `sa_execute` sources
+that were never hash-frozen above.  The frozen golden commit
+`d894466f15ea84cffab5596fa87fc33767c78361` is still absent from the
+fetched `/home/xch/workspace/npu_lpnpu` history after the 2026-07-26
+pull (it was a workstation-local commit), so the frozen state was
+recovered content-wise instead:
+
+- Four fetched commits simultaneously match every file hash already
+  frozen in this document (`sa_feeder.sv`, `SA_ENGINE.sv`,
+  `register_file_out.sv`, `SA_CORE.sv`, `scheduler.sv`, `mem_addr.sv`,
+  `feeder.sv`, `register_file_in.sv`):
+  `e722852bd9ab` (2026-07-16), `3cba343ab3eb` (2026-07-13),
+  `204365fca8d8` (2026-07-10), and `bae128b8ca85` (2026-07-10).
+- The seven previously unfrozen `sa_execute` files are byte-identical
+  across all four commits, so their content at the golden state is
+  unambiguous.  `e722852bd9ab73b737ede5ab1ebd410c823717c2` is the
+  canonical extraction reference:
+
+  ```bash
+  git -C /home/xch/workspace/npu_lpnpu \
+      show e722852bd9ab73b737ede5ab1ebd410c823717c2:hardware/src/sa_execute/<file>
+  ```
+
+| Frozen payload source | SHA-256 |
+| --- | --- |
+| `hardware/src/sa_execute/transposer_tiny.v` | `02b4760c115562d87bdb549ce7a86de5081e7376682a4ba16b72a2bbb40b2f0e` |
+| `hardware/src/sa_execute/transposer_tiny_pe.v` | `d24cdeae03692d03331100888a61abd922ea584446c4f8878a40bfd3b3008d73` |
+| `hardware/src/sa_execute/shift_register.sv` | `d86af359620aa1147322ee3cd751d3087451a83265ba69497a1591ee6dcce256` |
+| `hardware/src/sa_execute/SA_ROW.sv` | `85fa5879a808afc7be86e40d5f058bc371f1178b99955179badc72a586bded97` |
+| `hardware/src/sa_execute/SA_PE_array.sv` | `db58ced8f874feb6e8a8fd7f19059067c10ea49e0eac30e5356a7a32cb6f0c86` |
+| `hardware/src/sa_execute/SA_PE.sv` | `0303912a2dbd92c66b7b5d4133dbca52e7857e577dcee5763c9179882d5c2f48` |
+| `hardware/src/sa_execute/SA_pkg.sv` | `cd47581686a21d782b634f7dda9e71c28315844c6e095ab5431905d94e5ddac7` |
+
+The current fetched HEAD `f4cbb25` (2026-07-24) has evolved past the
+frozen contract in `sa_feeder.sv`, `SA_ENGINE.sv`,
+`register_file_out.sv`, `SA_CORE.sv`, `scheduler.sv`,
+`shift_register.sv`, and `SA_PE_array.sv`; those worktree files are NOT
+authority for PLAN3.  `transposer_tiny.v`, `transposer_tiny_pe.v`,
+`SA_ROW.sv`, `SA_PE.sv`, `SA_pkg.sv`, and all `sa_element` input-side
+files still equal their frozen content at HEAD.

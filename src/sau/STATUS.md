@@ -14,26 +14,34 @@ arithmetic computation.
 
 Read this section first when resuming PLAN3 work in a new session.
 
-- The PLAN2 timing milestone is complete, committed, and pushed: branch
-  head `458ad7e3cb` on `sau-origin/feature/sau-command-types` contains
-  Step 5.5, the 2026-07-24 current-RTL golden recapture, and the frozen
-  PLAN3 Step 0 contract. The full SAU quick suite passes 63/63 checks
-  across 23 suites and remains the timing regression baseline.
-- PLAN3 Step 1 (functional memory and payload contract) is complete and
-  developer-verified in four increments dated 2026-07-26, documented in
-  the sections at the end of this file: fixed-point types/conversions
-  plus sparse `FunctionalMemory`, the single-data-authority wiring with
-  image load and dump/compare, primary-cause stall attribution, and the
-  focused delayed-response independence tests. Two Step 1 checklist
-  items stay deferred by design until their consumers land: strict
-  read-payload consumption (Step 3) and real write payloads (Step 5).
-- The Step 1 source, test, and documentation changes are currently
-  uncommitted in the working tree; the developer commits them
-  personally.
-- The next work item is PLAN3 Step 2: full-legal-domain int8 GEMM CSR
-  decode and the typed resource-dispatch framework. Entry points are
-  `csr_config.{hh,cc}`, `command.hh`, `types.hh`, and the frozen CSR
-  support-domain and path tables in `PLAN3_STEP0.md`.
+- Committed state: `07c43b15f5` (PLAN3 Step 1) and `6bcfe89b41`
+  (PLAN3 Step 2) sit on top of the pushed PLAN2 baseline `458ad7e3cb`;
+  the full SAU quick suite stays at 63/63 across 23 suites. Step 1 is
+  closed except two consumer-deferred items (strict read-payload
+  consumption lands with Step 3 runtime integration; real write
+  payloads with Step 5). Step 2 is closed with six of seven checklist
+  items checked; the seventh (new modes validated through the generic
+  boundary comparator) completes with the ABTD boundary match.
+- PLAN3 Step 3 increments 1-7 are implemented and developer-verified
+  (dated sections at the end of this file): input-datapath payload
+  resources, feeder A/B payload chains, the transposer bank and
+  sa_feeder arbiter, external-read payload validation through the
+  raw-counter address programs, and the generic boundary comparator
+  with the first model-versus-golden ABTD run. That run proved the
+  full 64-beat `sau_sram_rdata` payload sequence and pinpointed the
+  raw ABTD+reuse-A bank-load behavior (`[A31, B0, A1..A30]`) that the
+  next increment must reproduce.
+- Payload-source authority: the frozen `sa_execute` sources are
+  extracted from fetched commit `e722852bd9ab` (hashes frozen in
+  `RTL_TIMING_PROVENANCE.md`); the current `npu_lpnpu` HEAD has
+  evolved past the contract in seven files and is not authority.
+- Step 3 remaining: (1) the ABTD control chain — the scheduler
+  `input_switch` timeline and feeder arbiter enables for
+  `trans_mode=2`, derived from the frozen `scheduler.sv`/`feeder.sv`
+  — closing the first non-default milestone; (2) runtime integration
+  of the payload resources into `SauModel`; (3) reuse variants
+  R-none/R-B, blocked on VCS golden captures; (4) transposer/reuse
+  statistics.
 - Per `src/sau/AGENTS.md`, gem5 builds remain developer-owned; provide
   incremental focused-target commands first.
 
@@ -185,10 +193,12 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: PLAN3 Step 1 (functional memory and payload contract)
-  is complete and developer-verified; PLAN3 Step 2 (full-legal-domain
-  CSR decode and typed resource dispatch) is next. The PLAN2 timing
-  baseline below stays authoritative for regression.
+- Current stage: PLAN3 Steps 1-2 are complete and committed; Step 3
+  increments 1-7 (input/transpose payload resources, raw-counter
+  address programs, and the boundary comparator) are
+  developer-verified, with the ABTD control chain, runtime
+  integration, VCS-blocked reuse goldens, and statistics remaining.
+  The PLAN2 timing baseline below stays authoritative for regression.
 - First-milestone record: Tasks 1 through 11 implementation and validation
   complete.
   Final milestone commits `50d42ef51c` and `f303ee71c5` are pushed to
@@ -561,7 +571,7 @@ direct-command compatibility, fixed/constrained runs, and DSE simulations.
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
 | PLAN2. CSR-driven Int8 GEMM RTL alignment | Complete; committed and pushed at `458ad7e3cb` | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
-| PLAN3. CSR-driven functional datapath | Steps 0–1 complete; Step 2 next | Step 0 froze the RTL/CSR/golden contract (`PLAN3_STEP0.md`). Step 1 landed the fixed-point conversion types, sparse functional memory, single data authority with image load and dump/compare, primary-cause stall attribution, and delayed-response independence tests across four developer-verified increments. Two items defer to their Step 3/Step 5 consumers. |
+| PLAN3. CSR-driven functional datapath | Steps 0–2 complete; Step 3 in progress (7 increments verified) | Step 0 froze the RTL/CSR/golden contract; Step 1 landed the functional memory/payload contract; Step 2 landed full-domain decode, typed resource dispatch, and raw-counter address programs. Step 3 landed the input/transpose payload resources and the boundary comparator, with the ABTD `sau_sram_rdata` sequence proven against the golden. Remaining: the ABTD control chain, runtime integration, VCS-blocked reuse goldens, and statistics. |
 
 ## Historical PLAN2 RTL Fixture Inventory
 
@@ -1811,3 +1821,434 @@ configuration-driven input, transpose, and reuse resources, with the
 `trans_mode=2 (ABTD)` B -> B^T transposer path as the first
 non-default milestone against the captured
 `functional_ref` ABTD boundary package.
+
+### PLAN3 Step 3 opening survey and increment 1 — 2026-07-26
+
+Step 3 (configuration-driven input/transpose/reuse resources) started
+in a VCS-less environment. The opening survey established what evidence
+is available:
+
+- The four Step 0 functional golden packages under
+  `tests/gem5/sau/functional_ref` are intact. The ABTD boundary package
+  (`trans_mode=2`) carries a 634-row NPI signal trace covering SRAM
+  read payloads, input-RF data in/out, A/B operand payloads,
+  transposer bank 0/1 inRow/outCol with the full
+  ready/rden/valid/last handshake, results, and the write chain — the
+  golden boundary for the B -> B^T milestone. No new VCS run is needed
+  for the golden-backed paths (ATBD end-to-end, ABTD boundary,
+  reuse-A, reuse=11); the Step 0 rows still marked `pending` (T-ABD,
+  T-ABDT, R-none, R-B, F-trans/retain/tretain) keep waiting for their
+  boundary captures.
+- RTL provenance state: the local `/home/xch/workspace/npu_lpnpu`
+  checkout is `b7feb0d` (2026-07-15) — older than the frozen golden
+  commit `d894466f15ea`, which is absent from local history and
+  currently unreachable over the network. File-level comparison against
+  the frozen `RTL_TIMING_PROVENANCE.md` hashes shows
+  `register_file_in.sv`, `padding_shifter.sv`, `feeder.sv`,
+  `mem_addr.sv`, and `register_addr.sv` are byte-identical to the
+  frozen contract and therefore usable as authority. `sa_feeder.sv`
+  differs (local is the older 07-15 version; frozen is `851007b4…`),
+  and `transposer_tiny.v`/`transposer_tiny_pe.v` have no frozen hash
+  at all. **The transposer/sa_feeder payload increment is blocked until
+  the frozen-state copies of `sa_execute/sa_feeder.sv`,
+  `transposer_tiny.v`, and `transposer_tiny_pe.v` (plus `SA_ROW.sv`,
+  `SA_PE_array.sv`, `SA_PE.sv`, `SA_pkg.sv` for Step 4) are copied
+  from the workstation `d894466` worktree**; `sa_feeder.sv` will be
+  verified against its frozen hash on arrival and the others frozen
+  into the provenance record then.
+- `feeder.sv` source fact useful for later increments:
+  `conv_reuse_flag` is constant 1, so operand A always flows through
+  the register-file readout + `shift_register` path while operand B
+  flows through the delayed `data_i` pipeline to the A/B arbiter; the
+  B-side payload needs no `shift_register` source, but the A-side
+  payload increment does.
+
+Increment 1 implements the input-side payload resources whose sources
+are hash-verified:
+
+- New `input_datapath.{hh,cc}`:
+  - `StreamPaddingShifter` (`padding_shifter.sv`): the one-stage byte
+    barrel shifter — output byte j takes input byte j-p, the vacated
+    low bytes take zero at start-of-packet or the previous beat's tail.
+  - `InputRegisterFile` (`register_file_in.sv` storage): 256 entries of
+    one 32-byte beat plus the avail-label bitset; clear resets labels
+    only (reset storage is not a functional initializer, and the RTL
+    read port has no label gate — both from the frozen source and the
+    Step 0 state-lifetime table).
+  - `InputReadPointerProgram` (`register_file_in.sv` read FSM): the
+    x/y/flow/ins counter program over the raw CSR input group with the
+    shared single-adder base tracking, 8-bit pointer wrap, and the
+    6-bit "burst-1" end compares under which a raw zero burst means 64
+    iterations — deliberately different from `mem_addr.sv`'s
+    immediate-done zero guard, both source-derived.
+- New focused suite `input_datapath.test` (7 tests): zero-padding
+  passthrough, padding insert/carry across beats, storage/label
+  behavior, the small-fixture 0..31 walk, the baseline 8-instruction
+  256-entry walk, 8-bit pointer wrap, and the zero-burst=64 boundary.
+
+Static verification on 2026-07-26: syntax-only compile, style, and
+`git diff --check` pass; the standalone build runs `input_datapath.test`
+at 7/7. Developer compilation is pending; the new
+`Source("input_datapath.cc")` requires a `gem5.opt` relink:
+
+```bash
+scons build/ALL/sau/input_datapath.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/input_datapath.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63; nothing consumes the new module at
+runtime yet. Next Step 3 increments, in order: the feeder B-side
+payload pipeline and A/B arbiter payload muxing (needs the
+`shift_register` source read for the A side), then the transposer bank
+resource once the frozen `sa_execute` sources arrive, then the
+generic boundary-trace comparator against the ABTD package.
+
+Step 3 increment 1 verification completed on 2026-07-26: the developer
+rebuilt the focused target and relinked `gem5.opt`; all builds passed.
+
+### PLAN3 Step 3 increment 2 — 2026-07-26
+
+The second increment adds the feeder operand-B payload chain and the
+input write-path composition, both from the hash-verified `feeder.sv`,
+`register_file_in.sv`, and `padding_shifter.sv` sources:
+
+- `FeederBPipeline` models the int8-GEMM streamed-operand chain
+  `data_i -> data_i_d -> data_i_d2 -> data_i_case0_reg -> data_B_o`
+  with the register-file write payload tapped at `data_i_d`. Because
+  the source's `conv_reuse_flag` is constant 1, operand A never takes
+  this chain (it flows through the register-file readout plus
+  `shift_register`, which waits for the frozen `sa_execute` sources);
+  only the B side is modeled here. The A/B arbiter enable is an input
+  whose timing stays owned by the strict input-feeder skeleton, and a
+  disabled edge registers a zero beat exactly like the RTL mux.
+- `InputWritePath` composes the write side: a pad-flagged position
+  writes zero into the `StreamPaddingShifter`, and the shifted beat is
+  stored at the delay-aligned pointer with its avail label.
+- `input_datapath.test` grows from 7 to 11 tests: the four-register
+  B-chain delay (input visible on the fourth cycle) with the one-stage
+  write tap, the disabled-edge zero beat with the chain still moving,
+  raw-beat storage at zero padding, and the pad-flagged zero write
+  whose tail carries into the following beats through the shifter.
+
+Static verification on 2026-07-26: syntax-only compile, style, and
+`git diff --check` pass; the standalone build runs `input_datapath.test`
+at 11/11. Developer compilation is pending; `input_datapath.cc` is a
+`Source()` file, so `gem5.opt` needs a relink:
+
+```bash
+scons build/ALL/sau/input_datapath.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/input_datapath.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63. The remaining Step 3 increments —
+the A-side `shift_register` payload, the transposer bank resource, and
+the sa_feeder-side integration — are blocked on the frozen `d894466`
+copies of `hardware/src/sa_execute/{sa_feeder.sv, transposer_tiny.v,
+transposer_tiny_pe.v, shift_register.sv}` (plus `SA_ROW.sv`,
+`SA_PE_array.sv`, `SA_PE.sv`, `SA_pkg.sv` for Step 4) from the
+workstation worktree. The generic boundary-trace comparator against
+the ABTD package can proceed next without them.
+
+Step 3 increment 2 verification completed on 2026-07-26: the developer
+rebuilt the focused target and relinked `gem5.opt`; all builds passed.
+
+### PLAN3 Step 3 increment 3 — 2026-07-26
+
+The third increment adds the generic boundary-trace comparator that new
+modes must validate through instead of a second command-driver state
+machine (the mechanism behind the last open PLAN3 Step 2 checklist
+item):
+
+- `util/sau/compare_boundary.py` compares a model boundary trace
+  (`signal,cycle,value`, first row per signal = initial state at its
+  cycle) against the NPI value-change export shipped in the
+  `functional_ref` packages (`signal,time,value`). Golden times anchor
+  to the first occurrence of a chosen signal value (default: the
+  `start` rise) and convert to cycles with the RTL clock; every golden
+  change must land exactly on a clock edge. Values canonicalize from
+  binary or 0x-hex, x/z values stay verbatim, pre-anchor changes fold
+  into the cycle-0 state, and consecutive duplicates collapse on both
+  sides per value-change semantics. `sequence` mode compares each
+  signal's ordered values (payload maturity); `cycles` mode also
+  requires exact relative cycles (boundary timing). `--signals`
+  restricts and requires named signals; `--inspect` dumps the anchored
+  golden sequences for bring-up. A successful comparison prints
+  nothing.
+- `util/sau/compare_boundary_test.py` passes 9/9: mixed-base matching,
+  value-mismatch reporting with index and both cycles, a cycle shift
+  caught only by `cycles` mode, pre-anchor folding, duplicate
+  collapsing, missing-required-signal errors, off-edge golden times,
+  decreasing model cycles, and change-count differences.
+- Real-golden validation: `--inspect` loads the complete 633-row ABTD
+  `boundary.csv` with every change landing on a 1667 ps clock edge
+  relative to the start rise. A conversion of that golden into the
+  model schema round-trips through `--mode cycles` with zero
+  differences across all 45 shared signals, and a filtered comparison
+  over `data_B`, `u_trans2sa_top.trans0_inRow/outCol`, and
+  `sau_sram_rdata` — the B -> B^T milestone boundary — also passes.
+
+No C++ or build change is involved; verification is
+`python3 -m unittest util.sau.compare_boundary_test` plus the
+documented real-golden commands, all already run. The PLAN3 Step 2
+comparator checkbox stays open until the first model-produced ABTD
+trace passes through this tool, which lands with the transposer
+increments once the frozen `sa_execute` sources arrive.
+
+### PLAN3 Step 3 increment 4 — 2026-07-26
+
+The developer's `git pull` of `/home/xch/workspace/npu_lpnpu` unblocked
+the payload sources. The frozen commit `d894466` is still absent (it
+was workstation-local), but four fetched commits simultaneously match
+every file hash already frozen in `RTL_TIMING_PROVENANCE.md`, and the
+seven previously unfrozen `sa_execute` files are byte-identical across
+all four — their content at the golden state is therefore unambiguous.
+`e722852bd9ab` is recorded as the canonical extraction reference and
+the seven SHA-256 hashes are frozen in a new provenance section. The
+current fetched HEAD `f4cbb25` has evolved past the contract in seven
+files (including `sa_feeder.sv`, `SA_ENGINE.sv`, `shift_register.sv`,
+and `SA_PE_array.sv`); those worktree files are explicitly not
+authority.
+
+The increment then implements the transposer bank resource from the
+frozen `transposer_tiny.v`:
+
+- New `transposer.{hh,cc}`: `TransposerTinyBank` holds 32 rows of one
+  32-byte beat. Input acceptance stores at `cnt_in`; the final row
+  drops the input ready and raises the output ready. Output
+  consumption returns the transposed column — output lane a takes row
+  (31-a), byte (column index) — or the stored row in passthrough mode;
+  draining the final output restores the input ready, with `reuse_en`
+  keeping the output side ready for replay and non-reuse closing it. A
+  not-ready write still stores but latches the error flag until the
+  drain, and `clear()` zeroes the storage itself, all as the source
+  does. Registered outCol/valid/last delays, the same-cycle input
+  bypass, and the prefetch-ahead index remain cycle-level driver
+  concerns.
+- The row-reversed lane mapping was proven against real RTL data
+  before implementation: in the ABTD golden, the 32 accepted
+  `trans0_inRow` beats (cycles 43 and 78..108) and the first
+  prefetched `trans0_outCol` at cycle 109 satisfy
+  `outCol lane a = row[31-a].byte[0]` exactly; the check script and
+  the derived constants are embedded in the focused test.
+- New focused suite `transposer.test` (6 tests): full 32x32 synthetic
+  transpose with the reversed lane mapping and non-reuse close, the
+  ABTD golden first-column vector, passthrough row order, reuse
+  replay across two passes, overflow-error latch/clear, and
+  clear-resets-storage.
+
+Static verification on 2026-07-26: syntax-only compile, style, and
+`git diff --check` pass; the standalone build runs `transposer.test`
+at 6/6. Developer compilation is pending; the new
+`Source("transposer.cc")` requires a `gem5.opt` relink:
+
+```bash
+scons build/ALL/sau/transposer.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/transposer.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63. Remaining Step 3 increments: the
+`shift_register` A-side payload (frozen source now available), the
+sa_feeder-side T0/T1/T2 bank ownership and input-switch integration,
+and the model-produced ABTD boundary trace through
+`compare_boundary.py` — the final validation that also closes the last
+PLAN3 Step 2 checkbox.
+
+Step 3 increment 4 verification completed on 2026-07-26: the developer
+rebuilt the focused target and relinked `gem5.opt`; all builds passed.
+
+### PLAN3 Step 3 increment 5 — 2026-07-26
+
+The fifth increment adds the operand-A payload chain from the frozen
+`shift_register.sv` and closes the resident A-side payload path:
+
+- For the int8 GEMM stage (`conv_kernal<=1`), `shift_register.sv` is
+  in its bypass mode: `kernal_cnt` stays cleared, `shift_data_result`
+  equals `data_i`, and idle cycles load zero into the shift stage. The
+  A payload chain is therefore register-file readout -> one shift
+  stage -> the constant `conv_reuse` data_A mux -> registered
+  `data_A_o`. `FeederAPipeline` in `input_datapath.{hh,cc}` models
+  exactly that: a two-register passthrough whose disabled edges insert
+  zero bubbles.
+- The payload contract was checked against the ABTD golden before
+  implementation: the `data_A` value-change sequence equals the
+  `core_register_data_out` readout sequence in order (the apparent
+  38-cycle first-burst offset is the REGISTER_LOAD write-phase echo on
+  the RF read port plus value-change compression, not a payload
+  transform). Exact cycle alignment stays owned by the strict
+  input-feeder skeleton, which already pins the 266/267/269 edges.
+- `input_datapath.test` grows from 11 to 14 tests: the two-stage
+  delay, idle-cycle zero bubbles, and a full A-side composition —
+  32 beats through `InputWritePath` into the register file, read back
+  in `InputReadPointerProgram` order through `FeederAPipeline`,
+  arriving unchanged and in sequence.
+
+Static verification on 2026-07-26: syntax-only compile, style, and
+`git diff --check` pass; the standalone build runs `input_datapath.test`
+at 14/14. Developer compilation is pending (`input_datapath.cc` is a
+`Source()` file):
+
+```bash
+scons build/ALL/sau/input_datapath.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/input_datapath.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63. Remaining Step 3 increments: the
+sa_feeder-side T0/T1/T2 bank ownership and input-switch integration
+(frozen `sa_feeder.sv` available), then the model-produced ABTD
+boundary trace through `compare_boundary.py`.
+
+Step 3 increment 5 verification completed on 2026-07-26: the developer
+rebuilt the focused target and relinked `gem5.opt`; all builds passed.
+
+### PLAN3 Step 3 increment 6 — 2026-07-26
+
+The sixth increment adds the sa_feeder-side transposer arbiter from
+the frozen `sa_feeder.sv`:
+
+- `TransposerArbiter` in `transposer.{hh,cc}` owns the T0/T1 operand
+  banks. Frozen-source facts it encodes: the loading operand is A for
+  ATBD and B for ABTD; ABD without the out-of-stage conv path is the
+  pure-output mode whose input steering is disabled; an accepted row
+  steers to T0 first and to T1 only when T0 cannot take input, with
+  `trans_loaded_bank_q` remembering the last loaded bank; an
+  output-phase start latches the loaded bank as the output bank and
+  otherwise the selection follows whichever bank is exclusively ready
+  (the ping-pong); the banks elaborate with `reuse_en` tied low —
+  sa_flow retention works by skipping the command-start clear, which
+  also resets the selection state; T2 belongs to the result serializer
+  and stays outside. `saOperandRouting()` mirrors the SA data arbiter:
+  input_switch 01 feeds the left port from the banks (ATBD) with B
+  direct above, input_switch 10 feeds the above port from the banks
+  (ABTD) with A direct left.
+- Call-order contract: within one modeled cycle, input acceptances are
+  presented before output consumptions because the RTL steering
+  samples the registered pre-edge bank ready — a same-cycle drain
+  completion must not redirect that cycle's input row. The ping-pong
+  test initially exposed exactly that artifact and now encodes the
+  contract.
+- `transposer.test` grows from 6 to 11 tests: ABTD loads B and feeds
+  the above port with the transposed columns, ATBD feeds the left
+  port, ABD accepts no operand rows, a two-flow ping-pong across both
+  banks with payload checks on each, and retain-versus-clear at
+  command start. The configs come through
+  `deriveResourceConfigs()`, exercising the Step 2 dispatch chain.
+
+Static verification on 2026-07-26: syntax-only compile, style, and
+`git diff --check` pass; the standalone build runs `transposer.test`
+at 11/11. Developer compilation is pending; `transposer.test` gains a
+`resource_config.cc` dependency in `SConscript`:
+
+```bash
+scons build/ALL/sau/transposer.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/transposer.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63. The remaining Step 3 increment is
+the model-produced ABTD boundary trace through `compare_boundary.py`:
+compose the memory image, `FeederBPipeline`, and `TransposerArbiter`
+into the B -> B^T sequence, emit the model-schema trace, and compare
+the `data_B`/`trans0_inRow`/`trans0_outCol` payload sequences against
+the golden — the `data_functional` acceptance for the first
+non-default mode, which also closes the last PLAN3 Step 2 checkbox.
+
+Step 3 increment 6 verification completed on 2026-07-26: the developer
+rebuilt the focused target and relinked `gem5.opt`; all builds passed.
+
+### PLAN3 Step 3 increment 7 — 2026-07-26
+
+The seventh increment runs the first model-versus-golden boundary
+comparison for a non-default mode and lands three pieces:
+
+- `compare_boundary.py` gains `--qualify DATA=VALID` (wire-style
+  golden signals drop to zero outside their valid windows; the
+  qualified sequence keeps only accepted payload values) and
+  `--allow-actual-extra` (a truncated golden capture window compares
+  as a matched prefix). `compare_boundary_test` grows from 9 to 12.
+- New `boundary_trace.{hh,cc}`: `BoundaryTraceWriter` emits the model
+  trace schema, and `generateAbtdBoundaryTrace()` composes the package
+  memory image, the resident and streamed raw-counter address
+  programs, `FeederBPipeline`, and `TransposerArbiter` into the
+  idealized B -> B^T sequence, emitting `sau_sram_rdata`, `data_B`,
+  `trans0_inRow`, and `trans0_outCol`. `boundary_trace.test` (2 tests)
+  checks the writer format and the generated trace shape, skipping
+  when the package is not visible from the working directory.
+- The comparison run (documented below) produced one full pass and one
+  precisely diagnosed divergence:
+  - `sau_sram_rdata` PASSES in strict sequence terms: all 64 external
+    read payloads (32 resident + 32 streamed) match the golden exactly
+    — the image loader, byte order, and both raw-counter address
+    programs are data-correct end to end.
+  - `data_B`/`trans0_inRow`/`trans0_outCol` diverge, and the
+    comparator pinpointed real raw-configuration RTL behavior: the
+    golden T0 bank receives `[A31, B0, A1..A30]`, not `[B0..B31]`.
+    The load enables derive from B-valid pulses, but the loaded data
+    follows `data_i = input_switch[1] ? data_B : data_A`
+    (`sa_feeder.sv`, annotated `//todo: maybe bug` at that mux), and
+    the scheduler drives the A-side input-switch sequence under raw
+    ABTD+reuse-A. Script-verified corroboration: golden accepted
+    `data_B[1..31]` equals the model B beats `[0..30]` exactly, and
+    the leaked first acceptance equals model A beat 31. This is the
+    microscopic mechanism behind the Step 0 conclusion that the ABTD
+    package is a boundary oracle with 1005/1024 software mismatches,
+    not a math oracle.
+
+Per the PLAN3 fidelity principle, gem5 must reproduce this raw
+behavior rather than the idealized transpose. Reaching the full ABTD
+boundary match therefore needs the ABTD control chain — the scheduler
+`input_switch` timeline and feeder arbiter enables for `trans_mode=2`,
+derived from the frozen `scheduler.sv`/`feeder.sv` sources — which is
+the next increment. The PLAN3 Step 2 comparator checkbox stays open
+until that match lands; the comparator mechanism itself is now proven
+in real use.
+
+Verification already run on 2026-07-26: `compare_boundary_test` 12/12,
+`boundary_trace.test` standalone 2/2, style and `git diff --check`
+clean. Developer compilation is pending; `boundary_trace.cc` is a new
+`Source()` file:
+
+```bash
+scons build/ALL/sau/boundary_trace.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/boundary_trace.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+
+python3 -m unittest util.sau.compare_boundary_test
+```
+
+Step 3 increment 7 verification completed on 2026-07-26: the developer
+rebuilt the focused targets and relinked `gem5.opt`; all builds and
+suites passed.
+
+The comparison recipe (already exercised standalone; the generator
+binary is the focused test's `generateAbtdBoundaryTrace`):
+
+```bash
+python3 util/sau/compare_boundary.py --mode sequence \
+    --allow-actual-extra \
+    --qualify data_B=data_B_valid,u_trans2sa_top.trans0_inRow=u_trans2sa_top.trans0_inRow_en \
+    --signals sau_sram_rdata,data_B,u_trans2sa_top.trans0_inRow,u_trans2sa_top.trans0_outCol \
+    tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary/boundary.csv \
+    <model trace csv>
+```

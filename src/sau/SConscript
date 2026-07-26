@@ -5,11 +5,13 @@ SimObject("Sau.py", sim_objects=["SauModel"])
 Source("address_generator.cc")
 Source("address_program.cc")
 Source("a_register_file.cc")
+Source("boundary_trace.cc")
 Source("array_input_scheduler.cc")
 Source("command.cc")
 Source("csr_config.cc")
 Source("csr_fixture.cc")
 Source("functional_memory.cc")
+Source("input_datapath.cc")
 Source("memory_port.cc")
 Source("resource_config.cc")
 Source("result_scheduler.cc")
@@ -19,6 +21,7 @@ Source("state_trace_writer.cc")
 Source("timing_policy.cc")
 Source("token_pipeline.cc")
 Source("trace_writer.cc")
+Source("transposer.cc")
 
 DebugFlag("SAU")
 
@@ -26,6 +29,9 @@ GTest("address_generator.test", "address_generator.test.cc",
       "address_generator.cc", "command.cc")
 GTest("address_program.test", "address_program.test.cc",
       "address_program.cc", "resource_config.cc")
+GTest("boundary_trace.test", "boundary_trace.test.cc", "boundary_trace.cc",
+      "address_program.cc", "functional_memory.cc", "input_datapath.cc",
+      "resource_config.cc", "transposer.cc")
 GTest("a_register_file.test", "a_register_file.test.cc",
       "a_register_file.cc", "command.cc")
 GTest("array_input_scheduler.test", "array_input_scheduler.test.cc",
@@ -36,6 +42,7 @@ GTest("csr_config.test", "csr_config.test.cc", "csr_config.cc", "command.cc",
 GTest("data_beat.test", "data_beat.test.cc")
 GTest("functional_memory.test", "functional_memory.test.cc",
       "functional_memory.cc")
+GTest("input_datapath.test", "input_datapath.test.cc", "input_datapath.cc")
 GTest("memory_port.test", "memory_port.test.cc", "memory_port.cc",
       "../mem/packet.cc", "../mem/port.cc", "../mem/protocol/functional.cc",
       "../mem/protocol/timing.cc", "../sim/bufval.cc", "../sim/port.cc",
@@ -44,6 +51,8 @@ GTest("resource_config.test", "resource_config.test.cc",
       "resource_config.cc")
 GTest("token_pipeline.test", "token_pipeline.test.cc", "token_pipeline.cc")
 GTest("trace_writer.test", "trace_writer.test.cc", "trace_writer.cc")
+GTest("transposer.test", "transposer.test.cc", "transposer.cc",
+      "resource_config.cc")
 GTest("result_scheduler.test", "result_scheduler.test.cc",
       "result_scheduler.cc")
 GTest("schedule_state.test", "schedule_state.test.cc", "schedule_state.cc")
