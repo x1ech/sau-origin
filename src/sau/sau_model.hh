@@ -15,6 +15,8 @@
 #include "sau/address_generator.hh"
 #include "sau/array_input_scheduler.hh"
 #include "sau/csr_config.hh"
+#include "sau/data_beat.hh"
+#include "sau/functional_memory.hh"
 #include "sau/memory_port.hh"
 #include "sau/result_scheduler.hh"
 #include "sau/schedule_state.hh"
@@ -79,6 +81,17 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     const Addr outputCommandStride;
     const bool exitOnDone;            // 命令完成后是否自动退出仿真
 
+    // ===== PLAN3 Step 1 functional memory contract =====
+    const std::string memoryImageFile;   // RTL hex image path; "" = none
+    const Addr memoryImageBase;          // image line 0 address
+    const unsigned memoryImageWordBytes; // little-endian word bytes per line
+    const Addr functionalMemoryBase;     // declared data-authority range base
+    const uint64_t functionalMemorySize; // range size; 0 disables the contract
+    const uint8_t functionalMemoryFill;  // hole fill value
+    const std::string finalMemoryDumpFile; // byte-per-line hex dump; "" = off
+    const Addr finalMemoryDumpBase;
+    const uint64_t finalMemoryDumpSize;
+
     // ========== 运行时状态 ==========
     const SauCommand startupCommand;          // 启动时自动注入的 synthetic 命令
     std::vector<ReplayedSauCommand> fixtureCommands;
@@ -108,6 +121,11 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     };
     std::deque<ScheduledReadResponse> calibrationReadResponses;
     std::vector<Beat> visibleMemoryResponses;
+    // Strict/calibration data authority. Timing-memory runs stage the
+    // image here only until startup() preloads the downstream memory,
+    // then release it: each run keeps exactly one data authority.
+    std::optional<FunctionalMemory> functionalMemory;
+    uint64_t memoryImageBytes = 0;
     std::optional<AddressGenerator> readGenerator;
     std::optional<ARegisterFileIn> aRegisterFile;
     std::optional<ArrayInputScheduler> arrayInputScheduler;
@@ -118,6 +136,30 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::deque<Beat> availableB;
     TokenBuffer outputBuffer;
     ArrayPipeline arrayPipeline;
+
+    /**
+     * Raw per-cycle stall causes in the frozen PLAN3 Step 0 attribution
+     * priority order. Several causes may be recorded for diagnostics in
+     * one cycle, but accountCycle() attributes each stalled cycle to
+     * exactly one primary cause: the lowest enumerator recorded.
+     */
+    enum class StallCause : unsigned
+    {
+        MemoryRetry = 0,
+        ResponseStarvation,
+        OutstandingLimit,
+        InputBackpressure,
+        ArrayBackpressure,
+        OutputBackpressure,
+        NumCauses,
+    };
+    unsigned rawStallCauses = 0;
+
+    void
+    noteStall(StallCause cause)
+    {
+        rawStallCauses |= 1u << static_cast<unsigned>(cause);
+    }
 
     uint32_t nextResultIndex = 0;
     uint32_t nextWriteIndex = 0;
@@ -188,6 +230,9 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     Cycles activeWritebackStartDelayCycles() const;
     Cycles activeCompletionDelayCycles() const;
     Cycles activeCommandStartCycles() const;
+    void preloadTimingMemoryImage();
+    void commitStrictWrite(const Beat &writeBeat);
+    void dumpFinalMemory();
     void emitTimingLedger(const SauCommand &command);
     void emitRtlStageLedger(const SauCommand &command);
     void advanceRtlCommandDriver();
@@ -243,6 +288,9 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
         statistics::Scalar stallOutputBufferFull;  // 因输出 buffer 满的等待周期
         statistics::Scalar stallWritebackBlocked;  // 因写回被反压的等待周期
         statistics::Scalar stallArrayCapacity;     // 阵列 in-flight 容量满
+        // 每个 stalled 周期只按 Step 0 主因优先级归因一次；
+        // 各 stall* 标量继续按资源逐事件计数，允许同拍多计。
+        statistics::Vector primaryStallCycles;
         statistics::Vector firstReadOffset;
         statistics::Vector firstArrayInputOffset;
         statistics::Vector firstResultOffset;

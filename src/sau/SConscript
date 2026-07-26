@@ -8,6 +8,7 @@ Source("array_input_scheduler.cc")
 Source("command.cc")
 Source("csr_config.cc")
 Source("csr_fixture.cc")
+Source("functional_memory.cc")
 Source("memory_port.cc")
 Source("result_scheduler.cc")
 Source("schedule_state.cc")
@@ -28,6 +29,9 @@ GTest("array_input_scheduler.test", "array_input_scheduler.test.cc",
 GTest("command.test", "command.test.cc", "command.cc")
 GTest("csr_config.test", "csr_config.test.cc", "csr_config.cc", "command.cc",
       "timing_policy.cc")
+GTest("data_beat.test", "data_beat.test.cc")
+GTest("functional_memory.test", "functional_memory.test.cc",
+      "functional_memory.cc")
 GTest("memory_port.test", "memory_port.test.cc", "memory_port.cc",
       "../mem/packet.cc", "../mem/port.cc", "../mem/protocol/functional.cc",
       "../mem/protocol/timing.cc", "../sim/bufval.cc", "../sim/port.cc",

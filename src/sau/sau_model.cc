@@ -228,6 +228,15 @@ SauModel::SauModel(const Params &params)
       bCommandStride(params.b_command_stride),
       outputCommandStride(params.output_command_stride),
       exitOnDone(params.exit_on_done),
+      memoryImageFile(params.memory_image_file),
+      memoryImageBase(params.memory_image_base),
+      memoryImageWordBytes(params.memory_image_word_bytes),
+      functionalMemoryBase(params.functional_memory_base),
+      functionalMemorySize(params.functional_memory_size),
+      functionalMemoryFill(params.functional_memory_fill),
+      finalMemoryDumpFile(params.final_memory_dump_file),
+      finalMemoryDumpBase(params.final_memory_dump_base),
+      finalMemoryDumpSize(params.final_memory_dump_size),
       startupCommand(buildStartupCommand(params)),  // 将 Python 参数转为 SauCommand
       outputBuffer(outputBufferEntries),
       arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
@@ -270,6 +279,40 @@ SauModel::SauModel(const Params &params)
         panic_if(fixtureCommands.size() != commandCount,
                  "SAU CSR fixture command count does not match command_count");
     }
+    panic_if(functionalMemorySize == 0 &&
+                 (!memoryImageFile.empty() || !finalMemoryDumpFile.empty()),
+             "SAU memory image and final dump require a declared "
+             "functional memory range");
+    panic_if(params.functional_memory_fill > 0xff,
+             "SAU functional memory fill must be one byte");
+    if (functionalMemorySize != 0) {
+        // Timing-memory runs hand the data authority to the zero-reset
+        // downstream memory at startup; a nonzero hole fill could not be
+        // reproduced there.
+        panic_if(!calibrationMemory && functionalMemoryFill != 0,
+                 "SAU timing-memory runs require a zero hole fill value");
+        try {
+            functionalMemory.emplace(functionalMemoryBase,
+                                     functionalMemorySize,
+                                     functionalMemoryFill);
+            if (!memoryImageFile.empty()) {
+                memoryImageBytes =
+                    functionalMemory->loadLittleEndianWordHexFile(
+                        memoryImageFile, memoryImageBase,
+                        memoryImageWordBytes);
+            }
+        } catch (const std::invalid_argument &error) {
+            fatal("%s", error.what());
+        }
+        if (!finalMemoryDumpFile.empty()) {
+            panic_if(finalMemoryDumpSize == 0,
+                     "SAU final memory dump range must be nonzero");
+            panic_if(!functionalMemory->contains(finalMemoryDumpBase,
+                                                 finalMemoryDumpSize),
+                     "SAU final memory dump range is outside the "
+                     "functional memory range");
+        }
+    }
     if (!params.timing_ledger_file.empty() && !timingLedger.is_open()) {
         throw std::runtime_error("failed to open SAU timing ledger: " +
                                  params.timing_ledger_file);
@@ -295,9 +338,69 @@ SauModel::getPort(const std::string &ifName, PortID idx)
 void
 SauModel::startup()
 {
+    preloadTimingMemoryImage();
     // startup() 发生在 gem5 重置统计项之前。把首条命令排到第一个
     // 时钟边沿，使 commandsAccepted 与后续命令使用同一个统计窗口。
     schedule(startupEvent, nextCycle());
+}
+
+void
+SauModel::preloadTimingMemoryImage()
+{
+    // Strict/calibration runs keep the local FunctionalMemory as their
+    // only data authority; nothing is preloaded downstream.
+    if (!functionalMemory || calibrationMemory) {
+        return;
+    }
+    if (memoryImageBytes != 0) {
+        const std::vector<uint8_t> image =
+            functionalMemory->dumpRange(memoryImageBase, memoryImageBytes);
+        memoryPort.writeFunctional(memoryImageBase, image.data(),
+                                   image.size());
+    }
+    // From here on the downstream memory is the run's only data
+    // authority; releasing the staging copy enforces that there is no
+    // second runtime mirror.
+    functionalMemory.reset();
+}
+
+void
+SauModel::commitStrictWrite(const Beat &writeBeat)
+{
+    if (!functionalMemory) {
+        return;
+    }
+    panic_if(!functionalMemory->contains(writeBeat.address, beatBytes),
+             "SAU strict write outside the functional memory range: %#x",
+             writeBeat.address);
+    // The accepted local edge is the strict commit boundary. First-stage
+    // writeback data is still zero; the output datapath (PLAN3 Step 5)
+    // becomes the payload source at this same commit point.
+    functionalMemory->writeBeat(writeBeat.address, MemoryBeat256{});
+}
+
+void
+SauModel::dumpFinalMemory()
+{
+    if (finalMemoryDumpFile.empty()) {
+        return;
+    }
+    std::vector<uint8_t> bytes(finalMemoryDumpSize, 0);
+    if (functionalMemory) {
+        functionalMemory->read(finalMemoryDumpBase, bytes.data(),
+                               bytes.size());
+    } else {
+        // Timing-memory authority: commandLocallyComplete() has already
+        // required zero outstanding writes, so this functional readback
+        // observes every committed write.
+        memoryPort.readFunctional(finalMemoryDumpBase, bytes.data(),
+                                  bytes.size());
+    }
+    try {
+        FunctionalMemory::writeByteHexFile(finalMemoryDumpFile, bytes);
+    } catch (const std::invalid_argument &error) {
+        fatal("%s", error.what());
+    }
 }
 
 void
@@ -446,6 +549,11 @@ SauModel::tick()
     }
 
     advanceRtlCommandDriver();
+    if (memoryBlocked()) {
+        // A rejected packet stalls the shared port until retry delivery;
+        // every such cycle is a memory-retry stall for attribution.
+        noteStall(StallCause::MemoryRetry);
+    }
     issueReads();
     advanceScheduleProjection();
 
@@ -543,11 +651,21 @@ SauModel::advanceArray()
     if (!progressed && (aWanted || bWanted)) {
         if (arrayPipeline.full()) {
             ++stats.stallArrayCapacity;
+            noteStall(StallCause::ArrayBackpressure);
         } else if (bWanted && availableB.empty()) {
             ++stats.stallInputStarvation;
+            // A missing operand while its read is in flight is response
+            // latency/starvation; otherwise the input side itself has
+            // not produced the token yet.
+            noteStall(outstandingReads() > 0 ?
+                      StallCause::ResponseStarvation :
+                      StallCause::InputBackpressure);
         } else if (aWanted && !instructionReadyForArrayIndex(
                        arrayInputScheduler->issuedA())) {
             ++stats.stallInputStarvation;
+            noteStall(outstandingReads() > 0 ?
+                      StallCause::ResponseStarvation :
+                      StallCause::InputBackpressure);
         }
     }
 
@@ -708,6 +826,7 @@ SauModel::produceResults()
         panic_if(rtlCommandDriver,
                  "strict SAU output buffer blocked an RTL result token");
         ++stats.stallOutputBufferFull;
+        noteStall(StallCause::OutputBackpressure);
         return;
     }
 
@@ -780,6 +899,7 @@ SauModel::issueWrites()
     }
     if (!calibrationMemory && outstandingWrites() >= maxOutstandingWrites) {
         ++stats.stallOutstandingWriteLimit;
+        noteStall(StallCause::OutstandingLimit);
         return;
     }
     if (strictTiming &&
@@ -817,12 +937,14 @@ SauModel::issueWrites()
             true : memoryPort.trySend(writeBeat, true);
         if (calibrationMemory) {
             requestAccepted(writeBeat, true);
+            commitStrictWrite(writeBeat);
         }
         outputBuffer.pop();
         ++nextWriteIndex;
         ++issued;
         if (!acceptedOrBlocked) {
             ++stats.stallRequestRetry;
+            noteStall(StallCause::MemoryRetry);
             break;
         }
     }
@@ -854,6 +976,7 @@ SauModel::issueReads()
     }
     if (!calibrationMemory && outstandingReads() >= maxOutstandingReads) {
         ++stats.stallOutstandingReadLimit;
+        noteStall(StallCause::OutstandingLimit);
         return;
     }
 
@@ -903,6 +1026,7 @@ SauModel::issueReads()
         ++issued;
         if (!acceptedOrBlocked) {
             ++stats.stallRequestRetry;
+            noteStall(StallCause::MemoryRetry);
             break;
         }
     }
@@ -942,7 +1066,14 @@ std::vector<Beat>
 SauModel::takeVisibleReadResponses()
 {
     if (!calibrationMemory) {
-        return memoryPort.takeVisibleResponses();
+        // Timing-only scheduling has no functional-datapath consumer for
+        // the returned payload yet (PLAN3 Step 3+); only the beat
+        // metadata advances the schedule.
+        std::vector<Beat> responses;
+        for (const auto &response : memoryPort.takeVisibleResponses()) {
+            responses.push_back(response.beat);
+        }
+        return responses;
     }
 
     std::vector<Beat> responses;
@@ -1115,6 +1246,7 @@ SauModel::updatePhase()
             exitSimLoop("SAU command complete");
         }
         if (!moreCommands) {
+            dumpFinalMemory();
             signalDrainDone();
         }
     }
@@ -1123,8 +1255,23 @@ SauModel::updatePhase()
 void
 SauModel::accountCycle()
 {
+    const unsigned causes = rawStallCauses;
+    rawStallCauses = 0;
     if (!activeCommand) {
         return;
+    }
+
+    if (causes != 0) {
+        // Attribute the stalled cycle once, to the highest-priority raw
+        // cause in the frozen Step 0 order (lowest enumerator wins).
+        for (unsigned cause = 0;
+             cause < static_cast<unsigned>(StallCause::NumCauses);
+             ++cause) {
+            if (causes & (1u << cause)) {
+                ++stats.primaryStallCycles[cause];
+                break;
+            }
+        }
     }
 
     ++stats.commandCycles;
@@ -1919,6 +2066,9 @@ SauModel::SauStats::SauStats(statistics::Group *parent, unsigned commandCount)
                "Cycles stalled by blocked writeback"),
       ADD_STAT(stallArrayCapacity, statistics::units::Cycle::get(),
                "Cycles stalled by full array in-flight capacity"),
+      ADD_STAT(primaryStallCycles, statistics::units::Cycle::get(),
+               "Stalled cycles attributed once to the frozen "
+               "primary-cause priority"),
       ADD_STAT(firstReadOffset, statistics::units::Cycle::get(),
                "Command acceptance to first read, indexed by command"),
       ADD_STAT(firstArrayInputOffset, statistics::units::Cycle::get(),
@@ -1935,6 +2085,13 @@ SauModel::SauStats::SauStats(statistics::Group *parent, unsigned commandCount)
                "Fraction of active command cycles with array activity",
                arrayActiveCycles / commandCycles)
 {
+    primaryStallCycles.init(6);
+    primaryStallCycles.subname(0, "memory_retry");
+    primaryStallCycles.subname(1, "response_starvation");
+    primaryStallCycles.subname(2, "outstanding_limit");
+    primaryStallCycles.subname(3, "input_backpressure");
+    primaryStallCycles.subname(4, "array_backpressure");
+    primaryStallCycles.subname(5, "output_backpressure");
     firstReadOffset.init(commandCount);
     firstArrayInputOffset.init(commandCount);
     firstResultOffset.init(commandCount);

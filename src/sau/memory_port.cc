@@ -1,5 +1,6 @@
 #include "sau/memory_port.hh"
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 
@@ -35,9 +36,12 @@ SauMemoryPort::~SauMemoryPort()
 }
 
 bool
-SauMemoryPort::trySend(const Beat &beat, bool write)
+SauMemoryPort::trySend(const Beat &beat, bool write,
+                       const uint8_t *writePayload)
 {
     panic_if(blockedPacket, "SAU cannot issue while a packet is blocked");
+    panic_if(!write && writePayload,
+             "SAU read requests must not carry a write payload");
 
     const auto request = std::make_shared<Request>(
         beat.address, beatBytes, 0, requestorId);
@@ -46,7 +50,11 @@ SauMemoryPort::trySend(const Beat &beat, bool write)
     packet->allocate();
     packet->pushSenderState(new RequestState(beat, write));
 
-    if (write) {
+    if (write && writePayload) {
+        std::memcpy(packet->getPtr<uint8_t>(), writePayload, beatBytes);
+    } else if (write) {
+        // Timing-only runs have no data authority; keep the legacy
+        // zero-filled write contract for them.
         std::memset(packet->getPtr<uint8_t>(), 0, beatBytes);
     }
 
@@ -59,12 +67,47 @@ SauMemoryPort::trySend(const Beat &beat, bool write)
     return true;
 }
 
-std::vector<Beat>
+std::vector<SauMemoryResponse>
 SauMemoryPort::takeVisibleResponses()
 {
-    std::vector<Beat> responses;
+    std::vector<SauMemoryResponse> responses;
     responses.swap(visibleResponses);
     return responses;
+}
+
+void
+SauMemoryPort::writeFunctional(Addr address, const uint8_t *data,
+                               uint64_t size)
+{
+    panic_if(readCount != 0 || writeCount != 0 || blockedPacket,
+             "SAU functional writes require an idle timing port");
+    uint64_t done = 0;
+    while (done < size) {
+        const uint64_t chunk = std::min<uint64_t>(size - done, 4096);
+        const auto request = std::make_shared<Request>(
+            address + done, chunk, 0, requestorId);
+        Packet packet(request, MemCmd::WriteReq);
+        packet.dataStatic(const_cast<uint8_t *>(data + done));
+        sendFunctional(&packet);
+        done += chunk;
+    }
+}
+
+void
+SauMemoryPort::readFunctional(Addr address, uint8_t *data, uint64_t size)
+{
+    panic_if(readCount != 0 || writeCount != 0 || blockedPacket,
+             "SAU functional reads require an idle timing port");
+    uint64_t done = 0;
+    while (done < size) {
+        const uint64_t chunk = std::min<uint64_t>(size - done, 4096);
+        const auto request = std::make_shared<Request>(
+            address + done, chunk, 0, requestorId);
+        Packet packet(request, MemCmd::ReadReq);
+        packet.dataStatic(data + done);
+        sendFunctional(&packet);
+        done += chunk;
+    }
 }
 
 bool
@@ -107,8 +150,12 @@ SauMemoryPort::recvTimingResp(PacketPtr packet)
     } else {
         panic_if(readCount == 0,
                  "SAU read response has no outstanding request");
+        panic_if(packet->getSize() != beatBytes,
+                 "SAU read response size does not match the beat contract");
         --readCount;
-        visibleResponses.push_back(state->beat);
+        const uint8_t *data = packet->getConstPtr<uint8_t>();
+        visibleResponses.push_back(
+            {state->beat, std::vector<uint8_t>(data, data + beatBytes)});
     }
 
     delete state;

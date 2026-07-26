@@ -454,7 +454,7 @@ accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三�
 
 ### Step 1：建立唯一的功能 memory 与 payload 合同
 
-- [ ] 定义明确的定点数据类型/视图和转换边界：
+- [x] 定义明确的定点数据类型/视图和转换边界：
 
   ```text
   MemoryBeat256          外部 32-byte read payload
@@ -466,24 +466,24 @@ accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三�
 
   类型可以共享底层连续存储，但不得省略位宽、signed 语义、小端 lane 映射及发生
   sign-extension、wrap、saturation 的转换位置。
-- [ ] loader 读取 RTL memory image，建立有边界检查、稀疏 page/range backing 的
+- [x] loader 读取 RTL memory image，建立有边界检查、稀疏 page/range backing 的
   byte-addressable `FunctionalMemory`；地址范围可以是 1 GiB，但物理分配只覆盖
   已加载或已写入的页。
 - [ ] strict fixed-SRAM 只从 `FunctionalMemory` 取 read payload，并在 RTL
   对应提交边沿写入；固定 read-visible 周期保持不变。
 - [ ] timing-memory 初始化时用 functional packet 把同一 image 写入下游 memory；
   扩展 `SauMemoryPort` 保存 read response data，write packet 不再填零。
-- [ ] timing request 被拒绝后，blocked packet 的 address/payload/last/command
+- [x] timing request 被拒绝后，blocked packet 的 address/payload/last/command
   metadata 保持不变，address generator 只有在 request accepted 时推进。
-- [ ] response 延迟或 outstanding 满不能无条件冻结整个 SAU：已有 buffered token
+- [x] response 延迟或 outstanding 满不能无条件冻结整个 SAU：已有 buffered token
   且不依赖该 response 的资源继续推进；只有缺少输入、端口被占用或下游满的相关
   资源停止，并通过真实 ready/backpressure 链传播。
-- [ ] 每拍可保留多个原始 stall 原因用于诊断，但总 stall cycle 按 Step 0 冻结的
+- [x] 每拍可保留多个原始 stall 原因用于诊断，但总 stall cycle 按 Step 0 冻结的
   primary-cause 优先级只归因一次；至少区分 memory retry、response latency/
   starvation、outstanding limit、input/transposer/array/output backpressure。
-- [ ] timing-memory 的 read/write/final compare 只访问下游 memory，不维护第二份
+- [x] timing-memory 的 read/write/final compare 只访问下游 memory，不维护第二份
   运行时镜像；下一 command 前处理 write 可见性屏障。
-- [ ] 提供统一的 range dump/compare，报告首个不同地址、expected/actual byte
+- [x] 提供统一的 range dump/compare，报告首个不同地址、expected/actual byte
   以及所属 256-bit beat/lane。
 
 验收：

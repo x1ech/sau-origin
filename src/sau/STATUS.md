@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-24
+Last updated: 2026-07-26
 
 ## Goal
 
@@ -10,9 +10,37 @@ The model targets architecture-relevant cycle timing rather than RTL
 register-level equivalence, and the first milestone does not perform
 arithmetic computation.
 
-## Session Handoff Checkpoint — 2026-07-23
+## Session Handoff Checkpoint — 2026-07-26
 
-Read this section first when resuming Step 5.5 in a new session.
+Read this section first when resuming PLAN3 work in a new session.
+
+- The PLAN2 timing milestone is complete, committed, and pushed: branch
+  head `458ad7e3cb` on `sau-origin/feature/sau-command-types` contains
+  Step 5.5, the 2026-07-24 current-RTL golden recapture, and the frozen
+  PLAN3 Step 0 contract. The full SAU quick suite passes 63/63 checks
+  across 23 suites and remains the timing regression baseline.
+- PLAN3 Step 1 (functional memory and payload contract) is complete and
+  developer-verified in four increments dated 2026-07-26, documented in
+  the sections at the end of this file: fixed-point types/conversions
+  plus sparse `FunctionalMemory`, the single-data-authority wiring with
+  image load and dump/compare, primary-cause stall attribution, and the
+  focused delayed-response independence tests. Two Step 1 checklist
+  items stay deferred by design until their consumers land: strict
+  read-payload consumption (Step 3) and real write payloads (Step 5).
+- The Step 1 source, test, and documentation changes are currently
+  uncommitted in the working tree; the developer commits them
+  personally.
+- The next work item is PLAN3 Step 2: full-legal-domain int8 GEMM CSR
+  decode and the typed resource-dispatch framework. Entry points are
+  `csr_config.{hh,cc}`, `command.hh`, `types.hh`, and the frozen CSR
+  support-domain and path tables in `PLAN3_STEP0.md`.
+- Per `src/sau/AGENTS.md`, gem5 builds remain developer-owned; provide
+  incremental focused-target commands first.
+
+## Session Handoff Checkpoint — 2026-07-23 (historical)
+
+This checkpoint covers the completed Step 5.5 bring-up and is retained
+for provenance.
 
 - Authoritative RTL source: `/home/xch/work/npu_lpnpu`.
 - Authoritative passing simulation artifact:
@@ -157,7 +185,12 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: Tasks 1 through 11 implementation and validation complete.
+- Current stage: PLAN3 Step 1 (functional memory and payload contract)
+  is complete and developer-verified; PLAN3 Step 2 (full-legal-domain
+  CSR decode and typed resource dispatch) is next. The PLAN2 timing
+  baseline below stays authoritative for regression.
+- First-milestone record: Tasks 1 through 11 implementation and validation
+  complete.
   Final milestone commits `50d42ef51c` and `f303ee71c5` are pushed to
   `sau-origin/feature/sau-command-types`. The standalone model can
   now emit the imported RTL baseline's two-command shape, addresses, row
@@ -527,7 +560,8 @@ direct-command compatibility, fixed/constrained runs, and DSE simulations.
 | 9. Add fixed- and constrained-memory simulations | Complete | Adds `configs/example/sau_timing.py` and `tests/gem5/sau/test_sau.py`. Fixed memory completes at SAU cycle 8477; constrained memory completes at SAU cycle 76617 with retry, outstanding-limit, and input-starvation stalls. |
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
-| PLAN2. CSR-driven Int8 GEMM RTL alignment | Implementation and validation complete; pending commit/push | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
+| PLAN2. CSR-driven Int8 GEMM RTL alignment | Complete; committed and pushed at `458ad7e3cb` | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
+| PLAN3. CSR-driven functional datapath | Steps 0–1 complete; Step 2 next | Step 0 froze the RTL/CSR/golden contract (`PLAN3_STEP0.md`). Step 1 landed the fixed-point conversion types, sparse functional memory, single data authority with image load and dump/compare, primary-cause stall attribution, and delayed-response independence tests across four developer-verified increments. Two items defer to their Step 3/Step 5 consumers. |
 
 ## Historical PLAN2 RTL Fixture Inventory
 
@@ -1078,7 +1112,8 @@ constants. In particular, the full 5-bit `cutbit=0..31` domain must drive the
 RTL-equivalent signed arithmetic shift and int8 saturation; the current
 fixture's `cutbit=8` is only one validation point. CPU integration, int16,
 convolution, standalone transpose, and matrix addition remain out of scope.
-Implementation has not started.
+Step 0 completed on 2026-07-24 and Step 1 on 2026-07-26; see the dated
+sections below.
 
 PLAN3 was reviewed and revised before implementation. The authoritative
 datapath is now the currently instantiated
@@ -1253,3 +1288,301 @@ checks across 23 suites**.
 
 1. Review the pending source, test, comparator, and documentation changes.
 2. Commit and push only after developer approval.
+
+### PLAN3 Step 1 increment 1 — 2026-07-26
+
+The first Step 1 source increment adds the functional memory and payload
+infrastructure without changing any runtime scheduling behavior:
+
+- `data_beat.hh` defines the frozen fixed-point views `MemoryBeat256`,
+  `OperandVector32x8`, `AccumulatorVector32x24`, `OutputVector32x16`, and
+  `WriteBeat256`, plus every conversion boundary from the Step 0 contract:
+  24-bit sign extension, the SA_PE saturating 24-bit accumulate, the
+  `sat_truncate_func` arithmetic shift by raw `cutbit=0..31` with int8
+  saturation, the output-RF 16-bit two's-complement wrap add, and the
+  `sat_signed8` writeout clamp.
+- The beat byte order was re-proven directly from the
+  `int8_gemm_32x32x32_atbd_cutbit8` package before implementation: the
+  first captured `sau_sram_rdata` at `0x29120000` equals `initial_memory.hex`
+  lines {1,0} concatenated, and the first output write beat at `0x29120c00`
+  equals `final_output_memory.hex` bytes 0..31 in ascending address order.
+  Beat byte k is external address X + k and RTL bit slice [8k+7:8k]; hex
+  image lines are one little-endian word each (16 bytes for
+  `initial_memory.hex` at the image base, one byte for
+  `final_output_memory.hex`).
+- `functional_memory.{hh,cc}` implements the strict-run data authority:
+  byte-addressable sparse 4-KiB-page backing over a bounded range (a 1 GiB
+  declaration allocates nothing; holes read the contract fill value without
+  allocating), the little-endian word-per-line hex loader with explicit
+  rejection of `$readmemh` directives/comments and malformed or
+  out-of-range lines, and unified range dump/compare reporting the first
+  differing address with its expected/actual byte and 256-bit beat/lane.
+- `SauMemoryPort` now surfaces real read-response payloads through
+  `SauMemoryResponse {beat, data}` and accepts an optional real write
+  payload in `trySend()`. A null payload keeps the legacy zero-filled
+  timing-only write contract, and a rejected packet retains its address,
+  beat metadata, and payload unchanged until retry delivery.
+  `SauModel::takeVisibleReadResponses()` unwraps the beat metadata and
+  intentionally drops the payload until the functional datapath consumes
+  it in later Step 3+ increments; no other runtime path changed.
+- New focused tests: `data_beat.test.cc` (7 tests: lane mapping, sign
+  extension, 24-bit saturation, cutbit shift/saturation extremes, 16-bit
+  wrap, int8 clamp, write-beat assembly) and `functional_memory.test.cc`
+  (9 tests: hole fill without allocation, sparse page accounting,
+  cross-page beats, range rejection, both package hex formats, malformed
+  images, dump/compare beat/lane reporting). `memory_port.test.cc` extends
+  to 5 tests, adding real read payload surfacing, real write payload, and
+  blocked-write payload survival across retry.
+
+Static verification on 2026-07-26: `g++ -std=c++17 -fsyntax-only` passes
+for `data_beat.hh`, `functional_memory.cc`, and both new test files;
+`util/style.py` reports no issues in the new/changed regions (the three
+remaining sau_model.cc long-line reports are pre-existing lines outside
+this change); `git diff --check` passes. Per `src/sau/AGENTS.md`, gem5
+compilation is developer-owned and pending:
+
+```bash
+scons build/ALL/sau/data_beat.test.opt \
+    build/ALL/sau/functional_memory.test.opt \
+    build/ALL/sau/memory_port.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/data_beat.test.opt
+./build/ALL/sau/functional_memory.test.opt
+./build/ALL/sau/memory_port.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau
+```
+
+The quick suite must stay at 63/63: the memory-port change preserves
+zero-filled writes and beat-only response consumption for every existing
+run. Remaining Step 1 items for the next increments, in order: wire a
+`FunctionalMemory` image source into strict fixed-SRAM read payloads and
+RTL-edge write commit; timing-memory image preload via functional packets
+plus the write-visibility barrier; stall primary-cause attribution per the
+Step 0 priority; and the workload-level dump/compare entry point.
+
+The developer built and ran this increment on 2026-07-26: the three
+focused targets and the full quick suite passed.
+
+### PLAN3 Step 1 increment 2 — 2026-07-26
+
+The second increment wires the single-data-authority contract into
+`SauModel` without touching any scheduling behavior:
+
+- New optional SimObject parameters declare the functional memory
+  contract: `functional_memory_base/size/fill`, an RTL hex
+  `memory_image_file/base/word_bytes`, and a
+  `final_memory_dump_file/base/size` range. `configs/example/sau_timing.py`
+  exposes them as `--memory-image*`, `--functional-memory-*`, and
+  `--final-memory-dump*`. They are data-contract options, valid together
+  with strict `--rtl-profile` runs, and everything stays disabled when
+  `functional_memory_size` is zero.
+- Strict/calibration runs keep the loaded `FunctionalMemory` as their
+  only data authority. Every accepted output write commits its beat to it
+  at the local accepted edge (payload still all-zero until the output
+  datapath lands in Step 5), and the final dump reads from it.
+- Timing-memory runs stage the image only until `startup()`, preload the
+  downstream memory through new idle-only
+  `SauMemoryPort::writeFunctional/readFunctional` helpers (4-KiB
+  chunks), then release the staging copy so the downstream memory is the
+  run's only authority. The final dump uses functional readback, which is
+  safe because `commandLocallyComplete()` already requires zero
+  outstanding writes — that same condition is the write-visibility
+  barrier before any next command.
+- Both authorities dump through one writer,
+  `FunctionalMemory::writeByteHexFile()`: one byte per line, ascending
+  addresses — exactly the golden `final_output_memory.hex` format.
+- `util/sau/compare_memory.py` is the workload-level comparator for both
+  run types: little-endian word-per-line inputs of any width, first
+  differing absolute address with expected/actual bytes and 256-bit
+  beat/lane, plus the total mismatch count.
+
+Verification already done on 2026-07-26: standalone
+`data_beat`/`functional_memory` focused tests pass 17/17 (new dump
+round-trip test included); `compare_memory` unit tests pass 9/9 and were
+sanity-checked against the real cutbit-8 and cutbit-1 goldens
+(self-compare clean; cross-compare reports 1024 differing bytes from
+beat 0 lane 0); `py_compile`, `-fsyntax-only`, style on changed regions,
+and `git diff --check` pass. Developer compilation is pending:
+
+```bash
+scons build/ALL/sau/functional_memory.test.opt \
+    build/ALL/sau/memory_port.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/functional_memory.test.opt
+./build/ALL/sau/memory_port.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The `ref/int8_gemm_32x32x32_single_flow` strict fixture and the
+`functional_ref/int8_gemm_32x32x32_atbd_cutbit8` package share identical
+`csr_writes.csv`, so the data plumbing has a direct smoke check. Both of
+the following must produce byte-identical all-zero dumps (writeback data
+is still zero) over the 1024-byte output range, proving image load,
+preload, authority separation, commit, and dump on both paths:
+
+```bash
+./build/RISCV/gem5.opt --outdir=m5out/sau-func-strict \
+    configs/example/sau_timing.py \
+    --rtl-profile tests/gem5/sau/ref/int8_gemm_32x32x32_single_flow \
+    --memory-image tests/gem5/sau/functional_ref/int8_gemm_32x32x32_atbd_cutbit8/initial_memory.hex \
+    --memory-image-base 0x29120000 \
+    --functional-memory-base 0x29120000 --functional-memory-size 0x40000 \
+    --final-memory-dump m5out/sau-func-strict/final_output.hex \
+    --final-memory-dump-base 0x29120c00 --final-memory-dump-size 0x400 \
+    --trace=m5out/sau-func-strict/sau.csv
+
+./build/RISCV/gem5.opt --outdir=m5out/sau-func-timing \
+    configs/example/sau_timing.py \
+    --rtl-profile tests/gem5/sau/ref/int8_gemm_32x32x32_single_flow \
+    --timing-memory \
+    --memory-image tests/gem5/sau/functional_ref/int8_gemm_32x32x32_atbd_cutbit8/initial_memory.hex \
+    --memory-image-base 0x29120000 \
+    --functional-memory-base 0x29120000 --functional-memory-size 0x40000 \
+    --final-memory-dump m5out/sau-func-timing/final_output.hex \
+    --final-memory-dump-base 0x29120c00 --final-memory-dump-size 0x400 \
+    --trace=m5out/sau-func-timing/sau.csv
+
+python3 util/sau/compare_memory.py --base 0x29120c00 \
+    m5out/sau-func-strict/final_output.hex \
+    m5out/sau-func-timing/final_output.hex
+
+python3 -m unittest util.sau.compare_memory_test -v
+```
+
+A dump range over untouched operand data (for example
+`--final-memory-dump-base 0x29120000 --final-memory-dump-size 0x400`)
+must instead reproduce the initial image bytes on both paths. Comparing
+either output-range dump against the package's `final_output_memory.hex`
+must still fail — writeback data stays zero until Steps 4/5, and no
+end-to-end data claim is made by this increment.
+
+Increment 2 verification completed on 2026-07-26. The developer rebuilt
+the two focused targets and relinked `gem5.opt`; both focused suites
+pass. All smoke checks then passed: the strict and timing-memory
+output-range dumps are byte-identical and all zero; both A-region dumps
+reproduce the initial image bytes exactly; comparing the output dump
+against the golden `final_output_memory.hex` fails as required (998
+differing bytes — 26 golden result bytes are naturally zero); and the
+strict run with the image enabled still passes full strict architecture
+comparison against the RTL trace, proving the data plumbing changed no
+timing. The complete SAU quick suite passes 63/63 across 23 suites.
+
+### PLAN3 Step 1 increment 3 — 2026-07-26
+
+The third increment adds single-attribution stall accounting per the
+frozen Step 0 priority without changing any existing statistic:
+
+- Every existing per-resource `stall*` scalar keeps its exact semantics
+  and sites; those remain diagnostic event counts and may legitimately
+  count several resources in one cycle.
+- Each blocking site now also records a raw cause bit for the cycle:
+  memory retry (including every cycle a rejected packet stays blocked,
+  which the per-event scalar never counted), response starvation versus
+  input backpressure (split by whether the missing operand's read is
+  still in flight), outstanding-limit, array/result capacity, and
+  output/writeback capacity.
+- `accountCycle()` attributes each cycle with at least one raw cause to
+  exactly one bucket of the new `primaryStallCycles` vector, choosing
+  the highest-priority recorded cause in the frozen order: memory retry
+  -> response starvation -> outstanding limit -> input backpressure ->
+  array backpressure -> output backpressure. The vector total is
+  therefore bounded by `commandCycles` and never double-counts a cycle.
+
+Static checks pass (`git diff --check`, style, added-line lengths).
+Developer compilation is pending; only `sau_model.{hh,cc}` changed:
+
+```bash
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+```
+
+Post-link verification completed on 2026-07-26 after the developer
+relink. The constrained direct-command profile attributes 76,240 of
+76,320 command cycles (memory_retry 65,263, response_starvation 8,572,
+outstanding_limit 2,405) — retry dominates because every cycle a
+rejected packet stays blocked now counts, which the 2,558-event legacy
+scalar never did. The output-buffer-1 DSE run attributes 629 of 668
+cycles with a populated output_backpressure bucket, and most
+output-full cycles correctly attribute to the higher-priority
+outstanding-write limit that causes them; its 668 command cycles equal
+the historical record exactly, confirming unchanged timing. The
+64x256x256 strict baseline passes both the architecture and state
+comparators, and the full quick suite passes 63/63.
+
+PLAN3 Step 1 checklist state: the type/conversion, loader/sparse
+memory, blocked-packet, single-authority/barrier, stall-attribution,
+and dump/compare items are checked complete. Three items remain
+partially open by design until their consumers land: strict read
+payloads are captured from `FunctionalMemory` only when the Step 3
+input datapath consumes them; write packets carry a real (non-zero)
+payload only when the Step 5 output datapath produces one (the port
+mechanism for both is already in place and unit-tested); and the
+independent-resource-progress bullet keeps its existing behavior but
+still needs a focused delayed-response test.
+
+### PLAN3 Step 1 increment 4 — 2026-07-26
+
+The fourth increment closes the remaining test-only gap in the Step 1
+independent-resource-progress bullet. It changes no runtime source —
+only the two focused test files — so `gem5.opt` and the 63/63 quick
+suite are unaffected by construction:
+
+- `memory_port.test.cc` adds
+  `DelayedReadResponseDoesNotBlockIndependentTraffic`: while a read
+  response stays pending, the port must keep `canIssue()` true (only a
+  rejected packet occupies the request path), accept and complete an
+  independent write, and accept a further read behind the delayed
+  response. Read/write outstanding counts are held and released
+  independently, the write response is never surfaced as visible data,
+  and the delayed response finally arrives with its beat metadata and
+  full 32-byte pattern payload intact, ordered before the later read.
+  The test-local `TestMemory` gains a `respondBack()` helper so the
+  write can respond while the earlier read request stays queued;
+  `respond()`/`respondBack()` share one `respondPacket()` body.
+- `token_pipeline.test.cc` adds
+  `InFlightTokensMatureDuringInputStarvation`: with fill latency 4 and
+  three tokens accepted at cycles 0..2, an input-starvation window from
+  cycle 3 onward must not freeze in-flight work — each token matures at
+  its original ready cycle (4/5/6), the pipeline drains to zero
+  in-flight during the starvation window, and a token accepted after
+  the gap (cycle 9) is due exactly one fill latency later (13) with no
+  residual acceptance penalty.
+
+Together these encode the component contracts behind the runtime rule
+that a delayed response or full outstanding window freezes only the
+resources that actually depend on it: `SauMemoryPort` never blocks
+independent traffic behind a pending response, and `ArrayPipeline`
+keeps draining buffered work while admission is starved.
+
+Static verification on 2026-07-26: `util/style.py` reports no issues,
+`git diff --check` passes, and `g++ -std=c++17 -fsyntax-only` passes
+for both changed test files (using `-I build/ALL -I src -I ext
+-I ext/googletest/googletest/include`). Developer compilation is
+pending; no `Source()` file changed, so only the two focused targets
+need rebuilding:
+
+```bash
+scons build/ALL/sau/memory_port.test.opt \
+    build/ALL/sau/token_pipeline.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/memory_port.test.opt
+./build/ALL/sau/token_pipeline.test.opt
+```
+
+Expected results: `memory_port.test` grows from 6 to 7 tests and
+`token_pipeline.test` from 8 to 9. Once both pass, the PLAN3 Step 1
+independent-resource-progress checkbox can be checked; the two
+remaining unchecked Step 1 items stay deferred to their Step 3/Step 5
+consumers by design.
+
+Increment 4 verification completed on 2026-07-26: the developer
+rebuilt both focused targets and both suites passed — `memory_port.test`
+7/7 and `token_pipeline.test` 9/9. The PLAN3 Step 1
+independent-resource-progress checkbox is now checked. Step 1 is
+thereby closed except for the two consumer-deferred items (strict read
+payload consumption in Step 3; real write payloads in Step 5). The
+next PLAN3 work item is Step 2, the full-legal-domain Int8 GEMM CSR
+decode and typed resource-dispatch framework.

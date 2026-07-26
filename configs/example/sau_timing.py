@@ -134,8 +134,53 @@ parser.add_argument(
     "--state-trace", default="",
     help="CSV path for the independent semantic-state debug trace",
 )
+parser.add_argument(
+    "--memory-image", default="",
+    help="RTL hex image loaded into the run's functional data authority",
+)
+parser.add_argument(
+    "--memory-image-base", type=nonnegative_int, default=0,
+    help="Address of memory image line 0",
+)
+parser.add_argument(
+    "--memory-image-word-bytes", type=positive_int, default=16,
+    help="Little-endian word bytes per memory image line",
+)
+parser.add_argument(
+    "--functional-memory-base", type=nonnegative_int, default=0,
+    help="Base of the declared functional memory range",
+)
+parser.add_argument(
+    "--functional-memory-size", type=nonnegative_int, default=0,
+    help="Functional memory range bytes; 0 disables the data contract",
+)
+parser.add_argument(
+    "--functional-memory-fill", type=nonnegative_int, default=0,
+    help="Fill value returned by unwritten functional memory holes",
+)
+parser.add_argument(
+    "--final-memory-dump", default="",
+    help="Byte-per-line hex dump of the final memory range",
+)
+parser.add_argument(
+    "--final-memory-dump-base", type=nonnegative_int, default=0,
+)
+parser.add_argument(
+    "--final-memory-dump-size", type=nonnegative_int, default=0,
+)
 
 args = parser.parse_args()
+
+if (args.memory_image or args.final_memory_dump) and \
+        not args.functional_memory_size:
+    parser.error(
+        "--memory-image and --final-memory-dump require "
+        "--functional-memory-size"
+    )
+if args.final_memory_dump and not args.final_memory_dump_size:
+    parser.error("--final-memory-dump requires --final-memory-dump-size")
+if args.functional_memory_fill > 0xFF:
+    parser.error("--functional-memory-fill must be one byte")
 
 if args.timing_memory and not args.rtl_profile:
     parser.error("--timing-memory requires --rtl-profile")
@@ -296,6 +341,15 @@ system.sau = SauModel(
     timing_ledger_file=args.timing_ledger,
     state_trace_file=args.state_trace,
     trace_file=trace,
+    memory_image_file=args.memory_image,
+    memory_image_base=args.memory_image_base,
+    memory_image_word_bytes=args.memory_image_word_bytes,
+    functional_memory_base=args.functional_memory_base,
+    functional_memory_size=args.functional_memory_size,
+    functional_memory_fill=args.functional_memory_fill,
+    final_memory_dump_file=args.final_memory_dump,
+    final_memory_dump_base=args.final_memory_dump_base,
+    final_memory_dump_size=args.final_memory_dump_size,
     command_count=args.command_count,
     inter_command_gap_cycles=args.inter_command_gap_cycles,
     a_base=args.a_base,

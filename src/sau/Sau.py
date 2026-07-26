@@ -84,6 +84,28 @@ class SauModel(ClockedObject):
         True, "Exit simulation when the synthetic command completes"
     )
 
+    memory_image_file = Param.String(
+        "", "RTL hex image loaded into the functional data authority"
+    )
+    memory_image_base = Param.Addr(0, "Address of memory image line 0")
+    memory_image_word_bytes = Param.Unsigned(
+        16, "Little-endian word bytes per memory image line"
+    )
+    functional_memory_base = Param.Addr(
+        0, "Base of the declared functional memory range"
+    )
+    functional_memory_size = Param.UInt64(
+        0, "Functional memory range bytes; 0 disables the data contract"
+    )
+    functional_memory_fill = Param.Unsigned(
+        0, "Fill value returned by unwritten functional memory holes"
+    )
+    final_memory_dump_file = Param.String(
+        "", "Byte-per-line hex dump of the final memory range"
+    )
+    final_memory_dump_base = Param.Addr(0, "Final dump range base")
+    final_memory_dump_size = Param.UInt64(0, "Final dump range bytes")
+
     command_id = Param.UInt64(1, "Synthetic command ID")
     command_count = Param.Unsigned(1, "Number of synthetic commands")
     inter_command_gap_cycles = Param.Cycles(

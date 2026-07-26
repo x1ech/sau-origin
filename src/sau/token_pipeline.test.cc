@@ -132,5 +132,36 @@ TEST(ArrayPipeline, ConservesAcceptedTokens)
     EXPECT_EQ(pipeline.inFlight(), 0);
 }
 
+TEST(ArrayPipeline, InFlightTokensMatureDuringInputStarvation)
+{
+    ArrayPipeline pipeline(Cycles(4), Cycles(1), 4);
+
+    pipeline.accept(1, 0, false, Cycles(0));
+    pipeline.accept(1, 1, false, Cycles(1));
+    pipeline.accept(1, 2, false, Cycles(2));
+
+    // Input starves from cycle 3 on: no further accepts.  A delayed
+    // operand response must not freeze work already in flight, so each
+    // buffered token still matures at its original ready cycle and the
+    // pipeline drains completely during the starvation window.
+    EXPECT_FALSE(pipeline.hasReady(Cycles(3)));
+    ASSERT_TRUE(pipeline.hasReady(Cycles(4)));
+    EXPECT_EQ(pipeline.takeReady(Cycles(4)).index, 0);
+    EXPECT_FALSE(pipeline.hasReady(Cycles(4)));
+    ASSERT_TRUE(pipeline.hasReady(Cycles(5)));
+    EXPECT_EQ(pipeline.takeReady(Cycles(5)).index, 1);
+    ASSERT_TRUE(pipeline.hasReady(Cycles(6)));
+    EXPECT_EQ(pipeline.takeReady(Cycles(6)).index, 2);
+    EXPECT_EQ(pipeline.inFlight(), 0);
+
+    // Once input returns, the starvation window leaves no residual
+    // acceptance penalty: the next token is due one fill latency later.
+    ASSERT_TRUE(pipeline.canAccept(Cycles(9)));
+    pipeline.accept(1, 3, true, Cycles(9));
+    EXPECT_FALSE(pipeline.hasReady(Cycles(12)));
+    ASSERT_TRUE(pipeline.hasReady(Cycles(13)));
+    EXPECT_EQ(pipeline.takeReady(Cycles(13)).index, 3);
+}
+
 } // anonymous namespace
 } // namespace gem5::sau
