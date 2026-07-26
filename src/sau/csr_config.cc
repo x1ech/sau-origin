@@ -5,6 +5,7 @@
 #include <string>
 
 #include "sau/command.hh"
+#include "sau/resource_config.hh"
 
 namespace gem5::sau
 {
@@ -35,6 +36,93 @@ product3(uint32_t first, uint32_t second, uint32_t third,
 {
     return checkedProduct(checkedProduct(first, second, description), third,
                           description);
+}
+
+std::string
+rawControlSummary(const SauCsrConfig &config)
+{
+    return "trans_mode=" + std::to_string(config.transMode) +
+           ", register_mode=" + std::to_string(config.registerMode) +
+           ", reuse_mode=" + std::to_string(config.reuseMode) +
+           ", pe_work_mode=" + std::to_string(config.peWorkMode) +
+           ", sa_flow_mode=" + std::to_string(config.saFlowMode) +
+           ", conv_kernal=" + std::to_string(config.convKernal) +
+           ", stride_flag=" + std::to_string(config.strideFlag ? 1 : 0) +
+           ", shift_flag=" + std::to_string(config.shiftFlag ? 1 : 0) +
+           ", cutbit=" + std::to_string(config.cutbit) +
+           ", flow_loop_times=" + std::to_string(config.flowLoopTimes);
+}
+
+/**
+ * Reject only combinations the Step 0 support-domain table classifies as
+ * switches to operators outside the int8 GEMM stage.  Every other raw
+ * value is RTL-executable and must decode losslessly.
+ */
+void
+rejectOutOfStageOperatorSwitches(const SauCsrConfig &config)
+{
+    std::string switches;
+    const auto add = [&switches](const char *reason) {
+        if (!switches.empty()) {
+            switches += "; ";
+        }
+        switches += reason;
+    };
+    if (config.peWorkMode != 0) {
+        add("pe_work_mode selects a non-MATMUL operator "
+            "(01 CONV, 10 TRANSPOSER, 11 ADD)");
+    }
+    if (config.shiftFlag) {
+        add("shift_flag=1 selects the packed/shift 16-bit datapath");
+    }
+    if (config.convKernal != 0) {
+        add("conv_kernal!=0 selects convolution/packing behavior");
+    }
+    if (config.strideFlag) {
+        add("stride_flag=1 selects the stride path");
+    }
+    if (config.registerMode == 0x2) {
+        add("register_mode=10 selects the depthwise/single-column path");
+    }
+    if (!switches.empty()) {
+        throw std::invalid_argument(
+            "SAU CSR configuration switches to an operator outside the "
+            "int8 GEMM stage: " + switches + "; raw CSR control: " +
+            rawControlSummary(config));
+    }
+}
+
+/**
+ * The strict per-tick timing chain is validated for the PLAN3_STEP0
+ * T-ATBD/R-A/F-normal path only.  register_mode 00/01/11 share the RTL
+ * non-depthwise guard, so they select the same structural path and are
+ * not a maturity boundary.
+ */
+bool
+onTimingValidatedPath(const SauCsrConfig &config, std::string &reason)
+{
+    const auto add = [&reason](const std::string &part) {
+        if (!reason.empty()) {
+            reason += "; ";
+        }
+        reason += part;
+    };
+    if (config.transMode != 0x1) {
+        add("trans_mode=" + std::to_string(config.transMode) +
+            " selects a transpose path without a validated per-tick "
+            "timing chain");
+    }
+    if (config.reuseMode != 0x1) {
+        add("reuse_mode=" + std::to_string(config.reuseMode) +
+            " selects a reuse path without a validated per-tick "
+            "timing chain");
+    }
+    if (config.saFlowMode != 0x0) {
+        add("sa_flow_mode=" + std::to_string(config.saFlowMode) +
+            " selects a clear/retain or result-order path without a "
+            "validated per-tick timing chain");
+    }
+    return reason.empty();
 }
 
 } // anonymous namespace
@@ -152,13 +240,7 @@ SauCsrConfig::apply(const SauCsrWrite &write)
 DecodedSauCommand
 SauCsrConfig::decode(uint64_t commandId) const
 {
-    if (transMode != 0x1 || reuseMode != 0x1) {
-        throw std::invalid_argument(
-            "unsupported SAU CSR mode: trans_mode=" +
-            std::to_string(transMode) + ", reuse_mode=" +
-            std::to_string(reuseMode) +
-            "; supported mode is trans_mode=1, reuse_mode=1");
-    }
+    rejectOutOfStageOperatorSwitches(*this);
 
     const uint32_t residentLoadBeats = checkedProduct(
         registerInput.xBurst, registerInput.yCycle,
@@ -199,11 +281,56 @@ SauCsrConfig::decode(uint64_t commandId) const
             static_cast<uint32_t>(vertical.instructionStep) *
                 vertical.flowStep * vertical.yStep * BeatBytes,
     };
-    validateCommand(command, BeatBytes);
+    command.control.transMode = transMode;
+    command.control.reuseMode = reuseMode;
+    command.control.saFlowMode = saFlowMode;
+    command.control.registerMode = registerMode;
+    command.control.peWorkMode = peWorkMode;
+    command.control.convKernal = convKernal;
+    command.control.strideFlag = strideFlag;
+    command.control.shiftFlag = shiftFlag;
+    command.control.cutbit = cutbit;
+    command.control.flowLoopTimes = flowLoopTimes;
+    command.control.verticalAddress = verticalAddress;
+    command.control.horizontalAddress = horizontalAddress;
+    command.control.outputAddress = outputAddress;
+    command.control.biasAddress = biasAddress;
+    command.control.input = input;
+    command.control.vertical = vertical;
+    command.control.registerInput = registerInput;
+    command.control.output = output;
 
-    return {command, TimingPolicy::derive(
-                         command, transMode, reuseMode,
-                         RtlTimingParameters{})};
+    DecodedSauCommand decoded;
+    decoded.command = command;
+
+    const auto paths = selectRtlPaths(command.control);
+    const std::string pathSummary = std::string("selected RTL path: ") +
+        paths.transPath + "/" + paths.reusePath + "/" + paths.flowPath;
+
+    std::string unimplemented;
+    if (!onTimingValidatedPath(*this, unimplemented)) {
+        decoded.maturity = ValidationMaturity::RtlLegalUnimplemented;
+        decoded.maturityReason = unimplemented + "; " + pathSummary +
+            "; raw CSR control: " + rawControlSummary(*this);
+        return decoded;
+    }
+    try {
+        validateCommand(command, BeatBytes);
+    } catch (const std::invalid_argument &error) {
+        // RTL-executable raw counter values (for example zero wrap
+        // boundaries) outside the validated execution domain are legal
+        // but unimplemented, never mislabeled illegal.
+        decoded.maturity = ValidationMaturity::RtlLegalUnimplemented;
+        decoded.maturityReason =
+            std::string("raw counter shape is outside the validated "
+                        "execution domain: ") + error.what() + "; " +
+            pathSummary + "; raw CSR control: " + rawControlSummary(*this);
+        return decoded;
+    }
+    decoded.maturity = ValidationMaturity::ResourceTimed;
+    decoded.timingPolicy = TimingPolicy::derive(
+        command, transMode, reuseMode, RtlTimingParameters{});
+    return decoded;
 }
 
 std::vector<ReplayedSauCommand>

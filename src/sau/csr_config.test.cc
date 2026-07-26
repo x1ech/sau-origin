@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "sau/command.hh"
@@ -105,6 +107,24 @@ TEST(SauCsrConfig, ReplaysTheSmallCoverageFixture)
     EXPECT_EQ(command.operandBAddress.yCount, 32);
     EXPECT_EQ(command.operandBAddress.yStepBytes, 32);
     EXPECT_NO_THROW(validateCommand(command, 32));
+
+    EXPECT_EQ(commands[0].decoded.maturity,
+              ValidationMaturity::ResourceTimed);
+    EXPECT_TRUE(commands[0].decoded.maturityReason.empty());
+    const auto &control = command.control;
+    EXPECT_EQ(control.trans(), SauTransMode::ATBD);
+    EXPECT_EQ(control.reuse(), SauReuseMode::ReuseA);
+    EXPECT_EQ(control.saFlow(), SauSaFlowMode::CNormal);
+    EXPECT_EQ(control.peWork(), SauPeWorkMode::Matmul);
+    EXPECT_EQ(control.cutbit, 8);
+    EXPECT_EQ(control.flowLoopTimes, 1);
+    EXPECT_EQ(control.horizontalAddress, 0x29120000);
+    EXPECT_EQ(control.verticalAddress, 0x29120400);
+    EXPECT_EQ(control.outputAddress, 0x29120c00);
+    EXPECT_EQ(control.input.yBurst, 32);
+    EXPECT_EQ(control.vertical.yCycle, 32);
+    EXPECT_EQ(control.registerInput.yCycle, 32);
+    EXPECT_EQ(control.output.registerYCycle, 32);
 
     const auto &policy = commands[0].decoded.timingPolicy;
     EXPECT_EQ(policy.transMode, 1);
@@ -250,12 +270,137 @@ TEST(SauCsrConfig, StartIsAOneCyclePulseAndUsesTheRtlOperation)
     EXPECT_TRUE(config.apply(write(3, 0x20c, 0x0000000080000000)));
 }
 
-TEST(SauCsrConfig, RejectsUnsupportedControlModesWithRawValues)
+std::vector<SauCsrWrite>
+smallFixtureWritesWithControlWord(uint64_t controlWord)
 {
     auto writes = smallFixtureWrites();
-    writes[3].data = 0x0000000000140010;
+    writes[3].data = controlWord;
+    return writes;
+}
 
-    EXPECT_THROW(replayCsrWrites(writes), std::invalid_argument);
+// The small fixture's control word: trans=01, reuse=01, sa_flow=00,
+// register_mode=00, pe_work=00, conv_kernal=0, stride=0, shift=0,
+// cutbit=8, flow_loop_times=1.
+constexpr uint64_t BaseControlWord = 0x0000000000140011;
+
+TEST(SauCsrConfig, RejectsOutOfStageOperatorSwitchesWithRawControl)
+{
+    // Step 0 operator switches leave the int8 GEMM stage and are the only
+    // decode-level rejections: pe_work_mode!=0, shift_flag, conv_kernal!=0,
+    // stride_flag, and the depthwise register_mode=10.
+    const uint64_t switches[] = {
+        BaseControlWord | (uint64_t(0x1) << 6),   // pe_work_mode=01 CONV
+        BaseControlWord | (uint64_t(0x2) << 6),   // pe_work_mode=10
+        BaseControlWord | (uint64_t(0x1) << 14),  // shift_flag=1
+        BaseControlWord | (uint64_t(0x3) << 10),  // conv_kernal=3
+        BaseControlWord | (uint64_t(0x1) << 13),  // stride_flag=1
+        BaseControlWord | (uint64_t(0x2) << 2),   // register_mode=10
+    };
+    for (const uint64_t word : switches) {
+        EXPECT_THROW(
+            replayCsrWrites(smallFixtureWritesWithControlWord(word)),
+            std::invalid_argument);
+    }
+
+    try {
+        replayCsrWrites(smallFixtureWritesWithControlWord(
+            BaseControlWord | (uint64_t(0x1) << 6)));
+        FAIL() << "pe_work_mode=01 must be rejected";
+    } catch (const std::invalid_argument &error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("pe_work_mode"), std::string::npos);
+        EXPECT_NE(message.find("trans_mode=1"), std::string::npos);
+        EXPECT_NE(message.find("cutbit=8"), std::string::npos);
+        EXPECT_NE(message.find("flow_loop_times=1"), std::string::npos);
+    }
+}
+
+TEST(SauCsrConfig, DecodesEveryLegalModeCombinationLosslessly)
+{
+    static const char *const expectedTrans[] = {
+        "T-ABD", "T-ATBD", "T-ABTD", "T-ABDT"
+    };
+    static const char *const expectedReuse[] = {
+        "R-none", "R-A", "R-B", "R-AB"
+    };
+    static const char *const expectedFlow[] = {
+        "F-normal", "F-trans", "F-retain", "F-tretain"
+    };
+    for (uint32_t trans = 0; trans <= 3; ++trans) {
+        for (uint32_t reuse = 0; reuse <= 3; ++reuse) {
+            for (uint32_t flow = 0; flow <= 3; ++flow) {
+                const uint64_t word = (BaseControlWord & ~uint64_t(0x333)) |
+                    trans | (uint64_t(reuse) << 4) | (uint64_t(flow) << 8);
+                const auto commands = replayCsrWrites(
+                    smallFixtureWritesWithControlWord(word));
+
+                ASSERT_EQ(commands.size(), 1);
+                const auto &decoded = commands[0].decoded;
+                const auto &control = decoded.command.control;
+                EXPECT_EQ(control.transMode, trans);
+                EXPECT_EQ(control.reuseMode, reuse);
+                EXPECT_EQ(control.saFlowMode, flow);
+                EXPECT_EQ(control.trans(),
+                          static_cast<SauTransMode>(trans));
+                EXPECT_EQ(control.reuse(),
+                          static_cast<SauReuseMode>(reuse));
+                EXPECT_EQ(control.saFlow(),
+                          static_cast<SauSaFlowMode>(flow));
+
+                if (trans == 1 && reuse == 1 && flow == 0) {
+                    EXPECT_EQ(decoded.maturity,
+                              ValidationMaturity::ResourceTimed);
+                    EXPECT_TRUE(decoded.maturityReason.empty());
+                } else {
+                    EXPECT_EQ(decoded.maturity,
+                              ValidationMaturity::RtlLegalUnimplemented);
+                    EXPECT_NE(decoded.maturityReason.find("raw CSR control"),
+                              std::string::npos);
+                    // Every legal combination reports its Step 0 path row.
+                    const std::string path =
+                        std::string("selected RTL path: ") +
+                        expectedTrans[trans] + "/" + expectedReuse[reuse] +
+                        "/" + expectedFlow[flow];
+                    EXPECT_NE(decoded.maturityReason.find(path),
+                              std::string::npos);
+                }
+            }
+        }
+    }
+}
+
+TEST(SauCsrConfig, PreservesCutbitAcrossTheFullRawDomain)
+{
+    for (uint32_t cutbit = 0; cutbit <= 31; ++cutbit) {
+        const uint64_t word = (BaseControlWord & ~(uint64_t(0x1f) << 15)) |
+            (uint64_t(cutbit) << 15);
+        const auto commands = replayCsrWrites(
+            smallFixtureWritesWithControlWord(word));
+
+        ASSERT_EQ(commands.size(), 1);
+        const auto &decoded = commands[0].decoded;
+        EXPECT_EQ(decoded.command.control.cutbit, cutbit);
+        // cutbit selects data-path shift/saturation only; it is not a
+        // timing-path maturity boundary.
+        EXPECT_EQ(decoded.maturity, ValidationMaturity::ResourceTimed);
+    }
+}
+
+TEST(SauCsrConfig, ZeroFlowLoopTimesIsLegalButUnimplemented)
+{
+    const uint64_t word = BaseControlWord & ~(uint64_t(0x3f) << 20);
+    const auto commands = replayCsrWrites(
+        smallFixtureWritesWithControlWord(word));
+
+    ASSERT_EQ(commands.size(), 1);
+    const auto &decoded = commands[0].decoded;
+    EXPECT_EQ(decoded.command.control.flowLoopTimes, 0);
+    EXPECT_EQ(decoded.maturity, ValidationMaturity::RtlLegalUnimplemented);
+    EXPECT_NE(decoded.maturityReason.find(
+                  "outside the validated execution domain"),
+              std::string::npos);
+    EXPECT_NE(decoded.maturityReason.find("flow_loop_times=0"),
+              std::string::npos);
 }
 
 TEST(SauCsrConfig, DerivesDifferentCoverageShapesWithoutProfiles)

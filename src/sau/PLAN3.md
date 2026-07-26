@@ -502,22 +502,22 @@ accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三�
 
 代码结构从本步骤起不得以 `01/01` 作为实现限制；`01/01` 仅是已有 regression。
 
-- [ ] `SauCsrConfig::decode()` 按 Step 0 支持域表解码所有 RTL 合法的 int8 GEMM
+- [x] `SauCsrConfig::decode()` 按 Step 0 支持域表解码所有 RTL 合法的 int8 GEMM
   配置，不使用“等于当前 fixture 默认值”作为合法性条件。
-- [ ] `SauCommand` 保存 raw/type-safe 的 `trans_mode`、`reuse_mode`、
+- [x] `SauCommand` 保存 raw/type-safe 的 `trans_mode`、`reuse_mode`、
   `sa_flow_mode`、`register_mode`、`cutbit`、flow/loop、padding/valid window
   和全部 step/burst/cycle，不再只保存压扁后的 beat 数。
-- [ ] 为 controller、address generator、input、transpose/reuse、array、output
+- [x] 为 controller、address generator、input、transpose/reuse、array、output
   和 writeback 定义共享的 typed resource config；每个资源只消费 RTL 中实际连接
   到它的字段，禁止在模块内部重新解释 raw CSR。
-- [ ] 地址 generator 从 raw x/y/flow/instruction counter、step、burst、
+- [x] 地址 generator 从 raw x/y/flow/instruction counter、step、burst、
   padding/valid window 推进，不使用 M/K/N 或 fixture 分支。
-- [ ] 建立验证成熟度记录，区分 decoded/resource-timed/data-functional/
+- [x] 建立验证成熟度记录，区分 decoded/resource-timed/data-functional/
   end-to-end；合法配置不能因为尚未达到 end-to-end 就伪装成 RTL illegal。
 - [ ] 保留现有 `RtlSchedulerSkeleton/RtlCommandDriverSkeleton` 的 `01/01`
   regression；新 mode 不在 skeleton 中复制控制状态机，而是通过通用
   boundary-trace comparator 与 RTL golden 对比。
-- [ ] `reuse=11`、`register_mode`、`conv_kernal`、`stride_flag` 按 Step 0 分类；
+- [x] `reuse=11`、`register_mode`、`conv_kernal`、`stride_flag` 按 Step 0 分类；
   只有权威接口判定非法或切换到阶段外算子的组合才在 decode 阶段拒绝。
 
 验收：

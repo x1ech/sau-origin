@@ -2,6 +2,7 @@
 #define __SAU_CSR_CONFIG_HH__
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "sau/timing_policy.hh"
@@ -20,65 +21,17 @@ struct SauCsrWrite
     bool accepted = false;
 };
 
-struct SauInputCsrConfig
-{
-    uint8_t xStep = 0;
-    uint8_t xBurst = 0;
-    uint8_t yStep = 0;
-    uint8_t yBurst = 0;
-    uint8_t flowStep = 0;
-    uint8_t flowBurst = 0;
-    uint8_t instructionStep = 0;
-    uint8_t instructionBurst = 0;
-};
-
-struct SauVerticalCsrConfig
-{
-    uint8_t xStep = 0;
-    uint8_t xBurst = 0;
-    uint8_t yStep = 0;
-    uint8_t yCycle = 0;
-    uint8_t flowStep = 0;
-    uint8_t flowCycle = 0;
-    uint8_t instructionStep = 0;
-    uint8_t instructionCycle = 0;
-};
-
-struct SauRegisterInputCsrConfig
-{
-    uint8_t xBurst = 0;
-    uint8_t yStep = 0;
-    uint8_t yCycle = 0;
-    uint8_t cStep = 0;
-    uint8_t cCycle = 0;
-    uint8_t validYStart = 0;
-    uint8_t validYEnd = 0;
-    uint8_t validXStart = 0;
-    uint8_t validXEnd = 0;
-    uint8_t padding = 0;
-};
-
-struct SauOutputCsrConfig
-{
-    uint8_t xStep = 0;
-    uint8_t xBurst = 0;
-    uint8_t yStep = 0;
-    uint8_t yBurst = 0;
-    uint8_t flowStep = 0;
-    uint8_t flowBurst = 0;
-    uint8_t instructionStep = 0;
-    uint8_t instructionBurst = 0;
-    uint8_t registerXBurst = 0;
-    uint8_t registerYStep = 0;
-    uint8_t registerYCycle = 0;
-    uint8_t registerCStep = 0;
-    uint8_t registerCCycle = 0;
-};
-
 struct DecodedSauCommand
 {
     SauCommand command;
     TimingPolicy timingPolicy;
+    // Highest maturity the decoded configuration's resource path has
+    // reached in this model. Legal-but-unimplemented configurations decode
+    // losslessly but must fail fast before execution.
+    ValidationMaturity maturity = ValidationMaturity::Decoded;
+    // Human-readable missing-path report when the configuration is
+    // RtlLegalUnimplemented; empty otherwise.
+    std::string maturityReason;
 };
 
 /**

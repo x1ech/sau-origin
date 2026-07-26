@@ -90,13 +90,19 @@ loadCsrFixture(const std::string &fixtureDirectory,
     std::vector<ReplayedSauCommand> commands;
     commands.reserve(replayed.size());
     for (auto &entry : replayed) {
-        entry.decoded.timingPolicy = TimingPolicy::derive(
-            entry.decoded.command, entry.decoded.timingPolicy.transMode,
-            entry.decoded.timingPolicy.reuseMode, rtl);
+        // A legal-but-unimplemented command has no meaningful timing
+        // policy; it must fail fast at the execution boundary instead.
+        if (entry.decoded.maturity == ValidationMaturity::ResourceTimed) {
+            const auto &control = entry.decoded.command.control;
+            entry.decoded.timingPolicy = TimingPolicy::derive(
+                entry.decoded.command, control.transMode,
+                control.reuseMode, rtl);
+        }
         commands.push_back(std::move(entry));
     }
     if (commands.empty()) {
-        throw std::invalid_argument("SAU CSR fixture contains no accepted start");
+        throw std::invalid_argument(
+            "SAU CSR fixture contains no accepted start");
     }
     return commands;
 }

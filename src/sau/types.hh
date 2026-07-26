@@ -25,6 +25,57 @@ enum class StreamKind : uint8_t
     Output
 };
 
+/** Raw 2-bit trans_mode values named after SA_pkg.sv. */
+enum class SauTransMode : uint8_t
+{
+    ABD = 0,   // A * B = D
+    ATBD = 1,  // A^T * B = D^T
+    ABTD = 2,  // A * B^T = D^T
+    ABDT = 3   // A * B = D^T
+};
+
+/** Raw 2-bit reuse_mode values; 11 asserts both reuse bits (Step 0). */
+enum class SauReuseMode : uint8_t
+{
+    None = 0,
+    ReuseA = 1,
+    ReuseB = 2,
+    ReuseAB = 3
+};
+
+/** Raw 2-bit sa_flow_mode values named after the RTL clear/retain modes. */
+enum class SauSaFlowMode : uint8_t
+{
+    CNormal = 0,
+    CTrans = 1,
+    Retain = 2,
+    TRetain = 3
+};
+
+/** Raw 2-bit pe_work_mode operator selection. Only Matmul is in stage. */
+enum class SauPeWorkMode : uint8_t
+{
+    Matmul = 0,
+    Conv = 1,
+    Transposer = 2,
+    Add = 3
+};
+
+/**
+ * Highest validation level a decoded configuration has reached.  RTL
+ * legality and model maturity are deliberately separate: a legal raw
+ * configuration whose resource path is not executable yet must be
+ * reported as RtlLegalUnimplemented, never mislabeled illegal.
+ */
+enum class ValidationMaturity : uint8_t
+{
+    Decoded,
+    RtlLegalUnimplemented,
+    ResourceTimed,
+    DataFunctional,
+    EndToEndValidated
+};
+
 enum class Phase : uint8_t
 {
     Idle,
@@ -76,6 +127,113 @@ struct NestedAddressProgram
     uint32_t instructionStepBytes = 0;
 };
 
+/** Raw csr.sv streamed-input counter fields (register index 2). */
+struct SauInputCsrConfig
+{
+    uint8_t xStep = 0;
+    uint8_t xBurst = 0;
+    uint8_t yStep = 0;
+    uint8_t yBurst = 0;
+    uint8_t flowStep = 0;
+    uint8_t flowBurst = 0;
+    uint8_t instructionStep = 0;
+    uint8_t instructionBurst = 0;
+};
+
+/** Raw csr.sv vertical address counter fields (register index 4). */
+struct SauVerticalCsrConfig
+{
+    uint8_t xStep = 0;
+    uint8_t xBurst = 0;
+    uint8_t yStep = 0;
+    uint8_t yCycle = 0;
+    uint8_t flowStep = 0;
+    uint8_t flowCycle = 0;
+    uint8_t instructionStep = 0;
+    uint8_t instructionCycle = 0;
+};
+
+/** Raw csr.sv register-input counter and valid-window fields (index 1). */
+struct SauRegisterInputCsrConfig
+{
+    uint8_t xBurst = 0;
+    uint8_t yStep = 0;
+    uint8_t yCycle = 0;
+    uint8_t cStep = 0;
+    uint8_t cCycle = 0;
+    uint8_t validYStart = 0;
+    uint8_t validYEnd = 0;
+    uint8_t validXStart = 0;
+    uint8_t validXEnd = 0;
+    uint8_t padding = 0;
+};
+
+/** Raw csr.sv output counter fields (register indexes 5 and 6). */
+struct SauOutputCsrConfig
+{
+    uint8_t xStep = 0;
+    uint8_t xBurst = 0;
+    uint8_t yStep = 0;
+    uint8_t yBurst = 0;
+    uint8_t flowStep = 0;
+    uint8_t flowBurst = 0;
+    uint8_t instructionStep = 0;
+    uint8_t instructionBurst = 0;
+    uint8_t registerXBurst = 0;
+    uint8_t registerYStep = 0;
+    uint8_t registerYCycle = 0;
+    uint8_t registerCStep = 0;
+    uint8_t registerCCycle = 0;
+};
+
+/**
+ * The complete raw int8-GEMM control state a command was started with.
+ * Every field keeps its csr.sv raw width and value; typed accessors only
+ * name the raw encodings.  Resources must consume these fields instead of
+ * re-deriving behavior from flattened beat counts or fixture assumptions.
+ */
+struct SauControlFields
+{
+    uint8_t transMode = 0;
+    uint8_t reuseMode = 0;
+    uint8_t saFlowMode = 0;
+    uint8_t registerMode = 0;
+    uint8_t peWorkMode = 0;
+    uint8_t convKernal = 0;
+    bool strideFlag = false;
+    bool shiftFlag = false;
+    uint8_t cutbit = 0;
+    uint8_t flowLoopTimes = 0;
+    Addr verticalAddress = 0;
+    Addr horizontalAddress = 0;
+    Addr outputAddress = 0;
+    Addr biasAddress = 0;
+    SauInputCsrConfig input;
+    SauVerticalCsrConfig vertical;
+    SauRegisterInputCsrConfig registerInput;
+    SauOutputCsrConfig output;
+
+    SauTransMode trans() const
+    {
+        return static_cast<SauTransMode>(transMode & 0x3);
+    }
+
+    SauReuseMode reuse() const
+    {
+        return static_cast<SauReuseMode>(reuseMode & 0x3);
+    }
+
+    SauSaFlowMode saFlow() const
+    {
+        return static_cast<SauSaFlowMode>(saFlowMode & 0x3);
+    }
+
+    SauPeWorkMode peWork() const
+    {
+        return static_cast<SauPeWorkMode>(peWorkMode & 0x3);
+    }
+};
+
 struct SauCommand
 {
     uint64_t id = 0;
@@ -93,6 +251,9 @@ struct SauCommand
     // legacy direct-command interpretation (flowLoops * instructionLoops).
     uint32_t scheduleInstructions = 0;
     NestedAddressProgram operandBAddress;
+    // Raw CSR control state for CSR-replayed commands. Synthetic
+    // direct-command runs leave it at the neutral default.
+    SauControlFields control;
 };
 
 struct Beat

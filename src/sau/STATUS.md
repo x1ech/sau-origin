@@ -1586,3 +1586,228 @@ thereby closed except for the two consumer-deferred items (strict read
 payload consumption in Step 3; real write payloads in Step 5). The
 next PLAN3 work item is Step 2, the full-legal-domain Int8 GEMM CSR
 decode and typed resource-dispatch framework.
+
+### PLAN3 Step 2 increment 1 — 2026-07-26
+
+The first Step 2 increment replaces the fixture-value legality gate in
+CSR decode with the frozen Step 0 support domain, preserves the
+complete raw control state in the command, and adds the validation
+maturity record plus the runtime fail-fast:
+
+- `types.hh` gains the typed raw encodings `SauTransMode`
+  (ABD/ATBD/ABTD/ABDT), `SauReuseMode` (None/A/B/AB),
+  `SauSaFlowMode` (CNORMAL/CTRANS/RETAIN/TRETAIN), `SauPeWorkMode`,
+  and the `ValidationMaturity` ladder
+  (Decoded/RtlLegalUnimplemented/ResourceTimed/DataFunctional/
+  EndToEndValidated). The four csr.sv counter-group structs moved from
+  `csr_config.hh` into `types.hh` unchanged, and a new
+  `SauControlFields` block — every raw mode/flag/cutbit/flow field,
+  all four addresses, and all four counter groups with typed
+  accessors — is embedded in `SauCommand` as `command.control`.
+  Synthetic direct commands keep the neutral default.
+- `SauCsrConfig::decode()` no longer rejects on
+  `trans_mode/reuse_mode != 01/01`. Decode-level rejection now covers
+  exactly the Step 0 out-of-stage operator switches — `pe_work_mode !=
+  MATMUL`, `shift_flag=1`, `conv_kernal != 0`, `stride_flag=1`, and the
+  depthwise `register_mode=10` — and the thrown message lists the
+  authoritative reason plus the complete raw control summary. Every
+  other raw combination decodes losslessly. The decoded result carries
+  a maturity: the validated `trans=01/reuse=01/sa_flow=00` path (with
+  `register_mode` 00/01/11 sharing the RTL non-depthwise guard) that
+  also passes command validation is `ResourceTimed` and derives its
+  timing policy; every other legal configuration — including raw wrap
+  shapes such as `flow_loop_times=0` — is `RtlLegalUnimplemented` with
+  a missing-path reason, never mislabeled illegal.
+- `loadCsrFixture()` derives the RTL timing policy only for
+  `ResourceTimed` commands, and the `SauModel` constructor fail-fasts
+  with `rtl_legal_unimplemented` plus the full reason before any
+  result or statistic when a replayed fixture command is legal but
+  unimplemented. The strict `RtlCommandDriverSkeleton` keeps its own
+  01/01 shape gate unchanged as the regression oracle.
+- `csr_config.test.cc` drops the old 01/01 rejection test and adds
+  four: out-of-stage operator rejection with raw-control message
+  checks, lossless decode of all 4x4x4 trans/reuse/flow combinations
+  with exact maturity classification, `cutbit=0..31` full-domain
+  preservation at unchanged timing maturity, and the
+  `flow_loop_times=0` legal-but-unimplemented wrap boundary. The
+  small-fixture replay test now also checks `command.control` and its
+  typed accessors.
+
+Static verification on 2026-07-26: `g++ -std=c++17 -fsyntax-only`
+passes for every changed file and every `types.hh` consumer swept
+(`command.cc`, `timing_policy.cc`, `schedule_state.cc`,
+`address_generator.cc`, `a_register_file.cc`, `sau_model.cc` against
+the current `build/RISCV` params header); `util/style.py` reports no
+issues in new or changed regions (the three remaining `sau_model.cc`
+long-line reports are the documented pre-existing lines); a
+pre-existing long line touched in `csr_fixture.cc` was wrapped;
+`git diff --check` passes. Developer compilation is pending:
+
+```bash
+scons build/ALL/sau/csr_config.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/csr_config.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+Expected results: `csr_config.test` goes from 7 to 10 tests. The full
+quick suite must stay at 63/63 — every registered fixture is
+`trans=01/reuse=01/sa_flow=00` and therefore still decodes to
+`ResourceTimed` with an unchanged timing policy. Remaining Step 2
+items for later increments: the shared typed resource configs for each
+resource, raw-counter address generation, and the path-table mapping
+checks from the Step 2 acceptance list.
+
+The developer rebuilt this increment on 2026-07-26 and reported the
+build passing. The 10-test focused suite was additionally compiled and
+run standalone against the increment sources and passes 10/10.
+
+### PLAN3 Step 2 increment 2 — 2026-07-26
+
+The second Step 2 increment adds the shared typed resource-dispatch
+module and binds every legal configuration to its frozen Step 0 path
+row:
+
+- New `resource_config.{hh,cc}` defines one typed configuration struct
+  per Step 0 resource — controller/scheduler, streamed and resident
+  address programs, input RF/padding/feeder, transposer/reuse banks,
+  systolic array, output RF, and writeback — plus
+  `deriveResourceConfigs(SauControlFields)`. Each struct carries
+  exactly the CSR fields the RTL wires to that resource (for example
+  `cutbit` reaches only the array shift/saturation boundary,
+  `sa_flow_mode[1]` reaches the bank-retain, PE-keep, and output-RF
+  accumulate flags, and the output register-side versus mem-side
+  counters split between the output-RF and writeback configs). The
+  dispatch is total over the decoded domain and contains no fixture,
+  matrix-size, or 01/01 branch.
+- `selectRtlPaths()` maps any raw control block onto the frozen
+  PLAN3_STEP0 path table rows (`T-ABD..T-ABDT`, `R-none..R-AB`,
+  `F-normal..F-tretain`). `SauCsrConfig::decode()` now includes the
+  selected path row in every `rtl_legal_unimplemented` reason, so the
+  runtime fail-fast names the exact missing structural path.
+- New focused suite `resource_config.test` (3 tests): per-resource
+  field dispatch against the small-fixture control state; a
+  change-isolation test proving each legal field change reaches only
+  its owning resource config (cutbit, trans_mode including the
+  ABD direct-result row, reuse bits including 11, sa_flow bits,
+  vertical counters, padding, and the split output counters); and the
+  4x4x4 path-selection sweep cross-checked against the
+  operand-transposer ownership flags. `csr_config.test` adds the
+  path-row assertion to its mode-combination sweep and registers
+  `resource_config.cc` as a dependency.
+
+Static verification on 2026-07-26: syntax-only compilation, style on
+all new/changed files, and `git diff --check` pass. Both focused
+suites were also compiled and run standalone against the increment
+sources: `resource_config.test` passes 3/3 and `csr_config.test`
+passes 10/10. Developer compilation is pending; `csr_config.cc` and
+the new `Source("resource_config.cc")` require a `gem5.opt` relink:
+
+```bash
+scons build/ALL/sau/resource_config.test.opt \
+    build/ALL/sau/csr_config.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/resource_config.test.opt
+./build/ALL/sau/csr_config.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63; no runtime scheduling path
+consumes the new resource configs yet. Remaining Step 2 items:
+raw-counter address generation and wiring the typed resource configs
+into the module boundaries as their consumers land in Steps 3-5.
+
+The developer rebuilt this increment on 2026-07-26 and reported the
+build passing.
+
+### PLAN3 Step 2 increment 3 — 2026-07-26
+
+The third Step 2 increment implements raw-counter address programs
+copied from the frozen RTL address generators. The evidence base is the
+local authoritative checkout `/home/xch/workspace/npu_lpnpu`: the
+SHA-256 of `hardware/src/sa_element/mem_addr.sv` and
+`register_addr.sv` there match the frozen hashes in
+`RTL_TIMING_PROVENANCE.md` exactly, so their source semantics are the
+Step 0 contract, not a guess.
+
+- New `address_program.{hh,cc}`:
+  - `RtlStreamAddressProgram` reproduces `mem_addr.sv`: the two-stage
+    step registers (`x_step*32`, `y_step*32`, `flow_step*y_step*32`
+    through the 16-bit product register, and the fixed one-beat
+    instruction step for `conv_kernal=0` — exactly the composite
+    strides the eight strict fixtures validated), the x→y walk with
+    row-start tracking, flow/instruction retriggers accumulating from
+    `flow_start/ins_start`, `vertical_cnt_last` on entering each flow's
+    final row, 32-bit wrap arithmetic, and the IDLE zero-count guard
+    (any zero x/y/flow/instruction count ends immediately with no
+    address — the raw zero boundary is "none", not "one"). Two
+    source-faithful shape quirks are encoded and tested: `y_cycle==1`
+    ends after the x walk without ever advancing flow/instruction, and
+    `x_burst>1` emits only the first beat of each flow's final row
+    because the source leaves RUNNING when entering it.
+  - `RtlResidentAddressProgram` reproduces `register_addr.sv` (which
+    also serves the output-RF unload instance): the x/y/channel loop
+    with `y_step*32` and `c_step*y_step*32` steps, the zero-count
+    guard, and the complete padding contract — padded x positions and
+    fully padded y rows freeze the address (a padded row keeps
+    `row_start` and returns to the row start) while the write pointer
+    advances on every beat.
+- The resource configs gained the fields the RTL actually wires to
+  these modules: `conv_kernal` on the stream program and the
+  pad/valid-window fields on the resident program (register_addr.sv
+  consumes them directly); the resource-config change-isolation test
+  now checks padding reaches both the input resource and the resident
+  address program.
+- New focused suite `address_program.test` (8 tests): composite-stride
+  formula equality on the validated x=1 shape, both zero-count guards,
+  the two source-derived shape quirks, the linear 256-beat baseline
+  resident load (`x_burst=8, y_step=8, y_cycle=32`), a hand-computed
+  24-beat padding sequence over two channels, and the raw-control →
+  resource-config → program chain.
+
+Static verification on 2026-07-26: syntax-only compilation, style, and
+`git diff --check` pass. Standalone compilation and execution:
+`address_program.test` passes 8/8 and the updated
+`resource_config.test` passes 3/3. Runtime address ownership is
+unchanged — `AddressGenerator` still owns runtime addresses until the
+Step 3+ datapath consumes these programs. Developer compilation is
+pending; the new `Source("address_program.cc")` requires a `gem5.opt`
+relink:
+
+```bash
+scons build/ALL/sau/address_program.test.opt \
+    build/ALL/sau/resource_config.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/address_program.test.opt
+./build/ALL/sau/resource_config.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63. With this increment the Step 2
+checklist items for full-domain decode, raw command fields, typed
+resource dispatch, raw-counter address generation, maturity recording,
+skeleton preservation, and Step 0 field classification all have
+implementations; checking them off in `PLAN3.md` waits on this
+increment's developer build.
+
+Increment 3 verification completed on 2026-07-26: the developer
+rebuilt the focused targets and relinked `gem5.opt`; all builds
+passed. Six of the seven PLAN3 Step 2 checklist items are now checked:
+full-domain decode, raw/type-safe command fields, typed resource
+dispatch, raw-counter address programs, the validation-maturity
+record, and the Step 0 field classification. The remaining item —
+comparing new modes against RTL golden through a generic
+boundary-trace comparator instead of a second skeleton state machine —
+stays open by design until Step 3 runs the first non-default mode
+(ABTD) against its Step 0 boundary golden; the skeleton itself remains
+unexpanded as required. The next work item is PLAN3 Step 3:
+configuration-driven input, transpose, and reuse resources, with the
+`trans_mode=2 (ABTD)` B -> B^T transposer path as the first
+non-default milestone against the captured
+`functional_ref` ABTD boundary package.

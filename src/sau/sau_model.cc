@@ -278,6 +278,16 @@ SauModel::SauModel(const Params &params)
         fixtureCommands = loadCsrFixture(params.csr_fixture, rtlTiming);
         panic_if(fixtureCommands.size() != commandCount,
                  "SAU CSR fixture command count does not match command_count");
+        for (const auto &entry : fixtureCommands) {
+            // PLAN3 fail-fast contract: a legal raw configuration whose
+            // resource path is not executable yet must stop before
+            // producing any result or timing statistic.
+            if (entry.decoded.maturity != ValidationMaturity::ResourceTimed) {
+                fatal("SAU command %d is rtl_legal_unimplemented: %s",
+                      entry.decoded.command.id,
+                      entry.decoded.maturityReason);
+            }
+        }
     }
     panic_if(functionalMemorySize == 0 &&
                  (!memoryImageFile.empty() || !finalMemoryDumpFile.empty()),
