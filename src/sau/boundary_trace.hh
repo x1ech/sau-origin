@@ -12,10 +12,12 @@ namespace gem5::sau
 
 /**
  * Model-side boundary trace writer for util/sau/compare_boundary.py:
- * ``signal,cycle,value`` rows with per-signal cycle indexes and 0x-hex
- * values (beat byte 31 is the most significant hex byte, matching the
- * RTL bit-slice contract).  Sequence-mode comparison ignores the
- * synthetic cycles; they only need to be nondecreasing per signal.
+ * ``signal,cycle,value`` rows with 0x-hex values (beat byte 31 is the
+ * most significant hex byte, matching the RTL bit-slice contract).
+ * The explicit-cycle emits carry model cycles for cycles-mode
+ * comparison; the incrementing emits produce synthetic per-signal
+ * indexes that sequence-mode comparison ignores.  Cycles must be
+ * nondecreasing per signal either way.
  */
 class BoundaryTraceWriter
 {
@@ -23,11 +25,15 @@ class BoundaryTraceWriter
     explicit BoundaryTraceWriter(const std::string &path);
 
     void emit(const std::string &signal, const MemoryBeat256 &value);
+    void emit(const std::string &signal, uint64_t cycle,
+              const MemoryBeat256 &value);
     void emitZero(const std::string &signal);
+    void emitZero(const std::string &signal, uint64_t cycle);
     bool good() const;
 
   private:
-    void writeRow(const std::string &signal, const std::string &value);
+    void writeRow(const std::string &signal, uint64_t cycle,
+                  const std::string &value);
 
     std::ofstream output;
     std::map<std::string, uint64_t> nextCycle;

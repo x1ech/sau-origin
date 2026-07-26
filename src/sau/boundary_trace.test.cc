@@ -32,6 +32,8 @@ TEST(BoundaryTraceWriter, WritesPerSignalCyclesAndHexValues)
         writer.emitZero("a");
         writer.emit("a", beat);
         writer.emitZero("b");
+        writer.emit("b", 42, beat);
+        writer.emitZero("b");
         ASSERT_TRUE(writer.good());
     }
 
@@ -43,7 +45,10 @@ TEST(BoundaryTraceWriter, WritesPerSignalCyclesAndHexValues)
               "a,0,0x0\n"
               "a,1,0xf1000000000000000000000000000000"
               "0000000000000000000000000000001e\n"
-              "b,0,0x0\n");
+              "b,0,0x0\n"
+              "b,42,0xf1000000000000000000000000000000"
+              "0000000000000000000000000000001e\n"
+              "b,43,0x0\n");
     std::remove(path.c_str());
 }
 
@@ -62,19 +67,26 @@ TEST(BoundaryTrace, GeneratesTheAbtdModelTrace)
     const std::string path = temporaryPath("sau_abtd_model_boundary.csv");
     ASSERT_TRUE(generateAbtdBoundaryTrace(PackageDirectory, path));
 
-    // 1 header + rdata (1 + 64) + data_B/inRow (32 each) + outCol (1 + 32).
+    // 1 header + rdata (1 + 64) + data_A (64: the reuse-A double
+    // readout) + data_B (33: the leaked resident tail plus the 32
+    // streamed beats) + trans0_inRow (32) + outCol (1 + 32).
     std::ifstream input(path);
     std::string line;
     unsigned lines = 0;
     unsigned rdata = 0;
+    unsigned dataB = 0;
     while (std::getline(input, line)) {
         ++lines;
         if (line.rfind("sau_sram_rdata,", 0) == 0) {
             ++rdata;
         }
+        if (line.rfind("data_B,", 0) == 0) {
+            ++dataB;
+        }
     }
-    EXPECT_EQ(lines, 1u + 65u + 32u + 32u + 33u);
+    EXPECT_EQ(lines, 1u + 65u + 64u + 33u + 32u + 33u);
     EXPECT_EQ(rdata, 65u);
+    EXPECT_EQ(dataB, 33u);
     std::remove(path.c_str());
 }
 

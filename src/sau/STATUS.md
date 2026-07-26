@@ -14,34 +14,31 @@ arithmetic computation.
 
 Read this section first when resuming PLAN3 work in a new session.
 
-- Committed state: `07c43b15f5` (PLAN3 Step 1) and `6bcfe89b41`
-  (PLAN3 Step 2) sit on top of the pushed PLAN2 baseline `458ad7e3cb`;
-  the full SAU quick suite stays at 63/63 across 23 suites. Step 1 is
-  closed except two consumer-deferred items (strict read-payload
-  consumption lands with Step 3 runtime integration; real write
-  payloads with Step 5). Step 2 is closed with six of seven checklist
-  items checked; the seventh (new modes validated through the generic
-  boundary comparator) completes with the ABTD boundary match.
-- PLAN3 Step 3 increments 1-7 are implemented and developer-verified
-  (dated sections at the end of this file): input-datapath payload
-  resources, feeder A/B payload chains, the transposer bank and
-  sa_feeder arbiter, external-read payload validation through the
-  raw-counter address programs, and the generic boundary comparator
-  with the first model-versus-golden ABTD run. That run proved the
-  full 64-beat `sau_sram_rdata` payload sequence and pinpointed the
-  raw ABTD+reuse-A bank-load behavior (`[A31, B0, A1..A30]`) that the
-  next increment must reproduce.
-- Payload-source authority: the frozen `sa_execute` sources are
-  extracted from fetched commit `e722852bd9ab` (hashes frozen in
-  `RTL_TIMING_PROVENANCE.md`); the current `npu_lpnpu` HEAD has
-  evolved past the contract in seven files and is not authority.
-- Step 3 remaining: (1) the ABTD control chain — the scheduler
-  `input_switch` timeline and feeder arbiter enables for
-  `trans_mode=2`, derived from the frozen `scheduler.sv`/`feeder.sv`
-  — closing the first non-default milestone; (2) runtime integration
-  of the payload resources into `SauModel`; (3) reuse variants
-  R-none/R-B, blocked on VCS golden captures; (4) transposer/reuse
-  statistics.
+- Committed state: `07c43b15f5` (PLAN3 Step 1), `6bcfe89b41` (PLAN3
+  Step 2), and `b289bc47dc` (PLAN3 Step 3 increments 1-7) sit on top
+  of the pushed PLAN2 baseline `458ad7e3cb`; the full SAU quick suite
+  stays at 63/63 across 23 suites. Step 1 is closed except two
+  consumer-deferred items (strict read-payload consumption lands with
+  Step 3 runtime integration; real write payloads with Step 5). Step 2
+  is closed with all seven checklist items checked.
+- PLAN3 Step 3 increments 1-8 are implemented (dated sections at the
+  end of this file): input-datapath payload resources, feeder A/B
+  payload chains, the transposer bank and sa_feeder arbiter, the
+  generic boundary comparator, and — in increment 8 — the ABTD
+  control chain derived from the frozen
+  `scheduler.sv`/`feeder.sv`/`sa_feeder.sv`. The model boundary trace
+  now matches the ABTD golden in both sequence and cycles modes across
+  `sau_sram_rdata`, `data_A`, `data_B`, `trans0_inRow`, and
+  `trans0_outCol`, reproducing the raw `[A31, B0, A1..A30]` bank load;
+  the first non-default milestone (B -> B^T `data_functional`) is
+  closed and increment 8 is developer-verified.
+- Payload-source authority: the frozen `sa_execute`/`sa_element`
+  sources are extracted from fetched commit `e722852bd9ab` (hashes
+  frozen in `RTL_TIMING_PROVENANCE.md`); the current `npu_lpnpu` HEAD
+  has evolved past the contract in seven files and is not authority.
+- Step 3 remaining: (1) runtime integration of the payload resources
+  into `SauModel`, together with the transposer/reuse statistics;
+  (2) reuse variants R-none/R-B, blocked on VCS golden captures.
 - Per `src/sau/AGENTS.md`, gem5 builds remain developer-owned; provide
   incremental focused-target commands first.
 
@@ -194,11 +191,12 @@ Design and implementation references:
 ## Current State
 
 - Current stage: PLAN3 Steps 1-2 are complete and committed; Step 3
-  increments 1-7 (input/transpose payload resources, raw-counter
-  address programs, and the boundary comparator) are
-  developer-verified, with the ABTD control chain, runtime
-  integration, VCS-blocked reuse goldens, and statistics remaining.
-  The PLAN2 timing baseline below stays authoritative for regression.
+  increments 1-8 are developer-verified, and increment 8 (the ABTD
+  control chain) closes the first non-default boundary milestone in
+  both sequence and cycles comparison modes. Remaining Step 3 work:
+  runtime integration with statistics, and the VCS-blocked reuse
+  goldens. The PLAN2 timing baseline below stays authoritative for
+  regression.
 - First-milestone record: Tasks 1 through 11 implementation and validation
   complete.
   Final milestone commits `50d42ef51c` and `f303ee71c5` are pushed to
@@ -571,7 +569,7 @@ direct-command compatibility, fixed/constrained runs, and DSE simulations.
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
 | PLAN2. CSR-driven Int8 GEMM RTL alignment | Complete; committed and pushed at `458ad7e3cb` | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
-| PLAN3. CSR-driven functional datapath | Steps 0–2 complete; Step 3 in progress (7 increments verified) | Step 0 froze the RTL/CSR/golden contract; Step 1 landed the functional memory/payload contract; Step 2 landed full-domain decode, typed resource dispatch, and raw-counter address programs. Step 3 landed the input/transpose payload resources and the boundary comparator, with the ABTD `sau_sram_rdata` sequence proven against the golden. Remaining: the ABTD control chain, runtime integration, VCS-blocked reuse goldens, and statistics. |
+| PLAN3. CSR-driven functional datapath | Steps 0–2 complete; Step 3 in progress (8 increments; first non-default boundary milestone closed) | Step 0 froze the RTL/CSR/golden contract; Step 1 landed the functional memory/payload contract; Step 2 landed full-domain decode, typed resource dispatch, raw-counter address programs, and (with increment 8) the generic-comparator validation of the first new mode. Step 3 landed the input/transpose payload resources, the boundary comparator, and the ABTD control chain: the model trace matches the ABTD golden in sequence and cycles modes, reproducing the raw `[A31, B0, A1..A30]` bank load. Remaining: runtime integration with statistics, and the VCS-blocked reuse goldens. |
 
 ## Historical PLAN2 RTL Fixture Inventory
 
@@ -2252,3 +2250,94 @@ python3 util/sau/compare_boundary.py --mode sequence \
     tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary/boundary.csv \
     <model trace csv>
 ```
+
+### PLAN3 Step 3 increment 8 — 2026-07-26
+
+The eighth increment derives the ABTD control chain from the frozen
+`scheduler.sv`/`feeder.sv`/`sa_feeder.sv` sources (extracted from
+`e722852bd9ab`; all three SHA-256 hashes match the frozen provenance
+record) and lands the full model-versus-golden ABTD boundary match —
+the `data_functional` acceptance for the first non-default mode and
+the close of the last PLAN3 Step 2 checklist item.
+
+Source-derived mechanism, each element confirmed against the golden:
+
+- `scheduler.sv` preloads `input_switch=2'b11` in IDLE when
+  `trans_mode==2'b10`, and the REUSE_LOAD branch forces `2'b01`
+  unconditionally because `conv_reuse_flag` is constant 1 — the
+  raw-config quirk that overrides the commented ABT-reuse-A switch
+  table. TRANSPOSE_LOAD holds for `SA_SIZE=32` edges
+  (`transload_state_cnt`).
+- `feeder.sv`'s B gate is `!input_switch_case & !NO_INPUT_state`.
+  Under ABTD the switch bit 0 is 1 in both 11 and 01, so
+  `input_switch_case` stays 0 and the B gate is open the whole
+  command — unlike the 01/01 path where case=1 suppresses the
+  resident tail. The out-state machine leaves NO_INPUT at the resident
+  `data_last_i`; the 2-cycle-delayed `NO_INPUT_state` and the
+  3-cycle-delayed `EN_i_d_o[2]` overlap for exactly one cycle, and
+  `data_i_case0_reg` holds the last resident beat there: one early
+  accepted `data_B` pulse carrying A31 at the resident tail + 4.
+- The scheduler switch reaches the sa_feeder ports 11 cycles later
+  (feeder `STATE_DELAY=7` + `input_switch_d` + two out-pipe stages +
+  the `input_switch_o` register). The first streamed beat surfaces at
+  REUSE_LOAD entry + 11 (request offset 3 + mem visibility 4 + feeder
+  chain 4) while the forced 01 arrives at entry + 12, so exactly one
+  B beat (B0) enters the bank; from the next cycle the sa_feeder mux
+  `data_i = input_switch[1] ? data_B_i : data_A_i` follows the
+  replayed data_A stream. Bank rows: `[A31, B0, A1..A30]`; the 33rd
+  enable steers A31 to T1. B31 never enters a bank.
+- `conv_reuse_flag==1` keeps data_A on the register-file readout path;
+  reuse-A replays the 32-beat readout back to back
+  (`shift_almost_last` retrigger), giving 64 continuous data_A beats.
+
+Implementation: `generateAbtdBoundaryTrace()` is now a per-cycle
+register model — the feeder out-state machine, EN/state/switch delay
+taps, `FeederBPipeline` data chain, the sa_feeder mux register, and
+the T0/T1 arbiter — with every cycle anchor a named structural
+constant (none fitted to the golden). The leak pulse and the mixed
+bank load emerge from the register mechanics. `BoundaryTraceWriter`
+gains explicit-cycle emits, and the trace now carries real model
+cycles plus the `data_A` payload stream. The output bank latches from
+the pre-edge loaded bank when T0 fills, before the overflow row
+reaches T1.
+
+Verification already run on 2026-07-26 (standalone builds):
+`boundary_trace.test` passes 2/2 with the new 228-row shape, and the
+generated trace passes the golden comparison in BOTH modes — sequence
+(payload) and cycles (every accepted edge at the exact golden cycle:
+rdata 6..37/72..103, data_A 45..108, data_B 42 + 77..108, trans0_inRow
+43 + 78..108, outCol prefetch 109):
+
+```bash
+python3 util/sau/compare_boundary.py --mode cycles \
+    --allow-actual-extra \
+    --qualify data_A=data_A_valid,data_B=data_B_valid,u_trans2sa_top.trans0_inRow=u_trans2sa_top.trans0_inRow_en \
+    --signals sau_sram_rdata,data_A,data_B,u_trans2sa_top.trans0_inRow,u_trans2sa_top.trans0_outCol \
+    tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary/boundary.csv \
+    <model trace csv>
+```
+
+`--mode sequence` with the same arguments also passes. Style and
+`git diff --check` are clean. The last PLAN3 Step 2 checklist item is
+checked: the first non-default mode is validated through the generic
+boundary comparator, with no second command-driver state machine.
+
+Developer compilation is pending; `boundary_trace.cc` is a `Source()`
+file, so `gem5.opt` needs a relink:
+
+```bash
+scons build/ALL/sau/boundary_trace.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/boundary_trace.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The quick suite must stay at 63/63; nothing consumes the generator at
+runtime. Remaining Step 3 work: runtime integration of the payload
+resources into `SauModel` (with the transposer/reuse statistics), and
+the VCS-blocked R-none/R-B boundary captures.
+
+Step 3 increment 8 verification completed on 2026-07-26: the developer
+rebuilt the focused target and relinked `gem5.opt`; all builds passed.

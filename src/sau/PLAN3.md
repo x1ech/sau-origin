@@ -514,7 +514,7 @@ accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三�
   padding/valid window 推进，不使用 M/K/N 或 fixture 分支。
 - [x] 建立验证成熟度记录，区分 decoded/resource-timed/data-functional/
   end-to-end；合法配置不能因为尚未达到 end-to-end 就伪装成 RTL illegal。
-- [ ] 保留现有 `RtlSchedulerSkeleton/RtlCommandDriverSkeleton` 的 `01/01`
+- [x] 保留现有 `RtlSchedulerSkeleton/RtlCommandDriverSkeleton` 的 `01/01`
   regression；新 mode 不在 skeleton 中复制控制状态机，而是通过通用
   boundary-trace comparator 与 RTL golden 对比。
 - [x] `reuse=11`、`register_mode`、`conv_kernal`、`stride_flag` 按 Step 0 分类；
