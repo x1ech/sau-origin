@@ -54,6 +54,7 @@ class TransposerTinyBank
         MemoryBeat256 data;
         bool last = false;
     };
+    Output peekOutput() const;
     Output readOutput();
 
     void clear();
@@ -120,6 +121,7 @@ class TransposerArbiter
     bool columnReady() const;
     /** Output-phase start: latch the output bank from the loaded bank. */
     void startOutputPhase();
+    TransposerTinyBank::Output peekColumn() const;
     TransposerTinyBank::Output readColumn();
     unsigned outputBank() const;
     const TransposerTinyBank &bank(unsigned index) const;

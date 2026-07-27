@@ -57,21 +57,41 @@ TEST(StrictPayloadDatapath, MovesAtbdPayloadsAlongDriverEdges)
     // The readout program replays for reuse-A: 64 read valids, 64
     // operand-A edges filling both banks in T0-then-T1 order.
     for (unsigned read = 0; read < 64; ++read) {
+        datapath.beginCycle();
         datapath.onRegisterFileReadValid(50 + read);
         datapath.onOperandAValid(52 + read);
+        const auto &events = datapath.boundaryEvents();
+        ASSERT_TRUE(events.operandA);
+        ASSERT_TRUE(events.transposerInput);
+        EXPECT_EQ(events.operandA->edge, 52u + read);
+        EXPECT_EQ(events.operandA->data, patternBeat(read % 32));
+        EXPECT_EQ(events.transposerInput->edge, 53u + read);
+        EXPECT_EQ(events.transposerInput->bank, read / 32);
         datapath.sampleCycle();
     }
     EXPECT_EQ(datapath.operandATokens(), 64u);
     EXPECT_EQ(datapath.transposerInputRows(), 64u);
     EXPECT_EQ(datapath.transposerInputStalls(), 0u);
     EXPECT_EQ(datapath.payloadUnderflows(), 0u);
-    EXPECT_EQ(datapath.firstRowEdge(), 52u);
+    EXPECT_EQ(datapath.firstRowEdge(), 53u);
     EXPECT_EQ(datapath.transposerMaxOccupancy(), 64u);
     EXPECT_GE(datapath.transposerBusyCycles(), 32u);
 
     // 32 SA-enable edges drain the first bank's transposed columns.
     for (unsigned column = 0; column < 32; ++column) {
+        datapath.beginCycle();
         datapath.onSaEnable(120 + column);
+        const auto &events = datapath.boundaryEvents();
+        ASSERT_TRUE(events.transposerOutput);
+        EXPECT_EQ(events.transposerOutput->edge, 120u + column);
+        EXPECT_EQ(events.transposerOutput->bank, 0u);
+        if (column + 1 == 32) {
+            ASSERT_TRUE(events.transposerPrefetch);
+            EXPECT_EQ(events.transposerPrefetch->edge, 152u);
+            EXPECT_EQ(events.transposerPrefetch->bank, 1u);
+        } else {
+            EXPECT_FALSE(events.transposerPrefetch);
+        }
     }
     EXPECT_EQ(datapath.transposerOutputColumns(), 32u);
     EXPECT_EQ(datapath.transposerOutputStalls(), 0u);
@@ -90,7 +110,13 @@ TEST(StrictPayloadDatapath, KeepsOperandBOutsideTheAtbdBanks)
 
     for (unsigned beat = 0; beat < 4; ++beat) {
         datapath.onMemoryDataVisible(20 + beat, patternBeat(beat), true);
+        datapath.beginCycle();
         datapath.onOperandBValid(24 + beat);
+        const auto &events = datapath.boundaryEvents();
+        ASSERT_TRUE(events.operandB);
+        EXPECT_EQ(events.operandB->edge, 24u + beat);
+        EXPECT_EQ(events.operandB->data, patternBeat(beat));
+        EXPECT_FALSE(events.transposerInput);
     }
     EXPECT_EQ(datapath.streamedBeats(), 4u);
     EXPECT_EQ(datapath.operandBTokens(), 4u);
@@ -105,6 +131,7 @@ TEST(StrictPayloadDatapath, CountsPulsePayloadDivergence)
 
     // An operand edge without a queued payload and an SA edge without
     // a drainable column are counted, not fatal.
+    datapath.beginCycle();
     datapath.onOperandAValid(5);
     datapath.onOperandBValid(6);
     datapath.onSaEnable(7);

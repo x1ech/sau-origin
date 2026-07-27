@@ -500,6 +500,11 @@ SauModel::submitCommand(const SauCommand &command)
             if (!boundaryTraceFile.empty() && activeCommandIndex == 0) {
                 boundaryTrace.emplace(boundaryTraceFile);
                 boundaryTrace->emitZero("sau_sram_rdata", 0);
+                boundaryTrace->emitZero("core_register_data_out", 0);
+                boundaryTrace->emitZero(
+                    "u_trans2sa_top.trans0_outCol", 0);
+                boundaryTrace->emitZero(
+                    "u_trans2sa_top.trans1_outCol", 0);
             }
         } else {
             payloadDatapath.reset();
@@ -640,11 +645,14 @@ SauModel::consumeResponses()
         if (payloadDatapath && functionalMemory) {
             // The mem_ctrl-visible edge carries the real 256-bit
             // payload from the strict data authority.
+            panic_if(rtlDriverEdge < 2,
+                     "SAU payload became visible before the RTL SRAM delay");
+            const uint64_t memVisibleEdge = rtlDriverEdge - 1;
             MemoryBeat256 payload;
             functionalMemory->read(beat.address, payload.bytes.data(),
                                    payload.bytes.size());
             payloadDatapath->onMemoryDataVisible(
-                rtlDriverEdge, payload,
+                memVisibleEdge, payload,
                 beat.stream == StreamKind::OperandB);
             ++stats.payloadReadBeats;
             if (boundaryTrace && activeCommandIndex == 0) {
@@ -652,9 +660,9 @@ SauModel::consumeResponses()
                 // core_register_data_out tap (SRAM_DELAY vs
                 // SRAM_DELAY + 1).
                 boundaryTrace->emit("sau_sram_rdata",
-                                    rtlDriverEdge - 1, payload);
+                                    memVisibleEdge - 1, payload);
                 boundaryTrace->emit("core_register_data_out",
-                                    rtlDriverEdge, payload);
+                                    memVisibleEdge, payload);
             }
         }
         if (beat.stream == StreamKind::OperandA) {
@@ -1287,6 +1295,9 @@ SauModel::updatePhase()
         transitionTo(Phase::Complete);
         traceWriter.emit(sauCycle, EventKind::CommandComplete,
                          activeCommand->id, "none", 0, 0, phase);
+        if (boundaryTrace) {
+            boundaryTrace->flush();
+        }
         stats.completeOffset[activeCommandIndex] =
             static_cast<uint64_t>(commandCycle());
         ++stats.commandsCompleted;
@@ -1642,6 +1653,7 @@ SauModel::advanceRtlCommandDriver()
     if (!payloadDatapath) {
         return;
     }
+    payloadDatapath->beginCycle();
     // The registered driver pulses of this edge move the payload side.
     if (rtlCommandDriver->registerFileReadValid()) {
         payloadDatapath->onRegisterFileReadValid(rtlDriverEdge);
@@ -1656,6 +1668,44 @@ SauModel::advanceRtlCommandDriver()
         payloadDatapath->onSaEnable(rtlDriverEdge);
     }
     payloadDatapath->sampleCycle();
+    if (!boundaryTrace || activeCommandIndex != 0) {
+        return;
+    }
+
+    const auto &events = payloadDatapath->boundaryEvents();
+    const auto boundaryCycle = [](uint64_t driverEdge) {
+        panic_if(driverEdge == 0,
+                 "payload boundary event precedes the command anchor");
+        return driverEdge - 1;
+    };
+    if (events.operandA) {
+        boundaryTrace->emit(
+            "data_A", boundaryCycle(events.operandA->edge),
+            events.operandA->data);
+    }
+    if (events.operandB) {
+        boundaryTrace->emit(
+            "data_B", boundaryCycle(events.operandB->edge),
+            events.operandB->data);
+    }
+    const auto emitTransposer =
+        [this, &boundaryCycle](const char *suffix,
+               const TransposerBoundaryTransfer &transfer) {
+            const std::string signal =
+                "u_trans2sa_top.trans" + std::to_string(transfer.bank) +
+                suffix;
+            boundaryTrace->emit(
+                signal, boundaryCycle(transfer.edge), transfer.data);
+        };
+    if (events.transposerInput) {
+        emitTransposer("_inRow", *events.transposerInput);
+    }
+    if (events.transposerOutput) {
+        emitTransposer("_outCol", *events.transposerOutput);
+    }
+    if (events.transposerPrefetch) {
+        emitTransposer("_outCol", *events.transposerPrefetch);
+    }
 }
 
 void

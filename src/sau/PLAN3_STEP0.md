@@ -76,16 +76,22 @@ reported, but a stalled cycle is counted once.
 Numeric counter values within one row are equivalent when they select the same
 guards; zero is still a distinct wrap/underflow boundary and must be tested.
 
+Scope amendment (2026-07-27): because the RTL reuse interfaces are still
+evolving, the user froze the current supported reuse path to R-A only.
+R-none, R-B, and R-AB remain decoded and their existing code/evidence is
+preserved, but they are deferred and are not current implementation or
+validation blockers.
+
 | path_id | RTL guard / CSR class | Selected resources and effects | Observable boundary | Representative |
 | --- | --- | --- | --- | --- |
 | T-ABD | `T=00` | no operand transpose; direct result when non-flow-transpose | A/B mux, no T0/T1 load | pending before this path is implemented |
 | T-ATBD | `T=01` | A loads operand transposer; result passes transpose path | T0/T1 input/output and final result | `atbd_cutbit8`, `atbd_cutbit1` |
 | T-ABTD | `T=10` | B loads operand transposer; initial switch is B-side | B read payload and T0/T1 bank traffic | `abtd_boundary` |
 | T-ABDT | `T=11` | no operand transpose load; transposed-result selection | result transposer and serializer | pending before this path is implemented |
-| R-none | `R=00` | no resident operand reuse | alternating input-switch path | pending |
+| R-none | `R=00` | no resident operand reuse | alternating input-switch path | deferred while RTL evolves |
 | R-A | `R=01` | `A_reuse_flag`; resident A reused | A RF and streamed B | `atbd_cutbit8` |
-| R-B | `R=10` | `B_reuse_flag`; resident B reused | B RF and streamed A | pending |
-| R-AB | `R=11` | both reuse bits asserted; `|R` and equality guards also active | both reuse selects plus scheduler switch | `reuse11_probe`: executable, completes, 1024/1024 |
+| R-B | `R=10` | `B_reuse_flag`; resident B reused | B RF and streamed A | deferred; RTL interface is not stable |
+| R-AB | `R=11` | both reuse bits asserted; `|R` and equality guards also active | both reuse selects plus scheduler switch | deferred; historical `reuse11_probe` preserved |
 | F-normal | `F=00` | clear, normal order, output RF adds zero | ordinary serializer/unload | `atbd_cutbit8` |
 | F-trans | `F=01` | clear, transposed output order | T2/result ordering | pending |
 | F-retain | `F=10` | retain PE/transposer state; output RF accumulates old value | keep completion, output RAW | pending |
@@ -106,7 +112,7 @@ assigns every value a friendly semantic name.
 | Field | Width | RTL consumer / path | Int8 GEMM classification | Validation |
 | --- | ---: | --- | --- | --- |
 | `trans_mode` | 2 | scheduler, operand/result transposers | 00–11 executable | 01 E2E; 10 boundary |
-| `reuse_mode` | 2 | scheduler, A/B reuse bits | 00–11 executable; 11 means both bits, not reserved | 01 E2E; 11 E2E probe |
+| `reuse_mode` | 2 | scheduler, A/B reuse bits | 01 currently supported; 00/10/11 decoded but deferred | 01 E2E; historical 11 probe preserved |
 | `sa_flow_mode` | 2 | PE keep, transposer clear, output RF | 00–11 executable | 00 E2E; others pending |
 | `register_mode` | 2 | input RF and feeder | 00/01/11 share non-DW guard; 10 selects depthwise/single-column path and is an operator switch | 00 E2E |
 | `pe_work_mode` | 2 | `mode_operands()` | 00 MATMUL in scope; 01 CONV, 10 TRANSPOSER, 11 ADD are operator switches | 00 E2E |
@@ -137,8 +143,10 @@ Important conclusions:
 - The output range is `[0x29120c00, 0x29121000)` and contains 1024 bytes.
 - `cutbit=1` and `cutbit=8` both pass an independent software reference;
   cutbit is not a fixture constant.
-- `reuse_mode=11` is executable and completed at 110305 ns in the probe; its
-  1024 output bytes match the software result.
+- Historical evidence showed `reuse_mode=11` completing at 110305 ns with
+  1024 output bytes matching the software result. Because the RTL reuse
+  interface is still changing, this probe is preserved as evidence but does
+  not make R-AB part of the current supported domain.
 - ABTD reaches the B/transposer/read/write boundaries. Its 1005 software
   mismatches are expected because the deliberately unchanged ATBD-layout
   image is not an ABTD mathematical oracle; only the recorded RTL boundaries

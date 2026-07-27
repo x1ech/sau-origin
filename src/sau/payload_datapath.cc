@@ -14,6 +14,12 @@ StrictPayloadDatapath::StrictPayloadDatapath(
 }
 
 void
+StrictPayloadDatapath::beginCycle()
+{
+    events = {};
+}
+
+void
 StrictPayloadDatapath::restartReadoutProgram()
 {
     readout.emplace(configs.input.streamedCounters);
@@ -58,6 +64,7 @@ StrictPayloadDatapath::onOperandAValid(uint64_t edge)
     const MemoryBeat256 row = readoutQueue.front();
     readoutQueue.pop_front();
     ++operandACount;
+    events.operandA = PayloadBoundaryTransfer{edge, row};
     if (!arbiter.loadsOperandA()) {
         return;
     }
@@ -65,10 +72,12 @@ StrictPayloadDatapath::onOperandAValid(uint64_t edge)
         ++inputStalls;
         return;
     }
-    arbiter.acceptRow(row);
+    const unsigned bank = arbiter.acceptRow(row);
     ++inputRows;
+    events.transposerInput =
+        TransposerBoundaryTransfer{{edge + 1, row}, bank};
     if (!firstRowAt) {
-        firstRowAt = edge;
+        firstRowAt = edge + 1;
     }
     // The output bank latches from the registered pre-edge loaded bank
     // when the first bank fills.
@@ -88,6 +97,7 @@ StrictPayloadDatapath::onOperandBValid(uint64_t edge)
     const MemoryBeat256 row = streamQueue.front();
     streamQueue.pop_front();
     ++operandBCount;
+    events.operandB = PayloadBoundaryTransfer{edge, row};
     if (!arbiter.loadsOperandB()) {
         return;
     }
@@ -95,10 +105,12 @@ StrictPayloadDatapath::onOperandBValid(uint64_t edge)
         ++inputStalls;
         return;
     }
-    arbiter.acceptRow(row);
+    const unsigned bank = arbiter.acceptRow(row);
     ++inputRows;
+    events.transposerInput =
+        TransposerBoundaryTransfer{{edge + 1, row}, bank};
     if (!firstRowAt) {
-        firstRowAt = edge;
+        firstRowAt = edge + 1;
     }
     if (!outputPhaseStarted && arbiter.columnReady()) {
         arbiter.startOutputPhase();
@@ -116,7 +128,16 @@ StrictPayloadDatapath::onSaEnable(uint64_t edge)
         ++outputStalls;
         return;
     }
-    lastColumnData = arbiter.readColumn().data;
+    const unsigned bank = arbiter.outputBank();
+    const auto output = arbiter.readColumn();
+    lastColumnData = output.data;
+    events.transposerOutput =
+        TransposerBoundaryTransfer{{edge, output.data}, bank};
+    if (output.last && arbiter.columnReady()) {
+        const unsigned prefetchBank = arbiter.outputBank();
+        events.transposerPrefetch = TransposerBoundaryTransfer{
+            {edge + 1, arbiter.peekColumn().data}, prefetchBank};
+    }
     ++outputColumns;
     if (!firstColumnAt) {
         firstColumnAt = edge;

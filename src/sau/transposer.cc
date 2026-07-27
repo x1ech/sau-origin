@@ -73,12 +73,20 @@ TransposerTinyBank::column(unsigned index) const
 }
 
 TransposerTinyBank::Output
-TransposerTinyBank::readOutput()
+TransposerTinyBank::peekOutput() const
 {
     assert(outputReadyFlag);
     Output output;
     output.data = transposeEnabled ? column(cntOut) : storage[cntOut];
     output.last = cntOut == Rows - 1;
+    return output;
+}
+
+TransposerTinyBank::Output
+TransposerTinyBank::readOutput()
+{
+    assert(outputReadyFlag);
+    const Output output = peekOutput();
     if (output.last) {
         cntOut = 0;
         dataInReady = true;
@@ -210,6 +218,13 @@ TransposerArbiter::followExclusiveReady()
     } else if (bank1.outputReady() && !bank0.outputReady()) {
         outputBankSel = true;
     }
+}
+
+TransposerTinyBank::Output
+TransposerArbiter::peekColumn() const
+{
+    assert(columnReady());
+    return bank(outputBank()).peekOutput();
 }
 
 TransposerTinyBank::Output

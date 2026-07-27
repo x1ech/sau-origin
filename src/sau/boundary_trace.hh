@@ -29,6 +29,7 @@ class BoundaryTraceWriter
               const MemoryBeat256 &value);
     void emitZero(const std::string &signal);
     void emitZero(const std::string &signal, uint64_t cycle);
+    void flush();
     bool good() const;
 
   private:

@@ -2,11 +2,13 @@
 
 ## 状态
 
-**需求已确认，建模层次审核修订完成，尚未开始实现。**
+**Steps 0–3 已完成；当前进入 Step 4。**
 
 本计划承接 `PLAN2.md` 已完成的 CSR 解码、逐拍控制、地址请求和时序对齐工作。
-`PLAN2` 的完成结果继续作为时序回归基线，但其“固定
-`trans_mode=01 + reuse_mode=01`”限制不再是本阶段最终支持域。
+`PLAN2` 的完成结果继续作为时序回归基线。2026-07-27 用户根据仍在更新的 RTL
+工程明确冻结当前 reuse 支持域为 `reuse_mode=01`（Reuse-A）；其他 raw reuse
+值继续无损解码并保留已有接口/实现，但在 RTL 稳定前 deferred，不属于当前阶段
+功能验收范围。
 
 ## 1. 目标
 
@@ -40,9 +42,10 @@ CSR start
 
 - operation：仅 GEMM / MATMUL。
 - precision：仅 signed int8 输入路径，即 `shift_flag=0`。
-- 上述两项是本阶段仅有的固定算子/精度边界。除 RTL 明确判定非法的组合外，
-  其他参与 int8 GEMM 的 CSR 字段都必须按 raw 配置产生真实行为，不能固定为当前
-  fixture 的数值。
+- 除 reuse 的临时范围冻结外，其他参与 int8 GEMM 的 CSR 字段都必须按 raw 配置
+  产生真实行为，不能固定为当前 fixture 的数值。`reuse_mode=00/10/11` 仍按 raw
+  值解码，但完整 workload 必须在产生结果或可信性能统计前以
+  `rtl_legal_unimplemented` fail-fast；不得回退到 Reuse-A。
 - 启动方式：JSON 引用或直接包含 raw CSR writes；两种形式都先规范化为同一种
   `SauCsrWrite` 序列，再由 `SauCsrConfig` 按 `csr.sv` 位域 replay/decode。
   `csr_snapshot.json` 只作为解码结果的交叉检查，不直接启动 command。
@@ -82,9 +85,10 @@ RTL 合法性与模型验证成熟度必须分开：
 final memory。模块级 bring-up 可以只运行已实现边界，但必须明确其最高成熟度，
 不得冒充完整 command。
 
-模型不得判断或修正用户“本来想配置什么”。对任一合法 raw CSR，即使其
-`trans_mode/reuse_mode/sa_flow_mode` 与输入数据布局不匹配，gem5 也必须忠实执行
-该 raw 配置。正确性定义为：
+模型不得判断或修正用户“本来想配置什么”。对当前支持域内的 raw CSR，即使其
+`trans_mode/sa_flow_mode` 与输入数据布局不匹配，gem5 也必须忠实执行该 raw
+配置。deferred reuse 配置必须显式 fail-fast，不能被修正或映射到其他模式。
+正确性定义为：
 
 ```text
 gem5(same raw CSR, same memory, same memory handshake/response schedule)
@@ -105,21 +109,19 @@ gem5(same raw CSR, same memory, same memory handshake/response schedule)
 | `10` | `ABTD` | `A * B^T = D^T` |
 | `11` | `ABDT` | `A * B = D^T` |
 
-`reuse_mode` 必须覆盖 `scheduler.sv` 明确列出的三种 GEMM 复用策略：
+当前功能支持域只包含 Reuse-A；其余 raw 值为 RTL 更新期间的 deferred 接口：
 
-| raw 值 | 本阶段语义 |
-| --- | --- |
-| `00` | 不复用 |
-| `01` | 复用 Operand-A |
-| `10` | 复用 Operand-B |
+| raw 值 | 接口语义 | 当前状态 |
+| --- | --- | --- |
+| `00` | 不复用 | deferred，保留解码和已有实现 |
+| `01` | 复用 Operand-A | supported |
+| `10` | 复用 Operand-B | deferred，RTL 仅有未稳定接口 |
+| `11` | 两个 reuse bit 均置位 | deferred，保留历史 probe 与已有实现 |
 
-`reuse_mode=11` 不能在没有证据时直接映射或拒绝。当前端口注释只定义
-`00/01/10`，但组合逻辑仍会观察两个 bit。实施前必须在 Step 0 通过软件接口定义、
-真实 CSR testcase 和 RTL 行为确定其归类：
-
-- 若权威软件/架构接口明确规定 `11` 为 reserved，则模型显式拒绝；
-- 若真实 CSR 可以启动且 RTL 会运行，则模型必须复现该 raw 配置的实际行为；
-- 不得仅依据现有 fixture 没有使用 `11` 就决定其语义。
+deferred 不等于 `rtl_illegal`：模型继续完整保存这些 raw 值和已有资源接口，但在
+完整 workload 执行前报告 `rtl_legal_unimplemented`。RTL 稳定后必须重新调查
+`00/10/11` 的最终语义，再由用户决定恢复支持或显式拒绝；当前历史 probe 不能
+替代届时的最终 RTL 合同。
 
 `sa_flow_mode` 按 RTL 的 `CNORMAL/CTRANS/RETAIN/TRETAIN` 行为影响结果顺序和
 output SRAM 是否累加，不能在功能模型中固定成当前 fixture 的值。
@@ -531,19 +533,19 @@ accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三�
 - 非法配置打印完整 raw CSR 和权威拒绝原因；
 - 原 `01/01` skeleton 与 timing regression 不退化。
 
-### Step 3：实现配置驱动的 input、transpose 与 reuse 资源
+### Step 3：实现配置驱动的 input、transpose 与 reuse 资源（已完成）
 
-- [ ] `register_file_in` 建立与 RTL 容量、端口、地址、valid label 一致的真实
+- [x] `register_file_in` 建立与 RTL 容量、端口、地址、valid label 一致的真实
   payload 存储。
-- [ ] 实现 padding/valid window、读写 pointer、flow/instruction 地址更新及会影响
+- [x] 实现 padding/valid window、读写 pointer、flow/instruction 地址更新及会影响
   accepted、backpressure 或边界周期的 pipeline 行为。
-- [ ] controller 和 feeder 通过 accepted transaction 推进 A/B token；每个 token
+- [x] controller 和 feeder 通过 accepted transaction 推进 A/B token；每个 token
   携带真实 32-lane signed-int8 payload。
-- [ ] 实现 `ABD/ATBD/ABTD/ABDT` 对应的 input-switch、`transposer_tiny` 有限
+- [x] 实现 `ABD/ATBD/ABTD/ABDT` 对应的 input-switch、`transposer_tiny` 有限
   bank、ownership、ready/rden/valid/last、flush/preflush 和 lane 顺序。
-- [ ] 实现不复用、复用 A、复用 B 的外部读取、内部存储/重放和 valid/last；
-  `reuse=11` 按 Step 0 的权威结论实现或拒绝。
-- [ ] 为 transposer/reuse 增加 input/output token、busy cycle、bank occupancy、
+- [x] 实现当前支持域 Reuse-A 的外部读取、内部存储/重放和 valid/last；
+  `reuse=00/10/11` 的接口与已有代码保留，但按 2026-07-27 用户范围决定 deferred。
+- [x] 为 transposer/reuse 增加 input/output token、busy cycle、bank occupancy、
   input/output stall 和首入到首出的 latency stats。
 
 第一个非默认里程碑固定为 `trans_mode=2 (ABTD)`：
@@ -563,8 +565,10 @@ backpressure 被计入仿真。
 
 - 每个外部 read address 对应的 256-bit payload 与 RTL 一致；
 - `trans_mode=2` 的 B/B^T lane、token、valid/last、bank 占用和周期逐边界匹配 RTL；
-- 四种 transpose 与三种明确 reuse 均有 focused payload/resource test；
-- Step 0 input/transpose/reuse 等价类中的每个结构分支都有 RTL boundary golden；
+- 四种 transpose 的 input/transposer 结构由 focused test 覆盖；当前支持的
+  Reuse-A runtime 具有 focused payload/resource test；
+- ATBD Reuse-A runtime 和首个非默认 ABTD B -> B^T 模块边界均有 RTL golden；
+  deferred reuse 路径不作为当前 Step 3 验收阻塞项；
 - fixture ID、矩阵尺寸或 golden 值不进入资源实现分支。
 
 ### Step 4：实现配置驱动的 systolic-array 与定点计算资源
@@ -625,8 +629,9 @@ backpressure 被计入仿真。
   `sa_flow_mode` 和 clear/retain 条件。
 - [ ] 验证 command 2 可以读取 command 1 写回，且没有残留 token/valid 或错误
   accumulator 污染。
-- [ ] 四种 transpose × 三种明确 reuse 都有 focused test；端到端测试按 Step 0
-  的 `trans/reuse/flow` 结构等价类覆盖，不以当前 fixture 组合替代合法域。
+- [ ] 四种 transpose × 当前支持的 Reuse-A 都有集成 focused test；端到端测试按
+  当前支持域的 `trans/reuse/flow` 结构等价类覆盖，不以当前 fixture 组合替代
+  合法域。deferred reuse 路径待 RTL 稳定后另行恢复。
 - [ ] 增加“合法但不符合用户意图”的成对测试：保持 memory 和其他 CSR 相同，仅将
   `trans_mode=1` 改为 `trans_mode=2`。gem5 不修正输入布局或回退 mode；两个 case
   的 result、write payload、资源边界周期和 command-done 分别匹配同配置 RTL，
@@ -751,9 +756,10 @@ scons build/RISCV/gem5.opt \
    合法性与 decoded/resource-timed/data-functional/end-to-end 验证成熟度分离，
    不因当前 golden 未闭合而伪报 RTL illegal；完整 workload 命中
    `rtl_legal_unimplemented` 时 fail-fast，不输出错误 final memory 或可信性能。
-5. 支持四种 RTL `trans_mode`、三种明确定义的 `reuse_mode`，且 CSR 改变会真实
-   改变逐拍控制、取数、transpose/reuse 数据路径和结果；`trans_mode=2` 的真实
-   B -> B^T payload 与资源周期通过独立边界验收，`reuse=11` 已按权威契约处理。
+5. 支持四种 RTL `trans_mode` 与当前冻结的 Reuse-A 路径，且 CSR 改变会真实改变
+   逐拍控制、取数、transpose/reuse 数据路径和结果；`trans_mode=2` 的真实
+   B -> B^T payload 与资源周期通过独立边界验收。`reuse_mode=00/10/11` 保留 raw
+   解码和接口，但在 RTL 稳定前作为 deferred 配置 fail-fast，不计入当前 DoD。
 6. `cutbit=0..31` 由 CSR 动态驱动 RTL 等价的 signed arithmetic shift 和 int8
    saturation；其他合法 GEMM CSR 参数也不能固定成现有 fixture 数值。
 7. 地址、valid/last、input-switch 和完成条件由资源状态与 accepted transaction

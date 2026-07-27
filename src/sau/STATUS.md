@@ -1,6 +1,6 @@
 # SAU Cycle-Level Behavioral Model Status
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 ## Goal
 
@@ -36,13 +36,16 @@ Read this section first when resuming PLAN3 work in a new session.
   sources are extracted from fetched commit `e722852bd9ab` (hashes
   frozen in `RTL_TIMING_PROVENANCE.md`); the current `npu_lpnpu` HEAD
   has evolved past the contract in seven files and is not authority.
-- Step 3 remaining: (1) runtime integration of the payload resources
-  into `SauModel`, together with the transposer/reuse statistics —
-  increment 9 implements this (strict payload datapath, driver-edge
-  payload movement, transposer statistics, and the runtime boundary
-  trace validated against the ATBD end-to-end package) and awaits the
-  developer rebuild; (2) reuse variants R-none/R-B, blocked on VCS
-  golden captures.
+- Step 3 is complete for the current supported domain. Increment 9 integrated
+  strict runtime payload resources and transposer/reuse statistics into
+  `SauModel`; increment 10 matched data_A/data_B and T0/T1 inRow/outCol
+  payloads and exact cycles against the deep ATBD RTL export. Focused tests
+  pass 11/11 for the transposer and 3/3 for the payload datapath; both
+  boundary comparison modes pass and the full quick suite remains 63/63.
+  On 2026-07-27 the user froze current reuse support to R-A
+  (`reuse_mode=01`) while the RTL project evolves. R-none/R-B/R-AB remain
+  decoded and existing code is preserved, but they are deferred rather than
+  Step 3 blockers. Step 4 is next.
 - Per `src/sau/AGENTS.md`, gem5 builds remain developer-owned; provide
   incremental focused-target commands first.
 
@@ -194,13 +197,12 @@ Design and implementation references:
 
 ## Current State
 
-- Current stage: PLAN3 Steps 1-2 are complete and committed; Step 3
-  increments 1-8 are developer-verified, and increment 8 (the ABTD
-  control chain) closes the first non-default boundary milestone in
-  both sequence and cycles comparison modes. Remaining Step 3 work:
-  runtime integration with statistics, and the VCS-blocked reuse
-  goldens. The PLAN2 timing baseline below stays authoritative for
-  regression.
+- Current stage: PLAN3 Steps 1-3 are complete for the current Reuse-A support
+  domain. Increment 8 closed the first non-default ABTD boundary milestone;
+  increments 9-10 integrated runtime payload resources/statistics and matched
+  the deep ATBD operand/transposer payloads in both sequence and exact cycles
+  modes. R-none/R-B/R-AB are deferred while the RTL project evolves. Step 4
+  is next; the PLAN2 timing baseline below stays authoritative for regression.
 - First-milestone record: Tasks 1 through 11 implementation and validation
   complete.
   Final milestone commits `50d42ef51c` and `f303ee71c5` are pushed to
@@ -573,7 +575,7 @@ direct-command compatibility, fixed/constrained runs, and DSE simulations.
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
 | PLAN2. CSR-driven Int8 GEMM RTL alignment | Complete; committed and pushed at `458ad7e3cb` | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
-| PLAN3. CSR-driven functional datapath | Steps 0–2 complete; Step 3 in progress (8 increments; first non-default boundary milestone closed) | Step 0 froze the RTL/CSR/golden contract; Step 1 landed the functional memory/payload contract; Step 2 landed full-domain decode, typed resource dispatch, raw-counter address programs, and (with increment 8) the generic-comparator validation of the first new mode. Step 3 landed the input/transpose payload resources, the boundary comparator, and the ABTD control chain: the model trace matches the ABTD golden in sequence and cycles modes, reproducing the raw `[A31, B0, A1..A30]` bank load. Remaining: runtime integration with statistics, and the VCS-blocked reuse goldens. |
+| PLAN3. CSR-driven functional datapath | Steps 0–3 complete for current Reuse-A support domain; Step 4 next | Step 0 froze the RTL/CSR/golden contract; Step 1 landed the functional memory/payload contract; Step 2 landed full-domain decode, typed resource dispatch, and raw-counter address programs. Step 3 landed input/transpose payload resources, runtime integration, statistics, and generic boundary comparison: ABTD closes the first non-default B -> B^T milestone, while deep ATBD data_A/data_B and T0/T1 inRow/outCol match RTL payloads and exact cycles. R-none/R-B/R-AB remain decoded with existing code preserved, but are deferred while RTL evolves. |
 
 ## Historical PLAN2 RTL Fixture Inventory
 
@@ -2450,3 +2452,90 @@ statistics land in `m5out/sau-atbd-payload/stats.txt`
 (`transposer*`, `payloadReadBeats`). Remaining Step 3 work after this
 increment: extending the runtime payload validation as deeper golden
 signals become available, and the VCS-blocked R-none/R-B captures.
+
+Increment 9 developer verification completed on 2026-07-27. The first
+runtime run completed normally and preserved the existing 63/63 quick
+regression, but its new boundary comparison exposed two trace-only defects:
+`BoundaryTraceWriter` did not flush before gem5 exited, leaving 18 payload
+pairs buffered, and the exported shared-SRAM/mem_ctrl payload cycles were one
+edge late because response consumption observed the post-tick driver counter.
+The follow-up adds an explicit writer `flush()` at command completion and
+defines the mem_ctrl-visible payload edge as `rtlDriverEdge - 1`, with
+shared-SRAM rdata one edge earlier.
+
+After the developer rebuilt `boundary_trace.test.opt` and `gem5.opt`,
+`boundary_trace.test` passed 3/3, including the new flush-before-destruction
+test. The strict ATBD payload run exited through `SAU command complete`;
+`sau_sram_rdata` and `core_register_data_out` then passed both sequence and
+exact-cycles comparison against the frozen functional package. The complete
+SAU quick run passed 63/63 checks across 23 suites. Increment 9 runtime
+integration is therefore verified; remaining Step 3 work is deeper golden
+signals and the VCS-blocked R-none/R-B paths.
+
+### PLAN3 Step 3 increment 10 — 2026-07-27
+
+The tenth increment deepens the strict runtime payload boundary from the
+shared-SRAM/input-RF taps into the operand and T0/T1 transposer interfaces.
+The original cutbit-8 ATBD FSDB named by the frozen functional package remains
+available locally. A developer-run `npi_fsdb_probe` export captured 239 rows
+for `data_A/data_B`, their valid signals, and both banks' inRow enable,
+outCol, ready, rden, valid, and last boundaries. The export is preserved at:
+
+```text
+/home/xch/work/npu_lpnpu/tmp/plan3_step3_atbd_deep_boundary.csv
+SHA-256 88e63775eccc9965dcf1b20dcaf31191ae3170b3c177ffb929b9dc0577379abd
+```
+
+Anchored to the accepted start, the frozen RTL observes data_A at edges
+45..108, data_B at 77..108, T0 input rows at 46..77, T1 input rows at
+78..109, T0 outCol prefetch/stream at 78..109, and the first non-consumed T1
+outCol prefetch at 110.
+
+`StrictPayloadDatapath` now exposes per-edge payload boundary transactions.
+Operand payloads retain their driver edge; the transposer input boundary is
+one registered edge later, matching `sa_feeder -> transposer_tiny`. Output
+transactions identify the selected bank. When the final T0 column is
+consumed, the runtime trace peeks at T1's first column on the following edge
+without advancing its output counter. `TransposerTinyBank/Arbiter` therefore
+gain const peek operations, distinct from consuming reads. `SauModel` emits
+the first command's data_A/data_B and T0/T1 inRow/outCol values through the
+existing boundary trace without changing the public architecture trace.
+
+The payload focused test now checks operand edges and payloads, registered
+bank-input edges and bank selection, all 32 T0 output columns, and the
+non-consuming T1 prefetch. Syntax-only compilation of the transposer,
+payload-datapath, test, and SauModel sources passes; style and
+`git diff --check` also pass.
+
+After the developer rebuilt the focused tests and `gem5.opt`,
+`transposer.test` passed 11/11 and `payload_datapath.test` passed 3/3. The
+first runtime comparison proved that all six payload sequences matched, while
+also exposing that event-style data_A/data_B/inRow rows must not carry an
+initial zero and that the runtime driver's post-tick edge is one later than
+the RTL boundary-cycle coordinate. The boundary exporter now omits those
+event initializers and maps payload events to `driverEdge - 1`, without
+changing datapath state or statistics.
+
+The rebuilt strict cutbit-8 ATBD run exited through `SAU command complete`.
+`data_A`, `data_B`, T0/T1 inRow, and T0/T1 outCol then passed both sequence
+and exact-cycles comparison against the deep RTL export. Runtime statistics
+reported 64 transposer input rows, 32 consumed output columns, zero input
+stalls, zero output stalls, zero payload underflows, and 32 cycles from first
+row to first column. The complete SAU quick regression passed 63/63 checks
+across 23 suites. Increment 10 is therefore verified.
+
+### PLAN3 Step 3 scope closure — 2026-07-27
+
+The user explicitly froze the current reuse support domain to
+`reuse_mode=01` (Reuse-A) because the RTL project and its other reuse
+interfaces are still evolving. `reuse_mode=00/10/11` continue to decode
+losslessly; their existing interfaces, implementation fragments, tests, and
+historical evidence are preserved. They are classified as deferred and must
+not silently fall back to Reuse-A or be reported as validated.
+
+Under this revised scope, R-none/R-B/R-AB golden capture and implementation
+are not Step 3 blockers. The completed input/register-file, feeder,
+transposer, Reuse-A runtime payload integration, statistics, ABTD module
+boundary milestone, and deep ATBD payload/cycle comparison satisfy the
+current Step 3 contract. PLAN3 Step 3 is closed; Step 4 (systolic-array and
+fixed-point computation resources) is next.

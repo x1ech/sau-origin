@@ -144,6 +144,12 @@ BoundaryTraceWriter::emitZero(const std::string &signal, uint64_t cycle)
     writeRow(signal, cycle, "0x0");
 }
 
+void
+BoundaryTraceWriter::flush()
+{
+    output.flush();
+}
+
 bool
 BoundaryTraceWriter::good() const
 {

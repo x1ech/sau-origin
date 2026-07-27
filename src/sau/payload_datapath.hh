@@ -13,6 +13,26 @@
 namespace gem5::sau
 {
 
+struct PayloadBoundaryTransfer
+{
+    uint64_t edge = 0;
+    MemoryBeat256 data;
+};
+
+struct TransposerBoundaryTransfer : public PayloadBoundaryTransfer
+{
+    unsigned bank = 0;
+};
+
+struct PayloadBoundaryEvents
+{
+    std::optional<PayloadBoundaryTransfer> operandA;
+    std::optional<PayloadBoundaryTransfer> operandB;
+    std::optional<TransposerBoundaryTransfer> transposerInput;
+    std::optional<TransposerBoundaryTransfer> transposerOutput;
+    std::optional<TransposerBoundaryTransfer> transposerPrefetch;
+};
+
 /**
  * PLAN3 Step 3 strict payload-side input datapath.  The strict per-tick
  * command driver owns every control edge; this composition moves the
@@ -44,6 +64,8 @@ class StrictPayloadDatapath
   public:
     explicit StrictPayloadDatapath(const SauResourceConfigs &configs);
 
+    /** Clear the per-edge observable boundary events. */
+    void beginCycle();
     void onMemoryDataVisible(uint64_t edge, const MemoryBeat256 &payload,
                              bool streamed);
     void onRegisterFileReadValid(uint64_t edge);
@@ -74,6 +96,7 @@ class StrictPayloadDatapath
     const TransposerArbiter &arbiterState() const { return arbiter; }
     /** The most recent column consumed at an SA-enable edge. */
     const MemoryBeat256 &lastColumn() const { return lastColumnData; }
+    const PayloadBoundaryEvents &boundaryEvents() const { return events; }
 
   private:
     unsigned bankOccupancy(const TransposerTinyBank &bank) const;
@@ -104,6 +127,7 @@ class StrictPayloadDatapath
     std::optional<uint64_t> firstRowAt;
     std::optional<uint64_t> firstColumnAt;
     MemoryBeat256 lastColumnData;
+    PayloadBoundaryEvents events;
 };
 
 } // namespace gem5::sau

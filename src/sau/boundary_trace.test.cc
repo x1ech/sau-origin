@@ -52,6 +52,25 @@ TEST(BoundaryTraceWriter, WritesPerSignalCyclesAndHexValues)
     std::remove(path.c_str());
 }
 
+TEST(BoundaryTraceWriter, FlushesBeforeDestruction)
+{
+    const std::string path = temporaryPath("sau_boundary_flush.csv");
+    {
+        BoundaryTraceWriter writer(path);
+        writer.emitZero("a");
+        writer.flush();
+        ASSERT_TRUE(writer.good());
+
+        std::ifstream input(path);
+        std::stringstream content;
+        content << input.rdbuf();
+        EXPECT_EQ(content.str(),
+                  "signal,cycle,value\n"
+                  "a,0,0x0\n");
+    }
+    std::remove(path.c_str());
+}
+
 TEST(BoundaryTrace, GeneratesTheAbtdModelTrace)
 {
     // Runs from the gem5 repository root; skip when the functional_ref
