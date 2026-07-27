@@ -14,10 +14,12 @@
 #include "sau/a_register_file.hh"
 #include "sau/address_generator.hh"
 #include "sau/array_input_scheduler.hh"
+#include "sau/boundary_trace.hh"
 #include "sau/csr_config.hh"
 #include "sau/data_beat.hh"
 #include "sau/functional_memory.hh"
 #include "sau/memory_port.hh"
+#include "sau/payload_datapath.hh"
 #include "sau/result_scheduler.hh"
 #include "sau/schedule_state.hh"
 #include "sau/state_trace_writer.hh"
@@ -91,6 +93,9 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     const std::string finalMemoryDumpFile; // byte-per-line hex dump; "" = off
     const Addr finalMemoryDumpBase;
     const uint64_t finalMemoryDumpSize;
+    // PLAN3 Step 3: model boundary trace of the first strict command's
+    // payload edges for compare_boundary.py; "" = off.
+    const std::string boundaryTraceFile;
 
     // ========== 运行时状态 ==========
     const SauCommand startupCommand;          // 启动时自动注入的 synthetic 命令
@@ -132,6 +137,13 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     std::optional<ResultScheduler> resultScheduler;
     std::optional<RtlCommandDriverSkeleton> rtlCommandDriver;
     bool rtlCommandDriverStarted = false;
+    // Driver edge counter: one per driver tick, matching the strict
+    // skeleton's command-relative edge numbering.
+    uint64_t rtlDriverEdge = 0;
+    // Strict payload-side input datapath; present only when the run has
+    // a functional memory authority (PLAN3 Step 3 runtime integration).
+    std::optional<StrictPayloadDatapath> payloadDatapath;
+    std::optional<BoundaryTraceWriter> boundaryTrace;
     SauSchedule scheduleState;
     std::deque<Beat> availableB;
     TokenBuffer outputBuffer;
@@ -232,6 +244,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     Cycles activeCommandStartCycles() const;
     void preloadTimingMemoryImage();
     void commitStrictWrite(const Beat &writeBeat);
+    void flushPayloadStats();
     void dumpFinalMemory();
     void emitTimingLedger(const SauCommand &command);
     void emitRtlStageLedger(const SauCommand &command);
@@ -291,6 +304,17 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
         // 每个 stalled 周期只按 Step 0 主因优先级归因一次；
         // 各 stall* 标量继续按资源逐事件计数，允许同拍多计。
         statistics::Vector primaryStallCycles;
+        // PLAN3 Step 3 strict payload-side resources.
+        statistics::Scalar payloadReadBeats;      // payload-carrying reads
+        statistics::Scalar transposerInputRows;   // bank rows accepted
+        statistics::Scalar transposerOutputColumns;
+        statistics::Scalar transposerInputStalls; // row with no free bank
+        statistics::Scalar transposerOutputStalls; // SA edge, no column
+        statistics::Scalar transposerPayloadUnderflows;
+        statistics::Scalar transposerBusyCycles;  // any bank occupied
+        statistics::Scalar transposerMaxBankOccupancy;
+        // First bank row in to first column out, per command.
+        statistics::Vector transposerFirstInToFirstOut;
         statistics::Vector firstReadOffset;
         statistics::Vector firstArrayInputOffset;
         statistics::Vector firstResultOffset;

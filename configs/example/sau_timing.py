@@ -168,6 +168,11 @@ parser.add_argument(
 parser.add_argument(
     "--final-memory-dump-size", type=nonnegative_int, default=0,
 )
+parser.add_argument(
+    "--boundary-trace", default="",
+    help="Model boundary trace of the first strict command's payload "
+         "edges for util/sau/compare_boundary.py",
+)
 
 args = parser.parse_args()
 
@@ -179,6 +184,10 @@ if (args.memory_image or args.final_memory_dump) and \
     )
 if args.final_memory_dump and not args.final_memory_dump_size:
     parser.error("--final-memory-dump requires --final-memory-dump-size")
+if args.boundary_trace and not (args.memory_image and args.rtl_profile):
+    parser.error(
+        "--boundary-trace requires --rtl-profile and --memory-image"
+    )
 if args.functional_memory_fill > 0xFF:
     parser.error("--functional-memory-fill must be one byte")
 
@@ -350,6 +359,7 @@ system.sau = SauModel(
     final_memory_dump_file=args.final_memory_dump,
     final_memory_dump_base=args.final_memory_dump_base,
     final_memory_dump_size=args.final_memory_dump_size,
+    boundary_trace_file=args.boundary_trace,
     command_count=args.command_count,
     inter_command_gap_cycles=args.inter_command_gap_cycles,
     a_base=args.a_base,

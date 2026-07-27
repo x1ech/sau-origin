@@ -105,6 +105,11 @@ class SauModel(ClockedObject):
     )
     final_memory_dump_base = Param.Addr(0, "Final dump range base")
     final_memory_dump_size = Param.UInt64(0, "Final dump range bytes")
+    boundary_trace_file = Param.String(
+        "",
+        "Model boundary trace of the first strict command's payload "
+        "edges for compare_boundary.py; empty disables it",
+    )
 
     command_id = Param.UInt64(1, "Synthetic command ID")
     command_count = Param.Unsigned(1, "Number of synthetic commands")

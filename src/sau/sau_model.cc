@@ -237,6 +237,7 @@ SauModel::SauModel(const Params &params)
       finalMemoryDumpFile(params.final_memory_dump_file),
       finalMemoryDumpBase(params.final_memory_dump_base),
       finalMemoryDumpSize(params.final_memory_dump_size),
+      boundaryTraceFile(params.boundary_trace_file),
       startupCommand(buildStartupCommand(params)),  // 将 Python 参数转为 SauCommand
       outputBuffer(outputBufferEntries),
       arrayPipeline(arrayFillCycles, arrayIiCycles, arrayCapacity),
@@ -390,6 +391,33 @@ SauModel::commitStrictWrite(const Beat &writeBeat)
 }
 
 void
+SauModel::flushPayloadStats()
+{
+    if (!payloadDatapath) {
+        return;
+    }
+    stats.transposerInputRows += payloadDatapath->transposerInputRows();
+    stats.transposerOutputColumns +=
+        payloadDatapath->transposerOutputColumns();
+    stats.transposerInputStalls +=
+        payloadDatapath->transposerInputStalls();
+    stats.transposerOutputStalls +=
+        payloadDatapath->transposerOutputStalls();
+    stats.transposerPayloadUnderflows +=
+        payloadDatapath->payloadUnderflows();
+    stats.transposerBusyCycles += payloadDatapath->transposerBusyCycles();
+    stats.transposerMaxBankOccupancy = std::max(
+        static_cast<unsigned>(stats.transposerMaxBankOccupancy.value()),
+        payloadDatapath->transposerMaxOccupancy());
+    const auto firstRow = payloadDatapath->firstRowEdge();
+    const auto firstColumn = payloadDatapath->firstColumnEdge();
+    if (firstRow && firstColumn) {
+        stats.transposerFirstInToFirstOut[activeCommandIndex] =
+            *firstColumn - *firstRow;
+    }
+}
+
+void
 SauModel::dumpFinalMemory()
 {
     if (finalMemoryDumpFile.empty()) {
@@ -463,6 +491,19 @@ SauModel::submitCommand(const SauCommand &command)
         rtlCommandDriver.emplace(buildRtlCommandDriverConfig(
             command, *timingPolicy(), rtlTiming));
         rtlCommandDriverStarted = false;
+        rtlDriverEdge = 0;
+        // PLAN3 Step 3 runtime integration: with a functional memory
+        // authority the strict driver edges also move real payloads
+        // through the input/transposer resources.
+        if (functionalMemory) {
+            payloadDatapath.emplace(deriveResourceConfigs(command.control));
+            if (!boundaryTraceFile.empty() && activeCommandIndex == 0) {
+                boundaryTrace.emplace(boundaryTraceFile);
+                boundaryTrace->emitZero("sau_sram_rdata", 0);
+            }
+        } else {
+            payloadDatapath.reset();
+        }
     } else {
         arrayInputScheduler.emplace(
             activeArrayInputABeats(), activeArrayInputBBeats(),
@@ -596,6 +637,26 @@ SauModel::consumeResponses()
 {
     for (const auto &beat : visibleMemoryResponses) {
         ++visibleReadBeats;
+        if (payloadDatapath && functionalMemory) {
+            // The mem_ctrl-visible edge carries the real 256-bit
+            // payload from the strict data authority.
+            MemoryBeat256 payload;
+            functionalMemory->read(beat.address, payload.bytes.data(),
+                                   payload.bytes.size());
+            payloadDatapath->onMemoryDataVisible(
+                rtlDriverEdge, payload,
+                beat.stream == StreamKind::OperandB);
+            ++stats.payloadReadBeats;
+            if (boundaryTrace && activeCommandIndex == 0) {
+                // rdata surfaces one edge before the mem_ctrl-visible
+                // core_register_data_out tap (SRAM_DELAY vs
+                // SRAM_DELAY + 1).
+                boundaryTrace->emit("sau_sram_rdata",
+                                    rtlDriverEdge - 1, payload);
+                boundaryTrace->emit("core_register_data_out",
+                                    rtlDriverEdge, payload);
+            }
+        }
         if (beat.stream == StreamKind::OperandA) {
             if (!scheduleState.canLoadResident()) {
                 panic("SAU schedule rejected an Operand-A resident load");
@@ -1219,6 +1280,7 @@ SauModel::updatePhase()
                 "strict SAU command-driver token conservation failed");
             emitRtlStageLedger(*activeCommand);
         }
+        flushPayloadStats();
         traceScheduleState = SauScheduleState::Complete;
         scheduleState.completeCommand();
         emitScheduleState("command_complete");
@@ -1236,6 +1298,7 @@ SauModel::updatePhase()
         resultScheduler.reset();
         rtlCommandDriver.reset();
         rtlCommandDriverStarted = false;
+        payloadDatapath.reset();
         availableB.clear();
         if (moreCommands) {
             if (strictTiming) {
@@ -1575,6 +1638,24 @@ SauModel::advanceRtlCommandDriver()
     }
     rtlCommandDriver->tick(!rtlCommandDriverStarted);
     rtlCommandDriverStarted = true;
+    ++rtlDriverEdge;
+    if (!payloadDatapath) {
+        return;
+    }
+    // The registered driver pulses of this edge move the payload side.
+    if (rtlCommandDriver->registerFileReadValid()) {
+        payloadDatapath->onRegisterFileReadValid(rtlDriverEdge);
+    }
+    if (rtlCommandDriver->dataAValid()) {
+        payloadDatapath->onOperandAValid(rtlDriverEdge);
+    }
+    if (rtlCommandDriver->dataBValid()) {
+        payloadDatapath->onOperandBValid(rtlDriverEdge);
+    }
+    if (rtlCommandDriver->saEnable()) {
+        payloadDatapath->onSaEnable(rtlDriverEdge);
+    }
+    payloadDatapath->sampleCycle();
 }
 
 void
@@ -2079,6 +2160,27 @@ SauModel::SauStats::SauStats(statistics::Group *parent, unsigned commandCount)
       ADD_STAT(primaryStallCycles, statistics::units::Cycle::get(),
                "Stalled cycles attributed once to the frozen "
                "primary-cause priority"),
+      ADD_STAT(payloadReadBeats, statistics::units::Count::get(),
+               "Strict read beats consumed with real payloads"),
+      ADD_STAT(transposerInputRows, statistics::units::Count::get(),
+               "Operand rows accepted into the transposer banks"),
+      ADD_STAT(transposerOutputColumns, statistics::units::Count::get(),
+               "Operand-bank columns consumed at SA-enable edges"),
+      ADD_STAT(transposerInputStalls, statistics::units::Count::get(),
+               "Operand rows arriving with no bank able to take input"),
+      ADD_STAT(transposerOutputStalls, statistics::units::Count::get(),
+               "SA-enable edges with no drainable bank column"),
+      ADD_STAT(transposerPayloadUnderflows,
+               statistics::units::Count::get(),
+               "Operand edges whose payload queue was empty"),
+      ADD_STAT(transposerBusyCycles, statistics::units::Cycle::get(),
+               "Cycles with at least one occupied transposer bank"),
+      ADD_STAT(transposerMaxBankOccupancy,
+               statistics::units::Count::get(),
+               "Maximum rows held across the T0/T1 banks"),
+      ADD_STAT(transposerFirstInToFirstOut,
+               statistics::units::Cycle::get(),
+               "First bank row to first column out, indexed by command"),
       ADD_STAT(firstReadOffset, statistics::units::Cycle::get(),
                "Command acceptance to first read, indexed by command"),
       ADD_STAT(firstArrayInputOffset, statistics::units::Cycle::get(),
@@ -2102,6 +2204,7 @@ SauModel::SauStats::SauStats(statistics::Group *parent, unsigned commandCount)
     primaryStallCycles.subname(3, "input_backpressure");
     primaryStallCycles.subname(4, "array_backpressure");
     primaryStallCycles.subname(5, "output_backpressure");
+    transposerFirstInToFirstOut.init(commandCount);
     firstReadOffset.init(commandCount);
     firstArrayInputOffset.init(commandCount);
     firstResultOffset.init(commandCount);

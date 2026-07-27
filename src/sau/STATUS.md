@@ -37,8 +37,12 @@ Read this section first when resuming PLAN3 work in a new session.
   frozen in `RTL_TIMING_PROVENANCE.md`); the current `npu_lpnpu` HEAD
   has evolved past the contract in seven files and is not authority.
 - Step 3 remaining: (1) runtime integration of the payload resources
-  into `SauModel`, together with the transposer/reuse statistics;
-  (2) reuse variants R-none/R-B, blocked on VCS golden captures.
+  into `SauModel`, together with the transposer/reuse statistics —
+  increment 9 implements this (strict payload datapath, driver-edge
+  payload movement, transposer statistics, and the runtime boundary
+  trace validated against the ATBD end-to-end package) and awaits the
+  developer rebuild; (2) reuse variants R-none/R-B, blocked on VCS
+  golden captures.
 - Per `src/sau/AGENTS.md`, gem5 builds remain developer-owned; provide
   incremental focused-target commands first.
 
@@ -2341,3 +2345,108 @@ the VCS-blocked R-none/R-B boundary captures.
 
 Step 3 increment 8 verification completed on 2026-07-26: the developer
 rebuilt the focused target and relinked `gem5.opt`; all builds passed.
+
+### PLAN3 Step 3 increment 9 — 2026-07-26
+
+The ninth increment starts the Step 3 runtime integration: strict
+fixture runs with a functional memory authority now move real 256-bit
+payloads through the input/transposer resources along the strict
+driver's own edges, own the transposer/reuse statistics, and can emit
+a runtime boundary trace for the generic comparator.
+
+- New `payload_datapath.{hh,cc}`: `StrictPayloadDatapath` composes the
+  Step 3 payload resources under driver control. A mem_ctrl-visible
+  resident beat enters `InputRegisterFile` through `InputWritePath`; a
+  streamed beat queues for the operand-B path; a register-file
+  read-valid edge advances `InputReadPointerProgram` (replaying it
+  when exhausted — the reuse readout) and queues the readout payload;
+  an operand edge pops its queue and, when the transpose/reuse config
+  loads that operand, the row enters the T0/T1 `TransposerArbiter`
+  with RTL steering/ping-pong; an accepted SA-enable edge consumes one
+  bank column. Pulse/payload mismatches (empty queue, no free bank, no
+  drainable column) are counted, not fatal — bring-up divergence
+  evidence, mirroring the RTL's own error-latch behavior.
+  `payload_datapath.test` (3 tests) covers the ATBD small-fixture
+  payload flow (RF storage, 64-row reuse readout into both banks, the
+  transposed lane mapping of the drained column, first-in/first-out
+  edges, occupancy/busy), operand-B staying outside the ATBD banks,
+  and the divergence counters.
+- `SauModel` integration (strict + `functionalMemory` only): the
+  command driver's registered pulses (`registerFileReadValid`,
+  `dataAValid`, `dataBValid`, `saEnable`) drive the payload datapath
+  each edge via a new driver-edge counter that matches the skeleton's
+  command-relative edge numbering; strict visible read responses fetch
+  the real payload from the `FunctionalMemory` authority (the PLAN3
+  Step 1 consumer-deferred item) and feed `onMemoryDataVisible`. New
+  statistics: `payloadReadBeats`, transposer input rows / output
+  columns / input stalls / output stalls / payload underflows / busy
+  cycles / max bank occupancy, and per-command first-row-in to
+  first-column-out latency. Runs without an image are bit-for-bit
+  unchanged — the payload path is simply absent.
+- New `boundary_trace_file` param (`--boundary-trace`, requires
+  `--rtl-profile` and `--memory-image`): the first strict command
+  emits `sau_sram_rdata` (request + SRAM_DELAY) and
+  `core_register_data_out` (the mem_ctrl-visible feeder input tap, one
+  edge later) with real payloads at driver edges.
+- Verification anchor: the Step 0 ATBD end-to-end package
+  `int8_gemm_32x32x32_atbd_cutbit8` carries byte-identical
+  `csr_writes.csv` to the strict quick fixture
+  `int8_gemm_32x32x32_single_flow` and matching elaboration
+  parameters, so the strict replay entry is the timing package while
+  the functional package supplies the image and the golden
+  `boundary.csv`. Golden labeling proves `sau_sram_rdata` carries
+  A0..A31 at cycles 6..37 and B0..B31 at 72..103, and
+  `core_register_data_out` the same beats one cycle later — matching
+  the strict driver's request edges 3..34/69..100 plus the storage
+  contract. (`core_register_data_in` carries result payloads and waits
+  for Steps 4/5.)
+
+Static verification on 2026-07-26: `payload_datapath.test` standalone
+3/3, `sau_model.cc` syntax-checks against a param-patched header,
+`py_compile` on `sau_timing.py`/`Sau.py`, style, and
+`git diff --check` all pass. Developer compilation is pending; the new
+`Source("payload_datapath.cc")` and the new parameter require a
+`gem5.opt` relink:
+
+```bash
+scons build/ALL/sau/payload_datapath.test.opt \
+    --ignore-style --limit-ld-memory-usage -j32
+./build/ALL/sau/payload_datapath.test.opt
+
+scons build/RISCV/gem5.opt --ignore-style --limit-ld-memory-usage -j32
+
+./build/RISCV/gem5.opt --outdir=m5out/sau-atbd-payload \
+    configs/example/sau_timing.py \
+    --rtl-profile tests/gem5/sau/ref/int8_gemm_32x32x32_single_flow \
+    --memory-image tests/gem5/sau/functional_ref/int8_gemm_32x32x32_atbd_cutbit8/initial_memory.hex \
+    --memory-image-base 0x29120000 \
+    --functional-memory-base 0x29120000 \
+    --functional-memory-size 0x40000 \
+    --boundary-trace m5out/sau-atbd-payload/boundary.csv \
+    --trace=m5out/sau-atbd-payload/sau.csv
+
+python3 util/sau/compare_boundary.py --mode sequence \
+    --allow-actual-extra \
+    --qualify core_register_data_out=core_register_data_out_valid \
+    --signals sau_sram_rdata,core_register_data_out \
+    tests/gem5/sau/functional_ref/int8_gemm_32x32x32_atbd_cutbit8/boundary.csv \
+    m5out/sau-atbd-payload/boundary.csv
+
+# Informational: the driver-edge emission should also align exactly.
+python3 util/sau/compare_boundary.py --mode cycles \
+    --allow-actual-extra \
+    --qualify core_register_data_out=core_register_data_out_valid \
+    --signals sau_sram_rdata,core_register_data_out \
+    tests/gem5/sau/functional_ref/int8_gemm_32x32x32_atbd_cutbit8/boundary.csv \
+    m5out/sau-atbd-payload/boundary.csv
+
+cd tests && ./main.py run --skip-build gem5/sau && cd ..
+```
+
+The sequence-mode comparison and the 63/63 quick suite are the
+acceptance; the cycles-mode run is expected to pass from the driver
+edge numbering and is diagnostic if it does not. The transposer
+statistics land in `m5out/sau-atbd-payload/stats.txt`
+(`transposer*`, `payloadReadBeats`). Remaining Step 3 work after this
+increment: extending the runtime payload validation as deeper golden
+signals become available, and the VCS-blocked R-none/R-B captures.

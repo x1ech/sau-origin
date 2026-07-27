@@ -13,6 +13,7 @@ Source("csr_fixture.cc")
 Source("functional_memory.cc")
 Source("input_datapath.cc")
 Source("memory_port.cc")
+Source("payload_datapath.cc")
 Source("resource_config.cc")
 Source("result_scheduler.cc")
 Source("schedule_state.cc")
@@ -47,6 +48,9 @@ GTest("memory_port.test", "memory_port.test.cc", "memory_port.cc",
       "../mem/packet.cc", "../mem/port.cc", "../mem/protocol/functional.cc",
       "../mem/protocol/timing.cc", "../sim/bufval.cc", "../sim/port.cc",
       with_tag("gem5 trace"))
+GTest("payload_datapath.test", "payload_datapath.test.cc",
+      "payload_datapath.cc", "input_datapath.cc", "resource_config.cc",
+      "transposer.cc")
 GTest("resource_config.test", "resource_config.test.cc",
       "resource_config.cc")
 GTest("token_pipeline.test", "token_pipeline.test.cc", "token_pipeline.cc")
