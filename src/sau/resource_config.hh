@@ -102,6 +102,14 @@ struct SauOutputResourceConfig
     // zero; sa_flow_mode[0]: transposed result/unload ordering.
     bool accumulateExisting = false;
     bool transposedOrder = false;
+    uint8_t internalXStep = 0;
+    uint8_t internalXBurst = 0;
+    uint8_t internalYStep = 0;
+    uint8_t internalYBurst = 0;
+    uint8_t internalFlowStep = 0;
+    uint8_t internalFlowBurst = 0;
+    uint8_t internalInstructionStep = 0;
+    uint8_t internalInstructionBurst = 0;
     uint8_t registerXBurst = 0;
     uint8_t registerYStep = 0;
     uint8_t registerYCycle = 0;

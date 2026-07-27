@@ -54,6 +54,16 @@ deriveResourceConfigs(const SauControlFields &control)
 
     configs.output.accumulateExisting = (control.saFlowMode & 0x2) != 0;
     configs.output.transposedOrder = (control.saFlowMode & 0x1) != 0;
+    configs.output.internalXStep = control.output.xStep;
+    configs.output.internalXBurst = control.output.xBurst;
+    configs.output.internalYStep = control.output.yStep;
+    configs.output.internalYBurst = control.output.yBurst;
+    configs.output.internalFlowStep = control.output.flowStep;
+    configs.output.internalFlowBurst = control.output.flowBurst;
+    configs.output.internalInstructionStep =
+        control.output.instructionStep;
+    configs.output.internalInstructionBurst =
+        control.output.instructionBurst;
     configs.output.registerXBurst = control.output.registerXBurst;
     configs.output.registerYStep = control.output.registerYStep;
     configs.output.registerYCycle = control.output.registerYCycle;

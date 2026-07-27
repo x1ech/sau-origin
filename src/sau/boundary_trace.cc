@@ -68,6 +68,20 @@ hexValue(const MemoryBeat256 &value)
     return text;
 }
 
+std::string
+hexValue(const OutputVector32x16 &value)
+{
+    static const char digits[] = "0123456789abcdef";
+    std::string text = "0x";
+    for (unsigned lane = BeatLanes; lane-- > 0;) {
+        const uint16_t raw = static_cast<uint16_t>(value.lanes[lane]);
+        for (unsigned shift = 16; shift > 0; shift -= 4) {
+            text.push_back(digits[(raw >> (shift - 4)) & 0xf]);
+        }
+    }
+    return text;
+}
+
 SauControlFields
 abtdControl()
 {
@@ -128,6 +142,13 @@ BoundaryTraceWriter::emit(const std::string &signal,
 void
 BoundaryTraceWriter::emit(const std::string &signal, uint64_t cycle,
                           const MemoryBeat256 &value)
+{
+    writeRow(signal, cycle, hexValue(value));
+}
+
+void
+BoundaryTraceWriter::emit(const std::string &signal, uint64_t cycle,
+                          const OutputVector32x16 &value)
 {
     writeRow(signal, cycle, hexValue(value));
 }

@@ -17,6 +17,7 @@ void
 StrictPayloadDatapath::beginCycle()
 {
     events = {};
+    pendingArrayInput.reset();
 }
 
 void
@@ -138,10 +139,35 @@ StrictPayloadDatapath::onSaEnable(uint64_t edge)
         events.transposerPrefetch = TransposerBoundaryTransfer{
             {edge + 1, arbiter.peekColumn().data}, prefetchBank};
     }
+    // The currently supported ATBD/Reuse-A path presents streamed B one
+    // edge before SA_ENGINE samples it. Pair the registered B payload
+    // with the transposed A column consumed above; do not invent a
+    // fallback for the deferred reuse/transposition modes.
+    if (configs.transposeReuse.transMode == SauTransMode::ATBD &&
+        configs.transposeReuse.reuseA && arrayWeightPipeline) {
+        pendingArrayInput = SystolicArrayInput{
+            operandFromBeat(output.data),
+            operandFromBeat(*arrayWeightPipeline),
+            output.last
+        };
+        events.arrayInput = ArrayInputBoundaryTransfer{
+            edge,
+            pendingArrayInput->activations,
+            pendingArrayInput->weights,
+            pendingArrayInput->finish
+        };
+    }
     ++outputColumns;
     if (!firstColumnAt) {
         firstColumnAt = edge;
     }
+}
+
+void
+StrictPayloadDatapath::requestArrayOutput()
+{
+    array.requestOutput(configs.array.cutbit);
+    outputRequested = true;
 }
 
 unsigned
@@ -154,7 +180,7 @@ StrictPayloadDatapath::bankOccupancy(const TransposerTinyBank &bank) const
 }
 
 void
-StrictPayloadDatapath::sampleCycle()
+StrictPayloadDatapath::sampleCycle(uint64_t edge)
 {
     const unsigned occupancy =
         bankOccupancy(arbiter.bank(0)) + bankOccupancy(arbiter.bank(1));
@@ -163,6 +189,15 @@ StrictPayloadDatapath::sampleCycle()
     }
     if (occupancy > maxOccupancy) {
         maxOccupancy = occupancy;
+    }
+    array.tick(pendingArrayInput);
+    if (array.streamOutput()) {
+        events.arrayOutput = ArrayOutputBoundaryTransfer{
+            edge, *array.streamRow(), *array.streamOutput()
+        };
+    }
+    if (events.operandB) {
+        arrayWeightPipeline = events.operandB->data;
     }
 }
 

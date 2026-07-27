@@ -27,6 +27,8 @@ class BoundaryTraceWriter
     void emit(const std::string &signal, const MemoryBeat256 &value);
     void emit(const std::string &signal, uint64_t cycle,
               const MemoryBeat256 &value);
+    void emit(const std::string &signal, uint64_t cycle,
+              const OutputVector32x16 &value);
     void emitZero(const std::string &signal);
     void emitZero(const std::string &signal, uint64_t cycle);
     void flush();

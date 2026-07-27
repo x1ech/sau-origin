@@ -161,6 +161,9 @@ TEST(SauResourceConfig, ChangingALegalFieldChangesOnlyItsOwningResource)
     control.output.xStep = 4;
     changed = deriveResourceConfigs(control);
     EXPECT_EQ(changed.output.registerYCycle, 16);
+    EXPECT_EQ(changed.output.internalXStep, 4);
+    EXPECT_EQ(changed.output.internalYBurst,
+              baseline.output.internalYBurst);
     EXPECT_EQ(changed.writeback.xStep, 4);
     EXPECT_EQ(changed.writeback.yBurst, baseline.writeback.yBurst);
 }

@@ -71,6 +71,26 @@ TEST(BoundaryTraceWriter, FlushesBeforeDestruction)
     std::remove(path.c_str());
 }
 
+TEST(BoundaryTraceWriter, WritesSignedSixteenBitArrayRows)
+{
+    const std::string path = temporaryPath("sau_array_boundary.csv");
+    {
+        BoundaryTraceWriter writer(path);
+        OutputVector32x16 row;
+        row.lanes[0] = -2;
+        row.lanes[31] = -1;
+        writer.emit("q", 7, row);
+    }
+
+    std::ifstream input(path);
+    std::stringstream content;
+    content << input.rdbuf();
+    EXPECT_EQ(content.str(),
+              "signal,cycle,value\n"
+              "q,7,0xffff" + std::string(120, '0') + "fffe\n");
+    std::remove(path.c_str());
+}
+
 TEST(BoundaryTrace, GeneratesTheAbtdModelTrace)
 {
     // Runs from the gem5 repository root; skip when the functional_ref

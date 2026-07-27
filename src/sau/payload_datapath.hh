@@ -8,6 +8,7 @@
 #include "sau/data_beat.hh"
 #include "sau/input_datapath.hh"
 #include "sau/resource_config.hh"
+#include "sau/systolic_array.hh"
 #include "sau/transposer.hh"
 
 namespace gem5::sau
@@ -24,6 +25,21 @@ struct TransposerBoundaryTransfer : public PayloadBoundaryTransfer
     unsigned bank = 0;
 };
 
+struct ArrayInputBoundaryTransfer
+{
+    uint64_t edge = 0;
+    OperandVector32x8 activations;
+    OperandVector32x8 weights;
+    bool finish = false;
+};
+
+struct ArrayOutputBoundaryTransfer
+{
+    uint64_t edge = 0;
+    unsigned row = 0;
+    OperandVector32x8 data;
+};
+
 struct PayloadBoundaryEvents
 {
     std::optional<PayloadBoundaryTransfer> operandA;
@@ -31,6 +47,8 @@ struct PayloadBoundaryEvents
     std::optional<TransposerBoundaryTransfer> transposerInput;
     std::optional<TransposerBoundaryTransfer> transposerOutput;
     std::optional<TransposerBoundaryTransfer> transposerPrefetch;
+    std::optional<ArrayInputBoundaryTransfer> arrayInput;
+    std::optional<ArrayOutputBoundaryTransfer> arrayOutput;
 };
 
 /**
@@ -72,8 +90,11 @@ class StrictPayloadDatapath
     void onOperandAValid(uint64_t edge);
     void onOperandBValid(uint64_t edge);
     void onSaEnable(uint64_t edge);
+    /** Assert the array result-start request using the command cutbit. */
+    void requestArrayOutput();
+    bool arrayOutputRequested() const { return outputRequested; }
     /** Per-cycle occupancy/busy sampling, once per strict tick. */
-    void sampleCycle();
+    void sampleCycle(uint64_t edge);
 
     uint64_t residentBeats() const { return residentCount; }
     uint64_t streamedBeats() const { return streamedCount; }
@@ -94,6 +115,7 @@ class StrictPayloadDatapath
 
     const InputRegisterFile &registerFileState() const { return file; }
     const TransposerArbiter &arbiterState() const { return arbiter; }
+    const SystolicArray &arrayState() const { return array; }
     /** The most recent column consumed at an SA-enable edge. */
     const MemoryBeat256 &lastColumn() const { return lastColumnData; }
     const PayloadBoundaryEvents &boundaryEvents() const { return events; }
@@ -107,7 +129,9 @@ class StrictPayloadDatapath
     InputWritePath writePath;
     std::optional<InputReadPointerProgram> readout;
     TransposerArbiter arbiter;
+    SystolicArray array;
     bool outputPhaseStarted = false;
+    bool outputRequested = false;
 
     uint8_t writePointer = 0;
     std::deque<MemoryBeat256> readoutQueue;
@@ -127,6 +151,8 @@ class StrictPayloadDatapath
     std::optional<uint64_t> firstRowAt;
     std::optional<uint64_t> firstColumnAt;
     MemoryBeat256 lastColumnData;
+    std::optional<MemoryBeat256> arrayWeightPipeline;
+    std::optional<SystolicArrayInput> pendingArrayInput;
     PayloadBoundaryEvents events;
 };
 

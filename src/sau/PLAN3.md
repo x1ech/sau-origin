@@ -2,7 +2,8 @@
 
 ## 状态
 
-**Steps 0–3 已完成；当前进入 Step 4。**
+**Steps 0–4 已完成；当前进入 Step 5。Step 5 increment 1 已实现，
+等待 focused build/test 验证。**
 
 本计划承接 `PLAN2.md` 已完成的 CSR 解码、逐拍控制、地址请求和时序对齐工作。
 `PLAN2` 的完成结果继续作为时序回归基线。2026-07-27 用户根据仍在更新的 RTL
@@ -573,16 +574,16 @@ backpressure 被计入仿真。
 
 ### Step 4：实现配置驱动的 systolic-array 与定点计算资源
 
-- [ ] 建立等价于当前
+- [x] 建立等价于当前
   `SA_ENGINE -> SA_ROW -> SA_PE_array -> SA_PE` 的 32×32 有限计算资源；使用固定
   大小连续状态和统一逐拍更新，不要求创建逐 RTL 实例对象，也不调用矩阵乘法库。
-- [ ] 每个 PE 实现 signed int8 乘法、乘法流水、wstrb/enable、clear 条件以及
+- [x] 每个 PE 实现 signed int8 乘法、乘法流水、wstrb/enable、clear 条件以及
   当前 RTL 的 24-bit `saturate_add_signed` accumulator。
-- [ ] 保留影响接受速率、wavefront、有效列、结果顺序和周期的 macro-row/column
+- [x] 保留影响接受速率、wavefront、有效列、结果顺序和周期的 macro-row/column
   staircase、snapshot 与 row streaming；不可见寄存器可用等价流水延迟表示。
-- [ ] `cutbit=0..31` 全范围直接来自 CSR；对 24-bit signed MAC 逐 lane 执行
+- [x] `cutbit=0..31` 全范围直接来自 CSR；对 24-bit signed MAC 逐 lane 执行
   `SA_pkg::sat_truncate_func` 的算术右移、符号扩展检查和 int8 饱和。
-- [ ] `register_mode`、`conv_kernal`、`stride_flag` 只实现 Step 0 证明仍属于
+- [x] `register_mode`、`conv_kernal`、`stride_flag` 只实现 Step 0 证明仍属于
   int8 GEMM 的控制效果；切换到阶段外算子的组合明确拒绝。
 
 验收：
@@ -594,6 +595,11 @@ backpressure 被计入仿真。
 - 所有 Step 0 判定为 GEMM 内合法的 array 控制分支都有 focused test。
 
 ### Step 5：实现配置驱动的 serializer、output RF 与真实写回
+
+当前进度：increment 1 已实现 `register_file_out` accepted-update 侧的 raw
+x/y/flow/instruction pointer、两个 SRAM half、normal/retain lane 运算、RAW
+forwarding 等价语义及 int8 saturation；尚未完成 unload 流水、runtime 接入和真实
+writeback，因此以下 Step 5 完整项暂不勾选。
 
 - [ ] 按 `trans_mode` 和 `sa_flow_mode` 实现结果 serializer/transpose 顺序。
 - [ ] 实现 `register_file_out` 的 x/y/flow/instruction pointer、两个 SRAM half、

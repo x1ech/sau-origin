@@ -1667,7 +1667,11 @@ SauModel::advanceRtlCommandDriver()
     if (rtlCommandDriver->saEnable()) {
         payloadDatapath->onSaEnable(rtlDriverEdge);
     }
-    payloadDatapath->sampleCycle();
+    if (rtlCommandDriver->arrayRowScoreValid() &&
+        !payloadDatapath->arrayOutputRequested()) {
+        payloadDatapath->requestArrayOutput();
+    }
+    payloadDatapath->sampleCycle(rtlDriverEdge);
     if (!boundaryTrace || activeCommandIndex != 0) {
         return;
     }
@@ -1705,6 +1709,25 @@ SauModel::advanceRtlCommandDriver()
     }
     if (events.transposerPrefetch) {
         emitTransposer("_outCol", *events.transposerPrefetch);
+    }
+    if (events.arrayInput) {
+        boundaryTrace->emit(
+            "u_trans2sa_top.sa_data_active_left",
+            boundaryCycle(events.arrayInput->edge),
+            beatFromOperand(events.arrayInput->activations));
+        boundaryTrace->emit(
+            "u_trans2sa_top.sa_in_weight_above",
+            boundaryCycle(events.arrayInput->edge),
+            beatFromOperand(events.arrayInput->weights));
+    }
+    if (events.arrayOutput) {
+        OutputVector32x16 row;
+        for (unsigned lane = 0; lane < BeatLanes; ++lane) {
+            row.lanes[lane] = events.arrayOutput->data.lanes[lane];
+        }
+        boundaryTrace->emit(
+            "u_trans2sa_top.out_sum_final_q",
+            boundaryCycle(events.arrayOutput->edge), row);
     }
 }
 

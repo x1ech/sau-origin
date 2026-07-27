@@ -36,16 +36,16 @@ Read this section first when resuming PLAN3 work in a new session.
   sources are extracted from fetched commit `e722852bd9ab` (hashes
   frozen in `RTL_TIMING_PROVENANCE.md`); the current `npu_lpnpu` HEAD
   has evolved past the contract in seven files and is not authority.
-- Step 3 is complete for the current supported domain. Increment 9 integrated
-  strict runtime payload resources and transposer/reuse statistics into
-  `SauModel`; increment 10 matched data_A/data_B and T0/T1 inRow/outCol
-  payloads and exact cycles against the deep ATBD RTL export. Focused tests
-  pass 11/11 for the transposer and 3/3 for the payload datapath; both
-  boundary comparison modes pass and the full quick suite remains 63/63.
-  On 2026-07-27 the user froze current reuse support to R-A
-  (`reuse_mode=01`) while the RTL project evolves. R-none/R-B/R-AB remain
-  decoded and existing code is preserved, but they are deferred rather than
-  Step 3 blockers. Step 4 is next.
+- Steps 3 and 4 are complete for the current supported domain. Step 3 closes
+  input/transposer runtime payloads; Step 4 closes the finite 32x32 array,
+  signed 24-bit PE arithmetic, macro wavefront/snapshot/row stream, and raw
+  cutbit. ATBD array activation/weight cycles 78..109 and registered result
+  rows 123..154 match the frozen RTL in both sequence and cycles modes; the
+  full quick suite remains 63/63. Step 5 is active. Its increment 1
+  accumulator-side `OutputRegisterFile` implementation and six focused tests
+  are ready, with developer focused build/test verification pending.
+  Reuse support remains frozen to R-A (`reuse_mode=01`); R-none/R-B/R-AB stay
+  decoded with existing code preserved but deferred while RTL evolves.
 - Per `src/sau/AGENTS.md`, gem5 builds remain developer-owned; provide
   incremental focused-target commands first.
 
@@ -575,7 +575,7 @@ direct-command compatibility, fixed/constrained runs, and DSE simulations.
 | 10. Calibrate against the RTL reference | Complete | Fixed-cadence calibration strictly matches all 18,446 RTL rows and seven CSV fields for both commands; the constrained timing-memory profile also passes causal dataflow/dependency validation under retry and backpressure. |
 | 11. Final regression, statistics audit, and documentation | Complete | Statistics, README, strict/causal regression, and DSE monotonicity passed. Commit `50d42ef51c` is pushed to `sau-origin/feature/sau-command-types`. |
 | PLAN2. CSR-driven Int8 GEMM RTL alignment | Complete; committed and pushed at `458ad7e3cb` | All five current coverage and three hold-out packages pass strict and timing-memory causal verification. DSE monotonicity and legacy direct-command causal compatibility pass; the full 23-suite SAU quick run passes 63/63 checks. |
-| PLAN3. CSR-driven functional datapath | Steps 0–3 complete for current Reuse-A support domain; Step 4 next | Step 0 froze the RTL/CSR/golden contract; Step 1 landed the functional memory/payload contract; Step 2 landed full-domain decode, typed resource dispatch, and raw-counter address programs. Step 3 landed input/transpose payload resources, runtime integration, statistics, and generic boundary comparison: ABTD closes the first non-default B -> B^T milestone, while deep ATBD data_A/data_B and T0/T1 inRow/outCol match RTL payloads and exact cycles. R-none/R-B/R-AB remain decoded with existing code preserved, but are deferred while RTL evolves. |
+| PLAN3. CSR-driven functional datapath | Steps 0–4 complete for current Reuse-A support domain; Step 5 active | Step 0 froze the RTL/CSR/golden contract; Steps 1–3 landed the functional memory contract, typed resource dispatch, input/transpose payload resources, runtime statistics, and generic boundary comparison. Step 4 implements the finite 32x32 signed-int8 array, 24-bit saturating PEs, macro wavefront/snapshot/row stream, and CSR cutbit; ATBD array inputs and registered result rows match frozen RTL payloads and exact cycles. Step 5 now owns serializer/output-RF/real-writeback payloads. R-none/R-B/R-AB remain decoded but deferred while RTL evolves. |
 
 ## Historical PLAN2 RTL Fixture Inventory
 
@@ -2539,3 +2539,293 @@ transposer, Reuse-A runtime payload integration, statistics, ABTD module
 boundary milestone, and deep ATBD payload/cycle comparison satisfy the
 current Step 3 contract. PLAN3 Step 3 is closed; Step 4 (systolic-array and
 fixed-point computation resources) is next.
+
+### PLAN3 Step 4 increment 1 — 2026-07-27
+
+Step 4 starts with the architecture-visible state of one signed-int8 PE. The
+local `SA_PE.sv`, `SA_PE_array.sv`, and `SA_pkg.sv` SHA-256 values exactly
+match the frozen hashes in `RTL_TIMING_PROVENANCE.md`, so this increment uses
+those files as the fixed-point authority.
+
+The Step 1 `data_beat.hh` contract already implements and tests the RTL's
+signed 24-bit `saturate_add_signed` and the raw `cutbit=0..31`
+`sat_truncate_func` behavior. The new `pe_datapath.{hh,cc}` reuses those
+primitives instead of creating a second arithmetic implementation.
+`SystolicPe` owns one 24-bit accumulator, multiplies aligned signed-int8
+activation/weight inputs, requires both the PE column enable and MAC enable,
+and gives synchronous clear priority over accumulation exactly as
+`SA_PE.sv`'s `FFLARNC` does. It exposes the current accumulator and its
+SA_pkg-equivalent int8 quantization.
+
+Array-level multiplication-pipeline alignment, column-wstrb propagation,
+wavefront, snapshot, and row streaming deliberately remain outside this
+class; the next Step 4 increment will own those shared resource timings. The
+five focused tests cover signed multiplication extremes, both enable gates,
+continuous accumulation, clear priority, positive/negative 24-bit
+saturation and recovery, and quantization at
+`cutbit=0/1/8/15/23/31` plus rejection of 32.
+
+`pe_datapath.cc` and `pe_datapath.test.cc` pass C++17 syntax-only
+compilation. Style checks for the new sources and `SConscript`, plus
+`git diff --check`, pass. After the developer built the focused target,
+`pe_datapath.test.opt` passed 5/5. Increment 1 is verified. This resource is
+not connected to `SauModel` yet, so no gem5 relink or quick regression was
+required for this increment.
+
+### PLAN3 Step 4 increment 2 — 2026-07-27
+
+The second increment adds the finite 32x32 array resource in
+`systolic_array.{hh,cc}`. Its structure comes directly from the frozen
+`SA_ENGINE.sv`, `SA_ROW.sv`, and `SA_PE_array.sv`: 8x8 macro blocks of 4x4
+`SystolicPe` instances, one accepted 32-lane activation/weight pair per
+cycle, `CALC_DELAY=3`, and the source's macro-row/macro-column staircase.
+Macro block `(r,c)` commits after `3+r+c` array cycles. The physical snapshot
+row mapping is also source-derived: row `r` consumes activation lane `31-r`,
+while columns preserve weight lanes `0..31`.
+
+Each accepted token schedules 64 finite macro events; each event performs the
+16 explicit PE updates in its 4x4 block. The implementation therefore keeps
+1024 independent saturating accumulators and does not call a matrix library
+or precompute `C=A*B`. It exposes pipeline occupancy, accepted input count,
+committed MAC count, accumulator inspection, stable-row quantization, and a
+reset that clears both PE state and in-flight work.
+
+Five focused tests cover the earliest/latest macro wavefront and reversed-row
+mapping, initiation interval one with three consecutive outer products,
+positive/negative 24-bit saturation in every PE, stable cutbit-8 row
+quantization and index guards, and reset cancellation of in-flight events.
+Finish/snapshot serialization, accumulator retain/clear between commands,
+and exact external result-valid cycles remain intentionally deferred to the
+next increment and RTL boundary calibration.
+
+`systolic_array.cc`, its test, and the PE dependency pass C++17 syntax-only
+compilation. Style checks for the new sources and `SConscript`, plus
+`git diff --check`, pass. After the developer built the focused target,
+`systolic_array.test.opt` passed 5/5. Increment 2 is verified. The resource
+is not connected to `SauModel`, so this focused checkpoint did not require a
+gem5 relink.
+
+### PLAN3 Step 4 increment 3 — 2026-07-27
+
+The developer used `npi_fsdb_probe` on the frozen cutbit-8 ATBD FSDB to
+capture 408 value changes across 33 array-boundary signals. The export is:
+
+```text
+/home/xch/work/npu_lpnpu/tmp/plan3_step4_atbd_array_boundary.csv
+SHA-256 ecd53b769068b32041463db92b748ad9030eb93f677c901be63c847d65b9794b
+```
+
+Anchored to the accepted start, the RTL array accepts 32 consecutive
+activation/weight pairs at cycles 78..109. The final pair produces
+macro-column-0 PE-finish pulses across macro rows at 112..119 and complete
+macro-row snapshot pulses at 119..126. Macro row 0 starts streaming at 122;
+the 8 macro rows each emit 4 rows through the token chain without a gap, so
+the 32 quantized rows occupy cycles 122..153. `cal_finish_t` is asserted with
+the final row at 153, and its registered output appears at 154.
+
+These observations independently confirm increment 2's source-derived
+`CALC_DELAY + macroRow + macroColumn` schedule: with the final input at 109,
+the earliest PE finish is `109+3=112` and the last complete snapshot is
+`109+3+7+7=126`. A separate payload replay decoded the 32 real input vector
+pairs, updated all 1024 signed 24-bit PE accumulators in source lane order,
+and applied cutbit 8. All 1024 resulting signed 16-bit lanes match
+`out_sum_final_q_t` over cycles 122..153 with zero mismatches.
+
+`SystolicArrayInput` now marks the final accepted accumulation token.
+Finish-tagged macro events emit source-equivalent PE-finish and
+snapshot-ready masks and capture each completed 4x4 block after its final
+MAC. The resource models the eight `SA_ROW` IDLE/WAIT_TOKEN/STREAMING state
+machines, the four-row token handoff, storage-ready lifetime, stable snapshot
+quantization, ordered physical rows 0..31, and `calFinish` on the final row.
+Output start remains an explicit request, matching `SA_ENGINE.Flag_o` rather
+than inventing an internal launch condition.
+
+Two new focused tests extend `systolic_array.test` from 5 to 7 cases: one
+checks the exact finish/snapshot macro staircase, and one checks the 32-cycle
+row stream, token handoff, payload, storage-ready lifetime, and final pulse.
+The updated array sources and tests pass strict C++17 syntax-only compilation
+with `-Wall -Wextra -Werror`; style and `git diff --check` pass. After the
+developer rebuilt the focused target, `systolic_array.test.opt` passed 7/7.
+Increment 3 is verified. At this checkpoint the array remained disconnected
+from `SauModel`, so no gem5 relink was required.
+
+### PLAN3 Step 4 increment 4 — 2026-07-27
+
+The fourth increment connects the currently supported ATBD/Reuse-A payload
+path to `SystolicArray` inside `StrictPayloadDatapath`. The strict driver
+already invokes operand B before SA-enable on each edge. The datapath
+therefore pairs that edge's streamed B payload with the transposed A column
+consumed by SA-enable and accepts exactly one array vector pair. The final
+T0 column carries the array finish tag; no fallback or alternate pairing is
+invented for the deferred reuse/transposition modes.
+
+`sampleCycle(edge)` now advances the array once per strict driver tick and
+publishes typed array-input and row-output boundary events. The payload layer
+also exposes an explicit result request which applies the command's raw
+cutbit. This preserves the RTL ownership split: array result start corresponds
+to `SA_ENGINE.Flag_o`, while command completion, output-register accumulation,
+result transposition, and external writeback remain outside this increment.
+`SauModel` only supplies the strict edge to `sampleCycle`; it does not yet
+request or consume the result stream.
+
+The payload focused suite gains a complete 32x32x32 signed-int8 test. It fills
+T0 from resident A rows, pairs 32 transposed-A/streamed-B vectors, checks the
+finish tag, requests output at the frozen final-input-plus-13-cycle boundary,
+and verifies 32 consecutive physical rows. Its expected 1024 elements come
+from an independent scalar replay with signed 24-bit saturating accumulation
+and cutbit 8, rather than from the array's own inspection API.
+
+`payload_datapath.cc`, its updated test, `systolic_array.cc`, and
+`pe_datapath.cc` pass strict C++17 syntax-only compilation with
+`-Wall -Wextra -Werror`. `SauModel` passes syntax-only compilation using the
+generated RISCV parameter headers. Modified-region gem5 style and
+`git diff --check` pass. Developer compilation and execution of the updated
+`payload_datapath.test.opt`, followed by the `gem5.opt` relink, are pending.
+
+The first developer focused build exposed a target-local link dependency
+omission: `payload_datapath.test` linked `payload_datapath.cc` but not the
+new `systolic_array.cc`/`pe_datapath.cc` implementations, producing an
+undefined reference to `SystolicArray::requestOutput(unsigned)`. The main
+gem5 source list already contained both implementation files. The focused
+GTest source list now includes them as well; no C++ behavior changed.
+
+The rebuilt target then ran 3/4 tests. The new end-to-end case successfully
+checked all 32 array input events, the final finish tag, output start edge,
+32 consecutive result rows, row indices, and final `calFinish`; only its
+independent scalar payload expectation failed. The test had interpreted the
+resident beat index and its byte index in the opposite order. T0 emits lane
+`a` from resident beat `31-a`, and `SystolicArray` physical row `r` consumes
+lane `31-r`, so the two reversals cancel: row `r` consumes resident beat `r`
+and activation `A[r][k] = k-r` for this synthetic fixture. The scalar replay
+now uses that mapping. The datapath/array implementation is unchanged;
+strict syntax, modified-region style, and `git diff --check` pass after the
+test correction.
+
+After the developer rebuilt the corrected target,
+`payload_datapath.test.opt` passed 4/4. This verifies the current
+ATBD/Reuse-A operand pairing, final-token propagation, cutbit-8 array
+computation, frozen output-start timing, 32-row result stream, and final
+completion pulse at the payload-resource boundary. Step 4 increment 4
+focused verification is complete. A `gem5.opt` relink and runtime boundary
+integration remain next.
+
+### PLAN3 Step 4 increment 5 — 2026-07-27
+
+After the increment-4 `gem5.opt` relink, the strict cutbit-8 ATBD smoke run
+exited normally through `SAU command complete`; adding the finite array tick
+therefore did not disturb the existing strict command-completion path.
+
+Increment 5 connects the array's typed payload events to the runtime boundary
+trace. Accepted array pairs emit `sa_data_active_left` and
+`sa_in_weight_above` at the strict driver edge. Result launch reuses
+`RtlResultSerializerSkeleton::rowScoreValid()` instead of adding a
+fixture-specific cycle constant: its first registered row-valid edge requests
+the payload array stream once, using the command cutbit. Each output row is
+then emitted as `out_sum_final_q`, sign-extending the 32 int8 quantized lanes
+into the RTL's 32x16-bit registered boundary representation.
+
+`BoundaryTraceWriter` now supports `OutputVector32x16` with RTL slice order
+(lane 31 most significant, each signed lane preserved as 16-bit two's
+complement). A focused writer test covers negative-lane encoding.
+`StrictPayloadDatapath` owns the one-shot output-request state, while
+`RtlCommandDriverSkeleton` only exposes its already-modeled registered
+row-score-valid control. Command completion, output-register accumulation,
+result transposition, and writeback payload replacement remain unchanged.
+
+The boundary writer, payload datapath, array/PE dependencies, and
+schedule-state sources/tests pass strict C++17 syntax-only compilation with
+`-Wall -Wextra -Werror`; `SauModel` passes syntax-only compilation against
+the generated RISCV headers. Modified-region gem5 style and
+`git diff --check` pass. Developer focused builds and the `gem5.opt` relink
+are pending. Runtime acceptance will compare array inputs at RTL cycles
+78..109 and registered `out_sum_final_q` rows at 123..154 against
+`plan3_step4_atbd_array_boundary.csv`.
+
+Developer builds completed and the focused targets passed:
+`boundary_trace.test.opt` 4/4, `payload_datapath.test.opt` 4/4, and
+`schedule_state.test.opt` 33/33. The first increment-5 runtime run completed
+normally, but its new trace exposed a real operand alignment defect before
+golden comparison: array inputs appeared only 31 times at cycles 78..108,
+instead of the RTL's 32 at 78..109.
+
+The missing final pair showed that array weight does not consume the
+same-edge `data_B` event. In the frozen RTL, `data_B` occupies cycles
+77..108 and the registered SA weight boundary occupies 78..109. The payload
+datapath now holds B in a one-edge array-weight register: each SA-enable
+consumes the prior registered B, and the current `data_B` updates that
+register after the array tick. The focused end-to-end test now reproduces
+this priming/final-drain sequence explicitly while retaining its independent
+1024-element check. The correction passes strict syntax, modified-region
+style, and `git diff --check`; developer rebuild and runtime recheck are
+pending.
+
+After the developer rebuilt the alignment correction,
+`payload_datapath.test.opt` passed 4/4. The second strict runtime run exited
+normally and produced exactly 32 array activation/weight pairs at cycles
+78..109 plus exactly 32 registered result rows at cycles 123..154.
+
+Both sequence and exact-cycle comparison pass with zero differences for:
+
+```text
+u_trans2sa_top.sa_data_active_left
+u_trans2sa_top.sa_in_weight_above
+u_trans2sa_top.out_sum_final_q
+```
+
+against the frozen
+`/home/xch/work/npu_lpnpu/tmp/plan3_step4_atbd_array_boundary.csv`
+(SHA-256
+`ecd53b769068b32041463db92b748ad9030eb93f677c901be63c847d65b9794b`).
+The complete SAU quick regression also passes 63/63 checks across 23 suites.
+Step 4 increment 5 runtime array-boundary integration is verified.
+
+The array now carries real payloads through the registered RTL result-row
+boundary. Work downstream of that boundary belongs to Step 5:
+`register_file_out` accumulation/ordering, the result transposer path where
+selected, and replacement of the existing functional writeback payload with
+the resource-produced rows.
+
+### PLAN3 Step 4 closure — 2026-07-27
+
+The frozen plan assigns `register_file_out`, serializer ordering, and real
+writeback payloads to Step 5. Step 4's finite 32x32 array, signed-int8 PE
+arithmetic, signed 24-bit saturation, enable/clear behavior, macro
+staircase, snapshot/row stream, and raw cutbit 0..31 requirements are now
+implemented and focused-tested. The supported ATBD/Reuse-A runtime accepts
+32 real operand pairs and emits 32 registered result rows with payload and
+exact cycles matching the frozen RTL; the full quick suite remains 63/63.
+Out-of-stage operator switches remain explicitly rejected by the existing
+CSR admission checks. PLAN3 Step 4 is complete, and the plan status/checklist
+now advances to Step 5 without moving output-RF work into Step 4.
+
+### PLAN3 Step 5 increment 1 — 2026-07-27
+
+The first Step 5 increment implements the accepted-update side of the frozen
+`register_file_out.sv`. The local source SHA-256 is
+`1a3e1cd65d2ea2cb103e323fb6b570eceaf8ca3741f6619eca62f72fba14964a`,
+exactly matching `RTL_TIMING_PROVENANCE.md`.
+
+`SauOutputResourceConfig` now owns the raw internal x/y/flow/instruction
+steps and bursts in addition to its unload counters. The new
+`OutputRegisterFile` provides 256 logical rows over two 128-entry SRAM
+halves selected by address bit 7. Each accepted signed16 array-result row
+updates one raw nested-counter address. Normal/CTRANS modes ignore old SRAM
+data; RETAIN/TRETAIN modes sign-extend the stored int8 lanes, apply 16-bit
+two's-complement wrap addition, and saturate each lane back to int8 before
+storage. Consecutive same-address updates observe the just-written value,
+which is the accepted-transaction equivalent of the RTL RAW forwarding
+bypass. The resource also exposes the sticky result-accumulation completion
+boundary and hard reset separately.
+
+Six focused tests cover both SRAM halves, positive/negative int8 saturation,
+same-address forwarding with signed16 overflow, normal-mode overwrite,
+the full raw x/y/flow/instruction pointer nesting, completion clear versus
+hard reset, and invalid zero dimensions. The new resource and its tests pass
+strict C++17 syntax-only compilation with `-Wall -Wextra -Werror`;
+resource-config dispatch syntax, modified-region gem5 style, and
+`git diff --check` pass. Developer compilation is pending.
+
+This increment intentionally stops before the registered unload read port
+and before runtime integration. Those are the next Step 5 increments, along
+with result-transpose selection and replacement of the placeholder zero
+writeback payload.

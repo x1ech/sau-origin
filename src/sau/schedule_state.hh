@@ -671,6 +671,10 @@ class RtlCommandDriverSkeleton
     bool saEnable() const { return currentSaEnable; }
     bool internalFinish() const { return execute.internalFinish(); }
     bool resultValid() const { return resultSerializer.resultValid(); }
+    bool arrayRowScoreValid() const
+    {
+        return resultSerializer.rowScoreValid();
+    }
     bool resultLast() const { return resultSerializer.resultLast(); }
     bool nativeWriteValid() const { return outputWriteback.writeValid(); }
     bool nativeWriteLast() const
