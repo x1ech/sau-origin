@@ -52,6 +52,15 @@ parser.add_argument(
         "for causal/backpressure validation"
     ),
 )
+parser.add_argument(
+    "--fixture-start-policy",
+    choices=("raw", "sequential"),
+    default="raw",
+    help=(
+        "Use raw CSR start cycles, or treat fixture commands as templates "
+        "submitted only after the prior command is complete and write-visible"
+    ),
+)
 
 parser.add_argument("--beat-bytes", type=positive_int, default=32)
 parser.add_argument("--a-beats", type=positive_int, default=256)
@@ -195,6 +204,10 @@ if args.timing_memory and not args.rtl_profile:
     parser.error("--timing-memory requires --rtl-profile")
 if args.timing_memory and args.calibration_memory:
     parser.error("--timing-memory cannot be combined with --calibration-memory")
+if args.fixture_start_policy == "sequential" and not args.timing_memory:
+    parser.error(
+        "--fixture-start-policy=sequential requires --timing-memory"
+    )
 
 strict_timing_options = {
     "--beat-bytes",
@@ -341,6 +354,7 @@ system.sau = SauModel(
     calibration_memory=args.calibration_memory,
     calibration_read_latency_cycles=args.calibration_read_latency_cycles,
     csr_fixture=args.rtl_profile,
+    fixture_start_policy=args.fixture_start_policy,
     strict_timing=args.strict_timing,
     rtl_sa_size=args.rtl_sa_size,
     rtl_register_depth=args.rtl_register_depth,

@@ -216,6 +216,7 @@ SauModel::SauModel(const Params &params)
       calibrationReadLatencyCycles(params.calibration_read_latency_cycles),
       strictTiming(params.strict_timing),
       fixtureReplay(!params.csr_fixture.empty()),
+      rawFixtureStarts(params.fixture_start_policy == "raw"),
       rtlTiming({params.rtl_sa_size, params.rtl_register_depth,
                  params.rtl_sram_delay, params.rtl_sram_data_width,
                  params.rtl_mem_address_delay,
@@ -270,6 +271,11 @@ SauModel::SauModel(const Params &params)
              "strict SAU timing requires calibration_memory");
     panic_if(strictTiming && params.csr_fixture.empty(),
              "strict SAU timing requires a CSR fixture directory");
+    panic_if(params.fixture_start_policy != "raw" &&
+                 params.fixture_start_policy != "sequential",
+             "SAU fixture_start_policy must be raw or sequential");
+    panic_if(strictTiming && !rawFixtureStarts,
+             "strict SAU timing requires raw fixture start cycles");
     panic_if(strictTiming && beatBytes != rtlStorageTiming.beatBytes,
              "strict SAU timing beat size differs from RTL storage contract");
     panic_if(strictTiming &&
@@ -303,6 +309,20 @@ SauModel::SauModel(const Params &params)
             panic_if(command.instructionLoops != 1,
                      "SAU strict retain runtime currently requires one "
                      "instruction tile per command");
+        }
+        if (strictTiming) {
+            std::vector<RtlSequentialCommandWindow> windows;
+            windows.reserve(fixtureCommands.size());
+            for (const auto &entry : fixtureCommands) {
+                windows.push_back({
+                    entry.decoded.command.id,
+                    entry.startCycle,
+                    buildRtlCommandDriverConfig(
+                        entry.decoded.command,
+                        entry.decoded.timingPolicy, rtlTiming),
+                });
+            }
+            validateRtlSequentialCommandWindows(windows);
         }
     }
     panic_if(functionalMemorySize == 0 &&
@@ -590,8 +610,15 @@ SauModel::tick()
 {
     externalRequestsIssuedThisCycle = 0;
     bool acceptedCommandThisTick = false;
-    if (!activeCommand && nextCommandStartCycle &&
+    if (nextCommandStartCycle &&
         Cycles(sauCycle) >= *nextCommandStartCycle) {
+        panic_if(
+            activeCommand,
+            "SAU sequential CSR fixture command %u start arrived at cycle "
+            "%llu while command %llu was still active",
+            nextCommandIndex + 1,
+            static_cast<unsigned long long>(sauCycle),
+            static_cast<unsigned long long>(activeCommand->id));
         nextCommandStartCycle.reset();
         submitNextCommand();
         acceptedCommandThisTick = true;
@@ -1382,16 +1409,10 @@ SauModel::updatePhase()
         payloadDatapath.reset();
         availableB.clear();
         if (moreCommands) {
-            if (strictTiming) {
-                const auto &firstFixtureCommand = fixtureCommands.front();
-                const auto &nextFixtureCommand =
-                    fixtureCommands.at(nextCommandIndex);
-                const Cycles nextStart = Cycles(
-                    nextFixtureCommand.startCycle -
-                    firstFixtureCommand.startCycle);
-                panic_if(nextStart <= Cycles(sauCycle),
-                         "SAU CSR fixture overlaps an active command");
-                nextCommandStartCycle = nextStart;
+            if (fixtureReplay && rawFixtureStarts) {
+                panic_if(
+                    !nextCommandStartCycle,
+                    "SAU CSR fixture lost the next raw start arrival");
             } else {
                 nextCommandStartCycle =
                     Cycles(sauCycle) + interCommandGapCycles;
@@ -2035,6 +2056,15 @@ SauModel::submitNextCommand()
         activeTimingPolicy.reset();
     }
     submitCommand(buildCommandForIndex(nextCommandIndex++));
+    if (fixtureReplay && rawFixtureStarts &&
+        nextCommandIndex < commandCount) {
+        const uint64_t firstStart = fixtureCommands.front().startCycle;
+        const uint64_t nextStart =
+            fixtureCommands.at(nextCommandIndex).startCycle;
+        panic_if(nextStart < firstStart,
+                 "SAU CSR fixture start cycles are not monotonic");
+        nextCommandStartCycle = Cycles(nextStart - firstStart);
+    }
 }
 
 uint32_t

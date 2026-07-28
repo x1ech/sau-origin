@@ -14,6 +14,7 @@ final output dump, the simulation log, a manifest, and checksums.
 | `int8_gemm_64x160x64_atbd_flow1_cutbit8` | Two-command flow1 timing and tile-order oracle | RTL actual is the oracle; each fixed-grid 32x32 tile rotates clockwise |
 | `int8_gemm_32x512x32_atbd_flow2_cutbit8` | One retained K256 segment followed by final output | 1024/1024 match |
 | `int8_gemm_32x768x32_atbd_flow2_cutbit8` | Two consecutive retained K256 segments followed by final output | 1024/1024 match |
+| `int8_gemm_chain_32x768x32_to_32x32x32_atbd_cutbit8` | Four-command write-to-Operand-A-read dependency | 1024/1024 match |
 
 `initial_memory.hex` is generated before simulation and is not a post-run
 memory dump. Each manifest records the address range covered by
@@ -25,6 +26,9 @@ The cutbit-1 package also contains a strict `csr_writes.csv` replay extracted
 from its frozen FSDB at the SAU instance's accepted posedge boundaries.
 The Flow1 package contains two command-local CSR sequences and is registered
 as the model's strict byte-exact functional regression.
+The chain package adds optional verifier-only `memory_dependencies` metadata.
+It checks address/order/visibility using the existing architecture trace;
+the existing final-memory comparator remains the only functional oracle.
 
 Rebuild a package with `util/sau/build_plan3_step0_package.py` and the source
 paths recorded in its manifest. Verify a package from its directory with:

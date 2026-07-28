@@ -1,7 +1,9 @@
 #include "sau/schedule_state.hh"
 
 #include <iterator>
+#include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace gem5::sau
 {
@@ -1218,6 +1220,48 @@ RtlCommandDriverSkeleton::tick(bool startWrite)
         commandDoneAt = currentEdge;
     }
     ++currentEdge;
+}
+
+uint64_t
+predictRtlCommandDoneEdge(const RtlCommandDriverConfig &config)
+{
+    RtlCommandDriverSkeleton driver(config);
+    constexpr uint64_t MaxPredictionEdges = 100'000'000;
+    for (uint64_t edge = 0; edge < MaxPredictionEdges; ++edge) {
+        driver.tick(edge == 0);
+        if (driver.commandDoneObserved()) {
+            return driver.commandDoneEdge();
+        }
+    }
+    throw std::runtime_error(
+        "RTL command-driver did not reach command_done during preflight");
+}
+
+void
+validateRtlSequentialCommandWindows(
+    const std::vector<RtlSequentialCommandWindow> &commands)
+{
+    for (size_t index = 0; index + 1 < commands.size(); ++index) {
+        const auto &current = commands[index];
+        const auto &next = commands[index + 1];
+        const uint64_t doneEdge =
+            predictRtlCommandDoneEdge(current.driver);
+        if (doneEdge >
+            std::numeric_limits<uint64_t>::max() - current.startCycle) {
+            throw std::invalid_argument(
+                "SAU sequential CSR fixture completion cycle overflows");
+        }
+        const uint64_t completionCycle = current.startCycle + doneEdge;
+        if (next.startCycle <= completionCycle) {
+            throw std::invalid_argument(
+                "SAU sequential CSR fixture command " +
+                std::to_string(next.commandId) + " starts at cycle " +
+                std::to_string(next.startCycle) + " before command " +
+                std::to_string(current.commandId) +
+                " is complete and write-visible at cycle " +
+                std::to_string(completionCycle));
+        }
+    }
 }
 
 SauScheduleState

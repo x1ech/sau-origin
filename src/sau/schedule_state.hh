@@ -771,6 +771,24 @@ class RtlCommandDriverSkeleton
     uint64_t commandDoneAt = 0;
 };
 
+/**
+ * Run the fixed-cadence RTL command-driver control skeleton to its
+ * command-done edge. Constructor-time admission checks use this to reject an
+ * overlapping sequential fixture before any command statistics or trace.
+ */
+uint64_t predictRtlCommandDoneEdge(const RtlCommandDriverConfig &config);
+
+struct RtlSequentialCommandWindow
+{
+    uint64_t commandId = 0;
+    uint64_t startCycle = 0;
+    RtlCommandDriverConfig driver;
+};
+
+/** Reject a sequential start that is not later than the prior done edge. */
+void validateRtlSequentialCommandWindows(
+    const std::vector<RtlSequentialCommandWindow> &commands);
+
 class SauSchedule
 {
   public:

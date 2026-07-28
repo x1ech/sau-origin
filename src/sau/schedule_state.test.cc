@@ -1167,6 +1167,28 @@ TEST(RtlCommandDriverSkeleton, FlowRetainCompletesWithoutResultOrWriteback)
     EXPECT_FALSE(retain.memoryWriteWindow().observed);
 }
 
+TEST(RtlCommandDriverSkeleton, PredictsSequentialAdmissionCompletionEdges)
+{
+    EXPECT_EQ(
+        predictRtlCommandDoneEdge(commandDriverConfig(8, 1, 2)), 569u);
+    EXPECT_EQ(
+        predictRtlCommandDoneEdge(commandDriverConfig(8, 1, 0)), 685u);
+}
+
+TEST(RtlCommandDriverSkeleton, PreflightsSequentialCommandStarts)
+{
+    const auto retain = commandDriverConfig(8, 1, 2);
+    const auto normal = commandDriverConfig(8, 1, 0);
+    EXPECT_NO_THROW(validateRtlSequentialCommandWindows({
+        {1, 1000, retain},
+        {2, 1570, normal},
+    }));
+    EXPECT_THROW(validateRtlSequentialCommandWindows({
+        {1, 1000, retain},
+        {2, 1569, normal},
+    }), std::invalid_argument);
+}
+
 TEST(RtlExecuteUpdateSkeleton, CountsEnabledSaEdgesAndPipelinesExecuteDone)
 {
     RtlExecuteUpdateSkeleton execute({32, 8, 0, false});

@@ -1,0 +1,113 @@
+{
+  "beat_bytes": 32,
+  "command_count": 4,
+  "command_flow_modes": [
+    2,
+    2,
+    0,
+    0
+  ],
+  "command_start_cycles": [
+    29462,
+    30113,
+    30771,
+    1111053
+  ],
+  "elaboration_params": {
+    "ADDR_DELAY": 2,
+    "COL_NUM": 32,
+    "OUTPUTDW": 24,
+    "REGDEPTH": 256,
+    "ROW_NUM": 32,
+    "SA_SIZE": 32,
+    "SRAM_DATA_WIDTH": 256,
+    "SRAM_DELAY": 3,
+    "clock_period_ns": 1.667
+  },
+  "fixture_name": "int8_gemm_chain_32x768x32_to_32x32x32_atbd_cutbit8",
+  "fixture_role": "end_to_end_command_write_then_operand_a_read_dependency",
+  "matrix_chain": [
+    {
+      "k": 768,
+      "m": 32,
+      "n": 32
+    },
+    {
+      "k": 32,
+      "m": 32,
+      "n": 32
+    }
+  ],
+  "memory_contract": {
+    "boundary_trace": "boundary.csv",
+    "external_beat_bytes": 32,
+    "final_output": "final_output_memory.hex",
+    "initial_image": "initial_memory.hex",
+    "initial_image_semantics": "pre-simulation firmware data image",
+    "output_base": "0x2912c400",
+    "output_byte_order": "ascending byte address, one int8 byte per line",
+    "output_end_exclusive": "0x2912c800",
+    "output_layout": "ascending_byte_address",
+    "output_size_bytes": 1024
+  },
+  "memory_dependencies": [
+    {
+      "base": "0x2912c800",
+      "beat_count": 32,
+      "consumer_command": 4,
+      "producer_command": 3,
+      "size_bytes": 1024,
+      "stream": "operand_a"
+    }
+  ],
+  "operation": "int8_gemm_chain",
+  "replay": {
+    "clock_edge": "posedge",
+    "firmware_build": "make -B all mod3 SAU_TEST_CASE=1 CHAIN_MATMUL=1",
+    "sampled_scope": "top_yinglong_tb.u_dut.u_dut_kui.SAU_1_inst",
+    "simulation": "make yinglong_run",
+    "trace_cycle_zero_fsdb_time_ps": 1250,
+    "waveform_reader": "/home/xch/work/npi_fsdb_probe/src/npi_fsdb_probe"
+  },
+  "result": {
+    "element_count": 1024,
+    "rtl_output_is_oracle": true,
+    "software_reference_is_oracle": true,
+    "software_reference_mismatches": 0
+  },
+  "timing_contract": {
+    "command_extent_cycles": [
+      569,
+      569,
+      685,
+      231
+    ],
+    "inter_command_gap_cycles": [
+      82,
+      89,
+      1079597
+    ],
+    "result_beats_per_command": [
+      0,
+      0,
+      32,
+      32
+    ],
+    "write_beats_per_command": [
+      0,
+      0,
+      32,
+      32
+    ]
+  },
+  "rtl_contract": {
+    "boundary_sha256": "ef45241ba62098193f744a550147d57723b15c4df430f446e90264140e18900e",
+    "fsdb_path": "/home/xch/work/npu_lpnpu/sim/vcs/build/yinglong/yinglong.fsdb",
+    "fsdb_sha256": "00955abc1d6957792e543d9067afdb91dae8096f134a4ef2564474822325552a",
+    "npu_repo_head": "ad97aaa7fa6c70e40c8bf8cce07486628eea9b81",
+    "npu_worktree_diff_sha256": "b3467a292dc72557b9ec0fae14ef068ec2e9e730e8b5946c2bcfcf2ac5c8a8ff",
+    "simulator": "VCS T-2022.06_Full64",
+    "simv_sha256": "adce69439f65e5bab8acbd76257b58e5c0a09634035c255f7fefd36c6846ce08"
+  },
+  "schema_version": 1
+}

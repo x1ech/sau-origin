@@ -2,8 +2,8 @@
 
 ## 状态
 
-**Steps 0–5 已在冻结的 Reuse-A 支持域内完成；下一 checkpoint 是 Step 6/Flow3
-范围判定。Step 5 increment 4 已将 native unload
+**Steps 0–5 已在冻结的 Reuse-A 支持域内完成；Step 6 increment 4 已开始，
+Flow3 继续 explicit fail-fast。Step 5 increment 4 已将 native unload
 payload 接入 strict memory write submission；cutbit-8 与 cutbit-1 strict
 final-memory checkpoint 均 1024/1024 bytes 匹配。Increment 5 已启用 Flow1
 strict per-tick runtime 和 multi-flow/multi-instruction array tile 生命周期；
@@ -16,7 +16,8 @@ K768 `[flow2, flow2, flow0]` 进一步验证连续两次 retain：三条 command
 569/569/685 cycles，间隔 82/89 cycles，只有最终 command 产生 32 个
 result/write beats，最终 1024/1024 bytes 匹配。真实 payload 读写分别由
 `payloadReadBeats`/`payloadWriteBeats` 统计，并由 functional verifier 对照
-architecture trace；重新编译后的 quick 回归为 26 suites、72/72 checks。
+architecture trace；Step 6 chain fixture 加入后 quick 回归为 27 suites、
+75/75 checks。
 `[flow2, flow1]` diagnostic 时序有效，但输出为
 32x32 tile 内顺时针旋转 90°而非纯转置；无留存的 64x160x64 case 复现相同
 tile-local RTL 行为。2026-07-28 用户确认 gem5 以当前 RTL 语义为对齐目标，
@@ -660,17 +661,36 @@ Step 5 在冻结的 Reuse-A 支持域内完成。
 
 ### Step 6：合法配置集成覆盖、多 command 与持久状态
 
-- [ ] 默认 sequential workload 必须保证下一 start 在前一 command 完成且写回可见
+当前进度：increment 1 已将 strict raw fixture 的 admission 变为构造期
+preflight。模型用同一 `RtlCommandDriverSkeleton` 预测每条 command-done edge，
+下一 start 必须严格晚于上一条完成/写回可见边沿；否则在产生 command stats 或
+trace event 前拒绝。569/685-cycle 预测、恰好同边沿拒绝和合法间隔均已验证。
+Increment 2 显式区分 `raw` 与 `sequential` fixture admission：timing-memory
+raw replay 在 start 到达当拍仍 busy 时立即停止，不缓存该 command；sequential
+把 fixture 作为 command template，只在前一 command 完成且写回可见后的下一拍
+提交。100ns/单 outstanding 定向测试中 raw 在 cycle 662 拒绝，sequential 在
+56859 complete 后于 56860 接收 command 2 并完成 2/2。Increment 3 增加真实
+write→read 链式 fixture：`[flow2, flow2, flow0]` 的最终 command 写 32 beats，
+随后第四条 Flow0 command 把同一范围作为 Operand-A 读取；所有 producer write
+均早于 consumer 首次 read，最终 1024/1024 bytes 匹配 RTL。可选
+`memory_dependencies` 只复用既有 trace 和 final-memory comparator，不引入第二套
+功能模型；quick 回归 75/75。Increment 4 用真实 Yinglong 固件路径尝试省略首条
+command 的 completion poll，但 crossbar 在 SAU active 期间阻塞 CPU 后续 CSR，
+三次 start 仍全部在 IDLE 且分别晚于前一 done 110/105 cycles。该证据只冻结
+Yinglong 软件可见的串行 admission；不使用非权威 UVM，也不推断强制直连
+`SA_CORE` 的 start 行为。
+
+- [x] 默认 sequential workload 必须保证下一 start 在前一 command 完成且写回可见
   后出现；静态可判定时在仿真开始前拒绝，受 timing-memory 动态 stall 影响而无法
   预判时，在冲突 start 到达的当拍报错并停止，不能缓存该 start。
-- [ ] 专门验证 busy/start RTL 行为的 workload 可保留重叠 raw write，但必须逐拍
-  复现 RTL 的 ready/accepted/ignored 结果；未 accepted 的 start 不进入 host queue，
-  不得在当前 command 完成后补执行。
-- [ ] strict functional memory 在 command 间持久；timing-memory 在 write
+- [x] Yinglong 软件路径已验证 crossbar 会把后续 CSR/start 阻塞到当前 SAU done
+  之后，因此集成边界不存在可达的 busy start。raw fixture 的重叠 start 保持
+  fail-fast，不作为强制直连 `SA_CORE` accepted/ignored 行为的 RTL oracle。
+- [x] strict functional memory 在 command 间持久；timing-memory 在 write
   visibility barrier 后再启动下一 command。
 - [ ] 内部 input/transposer/array/output 状态严格跟随 RTL reset、start、
   `sa_flow_mode` 和 clear/retain 条件。
-- [ ] 验证 command 2 可以读取 command 1 写回，且没有残留 token/valid 或错误
+- [x] 验证 command 2 可以读取 command 1 写回，且没有残留 token/valid 或错误
   accumulator 污染。
 - [ ] 四种 transpose × 当前支持的 Reuse-A 都有集成 focused test；端到端测试按
   当前支持域的 `trans/reuse/flow` 结构等价类覆盖，不以当前 fixture 组合替代
@@ -683,8 +703,8 @@ Step 5 在冻结的 Reuse-A 支持域内完成。
 验收：
 
 - 两 command 独立地址、链式依赖、retain 与 non-retain 测试通过；
-- sequential workload 的重叠 start rejection，以及专用 busy/start testcase 的
-  accepted/ignored command 数和周期与 RTL 一致；
+- sequential workload 保持完成后提交；Yinglong 软件路径的 start/done 顺序与
+  RTL 一致，重叠 raw fixture 在进入模型前明确拒绝；
 - 每个 command 的 timing、payload、memory visibility 和完成顺序分别守恒；
 - 实现支持全部合法 CSR 到 RTL 路径表的映射；验证覆盖每条结构路径、每个字段的
   最小/最大/回绕等边界、关键 guard 交互和未参与开发的合法 hold-out，不要求枚举
@@ -727,8 +747,8 @@ raw CSR writes
  -> final memory bytes
 ```
 
-- [x] 原 timing quick suite 全部继续通过；当前连同功能回归为 26 suites、
-  72/72 checks。
+- [x] 原 timing quick suite 全部继续通过；当前连同功能回归为 27 suites、
+  75/75 checks。
 - [x] 新增 focused functional tests 和 Flow0/Flow1/Flow2 workload
   end-to-end tests。
 - [x] 默认不输出逐拍 payload boundary trace；strict architecture/state/ledger

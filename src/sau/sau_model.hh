@@ -74,6 +74,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     const Cycles calibrationReadLatencyCycles;
     const bool strictTiming;
     const bool fixtureReplay;
+    const bool rawFixtureStarts;
     const RtlTimingParameters rtlTiming;
     const RtlStorageTiming rtlStorageTiming;
     const unsigned commandCount;

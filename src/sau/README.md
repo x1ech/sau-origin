@@ -57,8 +57,26 @@ the K512 `[flow2, flow0]` fixture: command extents are 569/685 cycles with a
 1024 final bytes match. CSR-driven resident Operand-A reads use the shared
 `register_addr.sv` x/y/channel address program, including non-contiguous
 `yStep` layouts. The K768 `[flow2, flow2, flow0]` fixture further proves two
-consecutive retain boundaries. The quick regression passes 72/72 checks
-across 26 suites.
+consecutive retain boundaries. A four-command chain then uses that result as
+the next Flow0 command's Operand-A input, proving a real command-to-command
+write/read dependency and matching all 1024 final RTL bytes. The optional
+fixture `memory_dependencies` field is verifier-only metadata over the
+existing trace and final-memory comparator; it does not add another memory
+model or expected-result path. The quick regression passes 75/75 checks
+across 27 suites.
+Step 6 increments 1–2 preflight strict raw fixture starts with the same
+RTL command-driver skeleton used at runtime. A next start at or before the
+prior command-done/write-visible edge is rejected during construction, before
+command statistics or trace events are emitted. Timing-memory exposes an
+explicit `--fixture-start-policy=raw|sequential`: `raw` honors CSR arrival
+cycles and rejects a busy start at that edge; `sequential` treats fixture
+commands as templates and submits the next one only after completion and
+write visibility. Strict replay requires the default `raw` policy. A real
+Yinglong no-poll firmware probe confirmed that its crossbar prevents CPU CSR
+traffic from delivering a second start while SAU is active: every observed
+start remained after the prior done edge. This claim is limited to the
+integrated software path and does not rely on the non-authoritative SAU UVM
+environment or infer forced internal-start behavior.
 Broader mode coverage is not complete,
 so PLAN3 does not yet claim full-domain end-to-end correctness. The legacy
 direct-command/DSE path and completed PLAN2 regressions remain timing-model
@@ -76,6 +94,9 @@ extents, the inter-command gap, and per-command result/write counts.
 The 32x768x32 fixture extends that contract to `[flow2, flow2, flow0]`,
 proving accumulator state survives two consecutive retain boundaries; its
 three command extents are 569/569/685 cycles and all 1024 bytes match.
+The chained 32x768x32 → 32x32x32 fixture adds a fourth Flow0 command whose
+Operand-A reads exactly the 32 beats written by command 3, after write
+visibility, and verifies its final 1024 bytes against RTL.
 
 `reuse_mode=00/10/11` remains decoded but is deferred while the RTL evolves.
 Complete workloads selecting those paths must fail explicitly rather than
@@ -135,7 +156,7 @@ rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
 All eight packages are registered as RISC-V quick strict and timing-memory
 causal tests. Together with the Flow1 and Flow2 functional fixtures, permanent legacy
 direct-command regression, fixed/constrained runs, and DSE simulations, the
-full quick set contains 26 suites and currently passes 72/72 checks:
+full quick set contains 27 suites and currently passes 75/75 checks:
 
 ```bash
 cd tests
@@ -174,6 +195,11 @@ each command-local event/address/beat lane, the phase-transition sequence, and
 explicit request/response/token dependencies. A data event may observe a
 different instantaneous phase when backpressure changes otherwise-independent
 event interleaving.
+
+Use `--fixture-start-policy=sequential` for a causal multi-command workload
+whose host guarantees completion ordering. Omit it, or select `raw`, when
+validating fixture CSR arrival cycles; an overlapping raw fixture is rejected
+as unreachable on the current Yinglong software path.
 
 The quick suite also retains the original two-command 64x256x256
 direct-command profile as `sau-legacy-direct-command`. It must remain causally

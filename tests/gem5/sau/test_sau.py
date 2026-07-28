@@ -225,7 +225,9 @@ class VerifySauFunctionalMemory(verifier.Verifier):
         with open(
             joinpath(self.rtl_profile, "manifest.json"), encoding="utf-8"
         ) as stream:
-            timing = json.load(stream).get("timing_contract")
+            manifest = json.load(stream)
+        timing = manifest.get("timing_contract")
+        dependencies = manifest.get("memory_dependencies", ())
 
         commands = {}
         read_responses = 0
@@ -234,7 +236,12 @@ class VerifySauFunctionalMemory(verifier.Verifier):
                 command_id = int(row["command_id"])
                 command = commands.setdefault(
                     command_id,
-                    {"result_beats": 0, "write_beats": 0},
+                    {
+                        "result_beats": 0,
+                        "write_beats": 0,
+                        "read_events": {},
+                        "write_events": [],
+                    },
                 )
                 event = row["event"]
                 if event == "command_accepted":
@@ -245,6 +252,15 @@ class VerifySauFunctionalMemory(verifier.Verifier):
                     command["result_beats"] += 1
                 elif event == "write_accepted":
                     command["write_beats"] += 1
+                    command["write_events"].append(
+                        (int(row["cycle"]), int(row["address"], 0))
+                    )
+                elif event == "read_accepted":
+                    command["read_events"].setdefault(
+                        row["stream"], []
+                    ).append(
+                        (int(row["cycle"]), int(row["address"], 0))
+                    )
                 elif event == "read_response_visible":
                     read_responses += 1
 
@@ -275,6 +291,60 @@ class VerifySauFunctionalMemory(verifier.Verifier):
                 "SAU strict functional timing comparison failed for "
                 f"{os.path.basename(self.rtl_profile)}:\n" +
                 "\n".join(errors) +
+                f"\nSee {tempdir} for full results"
+            )
+
+        dependency_errors = []
+        for dependency in dependencies:
+            beat_bytes = manifest["beat_bytes"]
+            producer_id = dependency["producer_command"]
+            consumer_id = dependency["consumer_command"]
+            stream = dependency["stream"]
+            base = int(dependency["base"], 0)
+            size_bytes = dependency["size_bytes"]
+            beat_count = dependency["beat_count"]
+            if beat_count * beat_bytes != size_bytes:
+                dependency_errors.append(
+                    f"commands {producer_id}->{consumer_id}: "
+                    "beat_count * beat_bytes does not equal size_bytes"
+                )
+                continue
+            expected_addresses = [
+                base + beat * beat_bytes for beat in range(beat_count)
+            ]
+            producer = commands.get(producer_id, {})
+            consumer = commands.get(consumer_id, {})
+            write_events = producer.get("write_events", [])
+            read_events = consumer.get("read_events", {}).get(stream, [])
+            write_addresses = [address for _, address in write_events]
+            read_addresses = [address for _, address in read_events]
+            if write_addresses != expected_addresses:
+                dependency_errors.append(
+                    f"command {producer_id} writes: expected "
+                    f"{[hex(address) for address in expected_addresses]}, "
+                    f"got {[hex(address) for address in write_addresses]}"
+                )
+            if read_addresses != expected_addresses:
+                dependency_errors.append(
+                    f"command {consumer_id} {stream} reads: expected "
+                    f"{[hex(address) for address in expected_addresses]}, "
+                    f"got {[hex(address) for address in read_addresses]}"
+                )
+            if (
+                write_events
+                and read_events
+                and write_events[-1][0] >= read_events[0][0]
+            ):
+                dependency_errors.append(
+                    f"commands {producer_id}->{consumer_id}: final write "
+                    f"cycle {write_events[-1][0]} is not before first read "
+                    f"cycle {read_events[0][0]}"
+                )
+        if dependency_errors:
+            test_util.fail(
+                "SAU command memory-dependency verification failed for "
+                f"{os.path.basename(self.rtl_profile)}:\n" +
+                "\n".join(dependency_errors) +
                 f"\nSee {tempdir} for full results"
             )
 
@@ -355,6 +425,7 @@ def verify_sau_rtl_timing_memory(name):
         config_args=[
             f"--rtl-profile={rtl_profile}",
             "--timing-memory",
+            "--fixture-start-policy=sequential",
             "--memory-latency=20ns",
             "--memory-latency-var=5ns",
             "--memory-bandwidth=1GiB/s",
@@ -458,6 +529,37 @@ gem5_verify_config(
         "sau",
         "configs",
         "sau_flow2_double_functional.py",
+    ),
+    config_args=(),
+    valid_isas=(constants.riscv_tag,),
+    length=constants.quick_tag,
+)
+
+chain_functional_profile = joinpath(
+    config.base_dir,
+    "tests",
+    "gem5",
+    "sau",
+    "functional_ref",
+    "int8_gemm_chain_32x768x32_to_32x32x32_atbd_cutbit8",
+)
+gem5_verify_config(
+    name=(
+        "sau-functional-"
+        "int8_gemm_chain_32x768x32_to_32x32x32_atbd_cutbit8"
+    ),
+    fixtures=(),
+    verifiers=(
+        verifier.MatchRegex(exit_regex),
+        VerifySauFunctionalMemory(chain_functional_profile),
+    ),
+    config=joinpath(
+        config.base_dir,
+        "tests",
+        "gem5",
+        "sau",
+        "configs",
+        "sau_chain_functional.py",
     ),
     config_args=(),
     valid_isas=(constants.riscv_tag,),

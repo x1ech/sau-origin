@@ -3,7 +3,9 @@
 本文记录从生成 SAU matmul case、编译固件到运行 Yinglong RTL 仿真的完整流程。
 当前已用 `M=32, K=512, N=32, cutbit=8`、命令序列
 `flowmode=2 -> flowmode=0`，以及 `M=32, K=768, N=32, cutbit=8`、命令序列
-`flowmode=2 -> flowmode=2 -> flowmode=0` 验证通过。
+`flowmode=2 -> flowmode=2 -> flowmode=0` 验证通过。另有宏隔离的链式 case：
+前三条命令完成 K768 GEMM，第四条 Flow0 command 把第三条写回结果作为
+Operand-A 再执行 32x32x32 GEMM，用于验证跨 command memory visibility。
 
 ## 1. 工程位置
 
@@ -66,6 +68,12 @@ cp build/build_s32/matmul/sau_matmul_regress_0.h \
 cd /home/xch/work/npu_lpnpu/software/benchmarks/yinglong_sau_test
 make
 make mod3
+```
+
+链式 case 不改变默认固件行为。需要复现时显式启用：
+
+```bash
+make -B all mod3 SAU_TEST_CASE=1 CHAIN_MATMUL=1
 ```
 
 成功后重点文件位于：
@@ -180,6 +188,13 @@ top_yinglong_tb.u_dut.u_dut_kui.SAU_1_inst.sau_sram_addr
 3. 第二条命令使用最终输出模式，当前 case 为 `flowmode=0`；
 4. 留存命令不提前产生最终写回；
 5. 第二条命令结束后产生完整输出，最终 1024 个元素全部匹配。
+
+链式 case 还应满足：
+
+1. 命令 flow 序列为 `[2, 2, 0, 0]`；
+2. 第三条命令写出 32 beats，第四条命令的 Operand-A 按相同地址顺序读取；
+3. 第三条最后一次 write 早于第四条第一次 Operand-A read；
+4. 第四条最终输出与独立软件参考的 1024 bytes 全部匹配。
 
 ## 7. 最短重复执行清单
 

@@ -62,6 +62,11 @@ class SauModel(ClockedObject):
     csr_fixture = Param.String(
         "", "Directory containing an RTL csr_writes.csv fixture"
     )
+    fixture_start_policy = Param.String(
+        "raw",
+        "Fixture command admission: raw CSR cycles or after-completion "
+        "sequential templates",
+    )
     strict_timing = Param.Bool(
         False, "Derive timing only from the CSR fixture and named RTL parameters"
     )

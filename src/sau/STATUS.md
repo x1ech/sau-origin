@@ -4,26 +4,27 @@ Status type: Current snapshot
 Last updated: 2026-07-28
 
 - Active branch: `feature/sau-command-types`
-- Snapshot HEAD before this documentation migration: `bef303b86c`
 - Plan entry: [`PLAN.md`](PLAN.md)
-- Active plan: [`PLAN3.md`](PLAN3.md), Step 5 complete; Step 6 scope checkpoint
+- Active plan: [`PLAN3.md`](PLAN3.md), Step 6 increment 4
 - Historical status index: [`docs/status/INDEX.md`](docs/status/INDEX.md)
 
 ## Current Goal
 
 Implement the CSR-driven Int8 GEMM functional datapath as a cycle-level gem5
-resource model. Real 256-bit payloads must pass through the modeled input,
-transpose/reuse, 32x32 systolic-array, output-RF, serializer, and writeback
-resources. Final memory bytes and strict boundary timing must match the frozen
-RTL evidence without replacing the datapath with a direct GEMM calculation.
+resource model, carrying real 256-bit payloads through every finite resource.
+Final memory and strict boundary timing must match RTL without direct GEMM.
 
 ## Current Stage
 
 - The original timing-model milestone and PLAN2 CSR/control/timing alignment
   are complete. PLAN2 commit `458ad7e3cb` remains the timing regression
   baseline.
-- PLAN3 Steps 0–5 are complete for the currently frozen Reuse-A domain
-  (`reuse_mode=01`); broader Step 6 coverage awaits the Flow3 scope decision.
+- PLAN3 Steps 0–5 are complete for the frozen Reuse-A domain
+  (`reuse_mode=01`); Step 6 increment 4 is active and Flow3 remains fail-fast.
+- Yinglong crossbar serializes CPU CSR access; every no-poll probe start stayed
+  in IDLE. Forced internal starts and UVM are outside this acceptance claim.
+- A four-command chain proves strict memory persistence: command 4 reads the
+  32 beats written by command 3 after visibility; 1024/1024 bytes match RTL.
 - PLAN3 Step 5 increment 4 consumes the registered unload FIFO at strict
   writeback and submits real payload bytes. Both cutbit-8 and cutbit-1 strict
   outputs match frozen RTL final memory for 1024/1024 bytes.
@@ -112,7 +113,7 @@ RTL evidence without replacing the datapath with a direct GEMM calculation.
 
 | Scope | Result | Status |
 | --- | --- | --- |
-| SAU quick regression | 72/72 checks across 26 suites, including Flow1 and both Flow2 fixtures | Passed |
+| SAU quick regression | 75/75 checks across 27 suites with start-policy and chain coverage | Passed |
 | Step 4 focused targets | `boundary_trace` 4/4, `payload_datapath` 4/4, `schedule_state` 33/33 | Passed |
 | Step 4 strict runtime boundary | 32 input pairs and 32 result rows; payload/sequence/cycles equal frozen RTL | Passed |
 | Step 5 focused resources | address 5/5, A RF 7/7, CSR 10/10, output 11/11, payload 4/4, array 9/9, command driver 35/35 | Passed |
@@ -123,6 +124,8 @@ RTL evidence without replacing the datapath with a direct GEMM calculation.
 | Flow2 K768 gem5 runtime | 569/569/685-cycle extents; 82/89-cycle gaps; 1024/1024 bytes; identical SHA-256 `6336cf…39ae` | Passed |
 | Flow1 64x160x64 fixture | Two commands, 690 cycles each; 4096/4096 final bytes | Passed |
 | Step 5 performance baseline | Three-run medians 0.16–0.17 s and 66,328–70,140 KiB RSS; [report](docs/reports/plan3-step5-performance-baseline.md) | Passed |
+| Step 6 start admission | focused 37/37; Yinglong starts remain after done; [report](docs/reports/plan3-step6-yinglong-start-serialization.md) | Passed |
+| Step 6 memory chain | `[2,2,0,0]`; command 3 write → command 4 Operand-A read; 1024/1024 bytes | Passed |
 
 ## Blockers and Risks
 
@@ -131,16 +134,13 @@ RTL evidence without replacing the datapath with a direct GEMM calculation.
   `e722852bd9ab` baseline for existing strict checkpoints.
 - Reuse modes other than Reuse-A are intentionally deferred; do not expand
   acceptance scope while the source RTL is evolving.
-- Deferred reuse coverage remains open.
 - Raw Flow3/transpose-retain remains decoded but functionally unconfirmed.
 
 ## Next Actions
 
-1. Decide whether Flow3/transpose-retain belongs in the current RTL-stable
-   acceptance domain; otherwise keep its explicit fail-fast boundary.
-2. Advance Step 6 integration coverage without expanding the
-   deferred non-Reuse-A scope.
-3. Add command-to-command memory-dependency coverage within that agreed scope.
+1. Expand integrated transpose coverage within the supported Reuse-A scope.
+2. Add the paired legal-but-unintended transpose-mode RTL comparison.
+3. Verify remaining reset/clear/retain state boundaries.
 
 ## Historical Detail
 
