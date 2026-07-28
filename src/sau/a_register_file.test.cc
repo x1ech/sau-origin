@@ -94,6 +94,25 @@ TEST(ARegisterFileIn, ProducesVirtualAArrayInputBeatsAfterPreload)
         (Beat{StreamKind::OperandA, 0, 7, true}));
 }
 
+TEST(ARegisterFileIn, AcceptsRtlNestedResidentAddresses)
+{
+    auto command = makeCommand(1, 1);
+    command.operandA.beats = 4;
+    command.control.horizontalAddress = 0x1000;
+    command.control.registerInput.xBurst = 2;
+    command.control.registerInput.yStep = 4;
+    command.control.registerInput.yCycle = 2;
+    command.control.registerInput.cCycle = 1;
+    ARegisterFileIn registerFile(command);
+
+    registerFile.load(Beat{StreamKind::OperandA, 0x1000, 0, false});
+    registerFile.load(Beat{StreamKind::OperandA, 0x1020, 1, false});
+    registerFile.load(Beat{StreamKind::OperandA, 0x1080, 2, false});
+    registerFile.load(Beat{StreamKind::OperandA, 0x10a0, 3, true});
+
+    EXPECT_TRUE(registerFile.instructionReady(0));
+}
+
 TEST(ARegisterFileIn, RejectsNonAExternalLoad)
 {
     ARegisterFileIn registerFile(makeCommand());

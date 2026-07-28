@@ -67,6 +67,18 @@ class SystolicArray
     /** Reset all PE state and discard every in-flight macro event. */
     void reset();
 
+    /**
+     * Configure the current command's SA_ENGINE keep bit. A retaining
+     * command snapshots completed tiles without clearing the PE MACs.
+     */
+    void setKeepMode(bool value) { keepMode = value; }
+
+    /**
+     * Start a new command from retained PE state while clearing all
+     * command-local pipelines, result snapshots, and stream controls.
+     */
+    void restoreAccumulators(const AccumulatorMatrix &state);
+
     bool pipelineEmpty() const { return pendingEvents == 0; }
     uint64_t cycle() const { return currentCycle; }
     uint64_t acceptedInputs() const { return acceptedInputCount; }
@@ -120,11 +132,10 @@ class SystolicArray
     bool storageReadyValue = false;
     bool calFinishPulse = false;
     bool outputStartActive = false;
-    bool resultStreamStarted = false;
-    bool finishSeen = false;
     unsigned streamCutbit = 0;
     std::optional<OperandVector32x8> streamOutputValue;
     std::optional<unsigned> streamRowValue;
+    bool keepMode = false;
 };
 
 } // namespace gem5::sau

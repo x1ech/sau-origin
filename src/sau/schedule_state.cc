@@ -291,11 +291,11 @@ RtlStreamLoadSkeleton::tick(const RtlStreamLoadInputs &inputs)
 RtlExecuteUpdateSkeleton::RtlExecuteUpdateSkeleton(
     const RtlExecuteUpdateConfig &config_) : config(config_)
 {
-    // Step 5.5 currently supports the fixed normal-int8 GEMM control mode.
-    // Other kernels and retain modes have different update serialization.
+    // The current stage supports normal int8 GEMM in clear and keep modes.
+    // Nonzero kernels still select a different update serialization.
     if (config.saSize == 0 || config.flowLoops == 0 ||
         config.flowLoops > 63 ||
-        config.convolutionKernel != 0 || config.keepMode) {
+        config.convolutionKernel != 0) {
         throw std::invalid_argument("unsupported RTL execute/update mode");
     }
     const uint64_t cycles =
@@ -317,7 +317,8 @@ RtlExecuteUpdateSkeleton::tick(const RtlExecuteUpdateInputs &inputs)
       case UpdateState::FirstOut:
         updateFinished = inputs.currentInstructionOutput ?
             inputs.resultLast : arrayFinishReg;
-        if (!inputs.currentInstructionOutput && arrayFinishReg) {
+        if (!config.keepMode && !inputs.currentInstructionOutput &&
+            arrayFinishReg) {
             nextUpdateState = UpdateState::PingPong;
         }
         break;
@@ -1141,7 +1142,8 @@ RtlCommandDriverSkeleton::tick(bool startWrite)
     RtlExecuteUpdateInputs executeInputs;
     executeInputs.enable = acceptedSaEnable;
     executeInputs.currentInstructionOutput =
-        scheduler.lastInstruction();
+        scheduler.lastInstruction() &&
+        (config.scheduler.saFlowMode & 0x2) == 0;
     executeInputs.resultLast = resultSerializer.resultLast();
 
     RtlResultSerializerInputs serializerInputs;

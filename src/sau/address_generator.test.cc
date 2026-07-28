@@ -141,5 +141,28 @@ TEST(AddressGenerator, AppliesRtlNestedOperandBAddressProgram)
     EXPECT_EQ(beats[11].address, 0x2520U);
 }
 
+TEST(AddressGenerator, AppliesRtlNestedResidentAddressProgram)
+{
+    auto command = makeCommand();
+    command.operandA.base = 0x1000;
+    command.operandA.beats = 16;
+    command.control.horizontalAddress = command.operandA.base;
+    command.control.registerInput.xBurst = 8;
+    command.control.registerInput.yStep = 16;
+    command.control.registerInput.yCycle = 2;
+    command.control.registerInput.cCycle = 1;
+
+    AddressGenerator generator(command);
+    const auto beats = collect(generator);
+
+    ASSERT_EQ(beats.size(), 20U);
+    for (uint32_t x = 0; x < 8; ++x) {
+        EXPECT_EQ(beats[x].address, 0x1000U + x * 32);
+        EXPECT_EQ(beats[8 + x].address, 0x1200U + x * 32);
+    }
+    EXPECT_FALSE(beats[14].last);
+    EXPECT_TRUE(beats[15].last);
+}
+
 } // anonymous namespace
 } // namespace gem5::sau

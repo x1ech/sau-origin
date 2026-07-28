@@ -28,10 +28,10 @@ enum class StreamKind : uint8_t
 /** Raw 2-bit trans_mode values named after SA_pkg.sv. */
 enum class SauTransMode : uint8_t
 {
-    ABD = 0,   // A * B = D
-    ATBD = 1,  // A^T * B = D^T
-    ABTD = 2,  // A * B^T = D^T
-    ABDT = 3   // A * B = D^T
+    ABD = 0,   // Neither operand is transposed
+    ATBD = 1,  // Transpose operand A
+    ABTD = 2,  // Transpose operand B
+    ABDT = 3   // Raw RTL name; no output-order ownership
 };
 
 /** Raw 2-bit reuse_mode values; 11 asserts both reuse bits (Step 0). */
@@ -43,7 +43,7 @@ enum class SauReuseMode : uint8_t
     ReuseAB = 3
 };
 
-/** Raw 2-bit sa_flow_mode values named after the RTL clear/retain modes. */
+/** Raw 2-bit output flow-mode values named after the RTL modes. */
 enum class SauSaFlowMode : uint8_t
 {
     CNormal = 0,

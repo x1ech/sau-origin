@@ -1,32 +1,105 @@
-# SAU Cycle-Level Timing Model
+# SAU Cycle-Level Timing and Functional Datapath Model
 
-`SauModel` is a standalone gem5 timing model for the SAU's first milestone.
-It models synthetic int8-GEMM command admission, 32-byte timing-memory
-traffic, Operand-A resident reuse, Operand-B streaming, array timing, output
-writeback, and command drain. It is a performance model, not a
-register-accurate replacement for the RTL.
+`SauModel` is a standalone gem5 model of the Systolic Array Unit. The
+completed PLAN2 baseline models CSR-driven int8-GEMM command admission,
+32-byte timing-memory traffic, Reuse-A scheduling, strict RTL-visible timing,
+backpressure, writeback, command drain, and DSE controls. Active PLAN3 work
+extends that baseline with real payloads and finite datapath resources.
 
-## Scope and limitation
+This is an architecture-relevant cycle model, not a register-accurate RTL
+replacement.
 
-The model emits timing events and makes write requests, but it does not
-perform GEMM arithmetic. **First-stage writeback data is always zero; output
-contents are not claimed to be functionally correct.** Use the trace and
-statistics for timing/DSE work, not for numerical result validation.
+## Current status and documentation
+
+- [`PLAN.md`](PLAN.md) is the short plan entry.
+- [`STATUS.md`](STATUS.md) is the current handoff snapshot.
+- [`PLAN3.md`](PLAN3.md) is the frozen active functional-datapath plan.
+- [`PLAN3_STEP0.md`](PLAN3_STEP0.md) and
+  [`RTL_TIMING_PROVENANCE.md`](RTL_TIMING_PROVENANCE.md) define the active
+  RTL/resource contract and authoritative sources.
+- [`docs/workflows/run-yinglong-sau-rtl.md`](docs/workflows/run-yinglong-sau-rtl.md)
+  records the repeatable case-generation, firmware-build, Yinglong SAU RTL
+  simulation, and FSDB inspection workflow.
+
+Historical plans and status logs are indexed under `docs/plans/` and
+`docs/status/`; they are not read by default.
+The reproducible Step 5 host-performance baseline is recorded in
+[`docs/reports/plan3-step5-performance-baseline.md`](docs/reports/plan3-step5-performance-baseline.md).
+
+## Scope and current limitation
+
+PLAN3 Steps 0–5 are complete for the currently frozen Reuse-A domain
+(`reuse_mode=01`). The model now carries real 256-bit memory payloads through
+the input/register resources and finite transposer, and carries signed-int8
+operands through a finite 32x32 systolic array with signed 24-bit saturating
+PE accumulation and CSR-driven `cutbit=0..31`. The supported ATBD/Reuse-A
+runtime array inputs and registered result rows match the frozen RTL in
+payload, sequence, and exact cycles.
+
+PLAN3 Step 5 is complete in that domain. The output data resources implement a finite
+32-row T2 result serializer, flow-mode-1 transpose ordering, raw nested output-RF
+addressing, two SRAM halves, normal/retain arithmetic, same-address
+forwarding, registered unload, external `register_addr` sequencing, and
+signed-int8 256-bit payload assembly. Increment 2 focused build/test passes
+11/11.
+
+Increment 3 connects array rows, driver result-valid edges, output-RF updates,
+and registered unload payloads to the strict runtime. Increment 4 consumes
+that native FIFO at strict writeback, checks token/address/last agreement,
+and submits the real bytes to strict `FunctionalMemory`; timing-memory/DSE
+interfaces retain their prior behavior. The cutbit-8 and cutbit-1 strict
+checkpoints both match their frozen RTL final memory for all 1024 bytes.
+Increment 5 enables strict Flow1 plus multi-flow/multi-instruction array
+tiles. The two-command 64x160x64 fixture matches all 4096 final bytes and both
+690-cycle RTL command extents. Strict Flow2 is also end-to-end validated by
+the K512 `[flow2, flow0]` fixture: command extents are 569/685 cycles with a
+93-cycle gap, only the final command emits 32 result/write beats, and all
+1024 final bytes match. CSR-driven resident Operand-A reads use the shared
+`register_addr.sv` x/y/channel address program, including non-contiguous
+`yStep` layouts. The K768 `[flow2, flow2, flow0]` fixture further proves two
+consecutive retain boundaries. The quick regression passes 72/72 checks
+across 26 suites.
+Broader mode coverage is not complete,
+so PLAN3 does not yet claim full-domain end-to-end correctness. The legacy
+direct-command/DSE path and completed PLAN2 regressions remain timing-model
+interfaces; do not interpret their placeholder output bytes as PLAN3
+functional results.
+
+The 64x160x64 Flow1 RTL fixture is packaged under
+`tests/gem5/sau/functional_ref` and registered as a byte-exact quick functional
+test. Flow1 reproduces the observed RTL tile-local clockwise rotation; it does
+not impose a mathematical whole-matrix transpose.
+
+The 32x512x32 Flow2 fixture in the same directory is a permanent byte-exact
+and strict-timing regression. Its verifier checks final memory, both command
+extents, the inter-command gap, and per-command result/write counts.
+The 32x768x32 fixture extends that contract to `[flow2, flow2, flow0]`,
+proving accumulator state survives two consecutive retain boundaries; its
+three command extents are 569/569/685 cycles and all 1024 bytes match.
+
+`reuse_mode=00/10/11` remains decoded but is deferred while the RTL evolves.
+Complete workloads selecting those paths must fail explicitly rather than
+silently falling back to Reuse-A.
 
 ## Build
 
-From the gem5 worktree, build the RISC-V optimized binary incrementally:
+Builds are developer-owned because of the environment's resource limits.
+Codex should provide the smallest relevant command and wait for the reported
+result. From the gem5 worktree, the current optimized build form is:
 
 ```bash
-scons --ignore-style build/RISCV/gem5.opt -j4
+scons build/RISCV/gem5.opt \
+    --ignore-style --limit-ld-memory-usage -j32
 ```
 
-## Current RTL CSR fixture replay
+## PLAN2 RTL CSR fixture replay
 
 The eight profiles under `tests/gem5/sau/ref` were recaptured from the current
 `npu_lpnpu` RTL on 2026-07-24. Their source artifacts, simulator identity, and
 hashes are recorded in each package manifest. They are the current strict
-architecture and semantic-state acceptance fixtures.
+architecture and semantic-state acceptance fixtures for the completed PLAN2
+timing/control baseline. They do not by themselves prove PLAN3 final payload
+or final-memory correctness.
 
 ```bash
 ./build/RISCV/gem5.opt \
@@ -53,16 +126,16 @@ Operand-B requests and becomes resident in `ARegisterFileIn` before array
 execution. SRAM banks, crossbar contention, retry, and variable latency are
 intentionally reserved for non-strict system-memory runs.
 
-The validated control domain is int8 GEMM with `trans_mode=01` and
-`reuse_mode=01`. Five coverage shapes (32x32x32, 64x32x256, 64x256x32,
+The validated PLAN2 timing/control domain is int8 GEMM with `trans_mode=01`
+and `reuse_mode=01`. Five coverage shapes (32x32x32, 64x32x256, 64x256x32,
 32x256x256, and 64x256x256) were used to derive and freeze the structural
 rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
 64x256x128) then passed without fixture-specific timing adjustment.
 
 All eight packages are registered as RISC-V quick strict and timing-memory
-causal tests. Together with the permanent legacy direct-command regression,
-fixed/constrained runs, and DSE simulations, the full quick set contains 23
-suites and currently passes 63/63 checks:
+causal tests. Together with the Flow1 and Flow2 functional fixtures, permanent legacy
+direct-command regression, fixed/constrained runs, and DSE simulations, the
+full quick set contains 26 suites and currently passes 72/72 checks:
 
 ```bash
 cd tests
@@ -149,49 +222,33 @@ All timing knobs in this section are DSE controls. Their use prints
 `non-strict direct-command/DSE`; they must not be combined with
 `--rtl-profile CSR_FIXTURE`.
 
-## Current RTL per-tick work
+## Functional datapath architecture
 
-Step 5.5 replaced the retired aggregate strict timing formulas with
-source-driven per-edge components. The scheduler, resident/stream address
-generators, resident fill, SA-enable/execute path, result serializer, output
-writeback, and native SRAM transport are integrated into strict
-`SauModel` execution through the command-local driver in
-`schedule_state.{hh,cc}`.
+The active PLAN3 resource path is:
 
-Implementation history: the developer-built focused checkpoint reached 30/30
-passing tests, including
-the input-RF readout and feeder A/B-valid skeleton. A combined
-`RtlCommandDriverSkeleton` and two tests are now in the source tree and pass
-static checks. The first rebuild passed 31/32 and exposed a missing registered
-feeder A/B-arbiter gate. That fix corrected the first B edge; a second run
-then exposed an extra skeleton-only core-state gate dropping B tokens across
-`D_OUT`. Removing the extra gate produced a 32/32 passing focused checkpoint.
-The first strict-runtime increment now ticks a command-local driver, uses its
-core state/input switch for state-trace projection, and requires its
-`commandDone` plus token conservation before completion. A multi-shape driver
-test now passes in the 33/33 focused checkpoint, and the updated
-`sau_model.o` compiles. After relinking, the historical baseline architecture
-and state comparators both pass. The next source increment drives strict
-results and registered mem_ctrl write requests from the command driver while
-leaving non-strict DSE scheduling unchanged; the historical baseline
-architecture/state comparators pass after that increment. The next source
-increment drives strict shared-SRAM reads and A/B admissions from the driver,
-while retaining existing address/index/data owners and leaving non-strict DSE
-unchanged; the historical baseline comparators pass after relinking. The next
-source increment appends actual driver-observed stage first/last/span and
-command-done rows to `sau_timing_ledger.csv`. The developer's focused
-checkpoint passes 33/33, and after relinking both historical baseline
-comparators pass. Both commands emit resident 3..258, stream 293..2417,
-A 269..2392, B 301..2425, result 612..2505, write 2513..2768, and
-command-done 2772. The current source removes the remaining strict aggregate
-fill/gap/completion gates; non-strict DSE retains the original timed
-schedulers. After relinking, strict architecture/state comparison, stage
-ledger inspection, constrained non-strict execution, and the four-way DSE
-monotonicity check all pass.
-The 2026-07-24 current-RTL recapture passes all eight architecture and state
-strict comparisons. All eight timing-memory causal/backpressure suites and the
-legacy direct-command causal regression also pass. The full SAU quick run
-passes 63/63 checks across 23 suites.
+```text
+CSR start
+  -> raw address programs and memory requests
+  -> FunctionalMemory / timing-memory payload response
+  -> register_file_in, feeder, reuse, and finite transposer
+  -> finite 32x32 signed-int8 systolic array
+  -> registered result-row boundary
+  -> register_file_out and result serializer
+  -> real 256-bit memory writeback                  [Step 5 complete]
+```
+
+The implementation advances finite resources through accepted transactions
+and explicit per-cycle state. It must not replace the path with a direct
+`C=A*B` calculation. Strict fixed-SRAM runs and timing-memory runs each have
+one explicit data authority; the timing-memory path may add explainable
+latency, retry, queue, outstanding, and backpressure cycles.
+
+The completed PLAN2 scheduler, resident/stream address generators, state
+projection, native SRAM transport, and timing ledger remain the regression
+baseline. PLAN3 reuses those accepted boundaries while replacing placeholder
+data behavior with typed payload resources. Refer to `STATUS.md` for the
+current Step 6 scope checkpoint rather than storing increment-by-increment
+history in this README.
 
 ## Statistics
 
@@ -200,6 +257,9 @@ passes 63/63 checks across 23 suites.
 - command counts; total `commandCycles`; and operand-load, array-active,
   array-drain, and writeback phase cycles;
 - accepted read/write requests and bytes;
+- strict real-payload beats as `payloadReadBeats` and `payloadWriteBeats`;
+  functional regressions cross-check them against visible read responses and
+  accepted writes in the architecture trace;
 - time-average and maximum outstanding read/write counts and input/output
   FIFO occupancies;
 - array activity and `arrayUtilization`;

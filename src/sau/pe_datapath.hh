@@ -42,6 +42,9 @@ class SystolicPe
     /** Asynchronous-reset architectural result. */
     void reset() { accumulatorValue = 0; }
 
+    /** Restore a retained architectural accumulator between commands. */
+    void restore(int32_t value);
+
     int32_t accumulator() const { return accumulatorValue; }
 
     /** SA_ENGINE/SA_pkg int8 quantization of the current accumulator. */

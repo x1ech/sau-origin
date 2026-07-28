@@ -1,3 +1,5 @@
+import csv
+import json
 import os
 import re
 import subprocess
@@ -179,6 +181,129 @@ class VerifySauCausalBackpressure(verifier.Verifier):
             )
 
 
+class VerifySauFunctionalMemory(verifier.Verifier):
+    """Compare final memory and any packaged strict timing contract."""
+
+    stat_pattern = re.compile(
+        r"^system\.sau\.(payloadReadBeats|payloadWriteBeats)"
+        r"\s+([0-9.eE+-]+)\s+#"
+    )
+
+    def __init__(self, rtl_profile):
+        super().__init__()
+        self.rtl_profile = rtl_profile
+
+    def test(self, params):
+        tempdir = params.fixtures[constants.tempdir_fixture_name].path
+        comparator = joinpath(
+            config.base_dir, "util", "sau", "compare_memory.py"
+        )
+        result = subprocess.run(
+            (
+                sys.executable,
+                comparator,
+                joinpath(self.rtl_profile, "final_output_memory.hex"),
+                joinpath(tempdir, "final_output_memory.hex"),
+            ),
+            cwd=config.base_dir,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            output = "\n".join(
+                part.rstrip()
+                for part in (result.stdout, result.stderr)
+                if part
+            )
+            test_util.fail(
+                "SAU final-memory comparison failed for "
+                f"{os.path.basename(self.rtl_profile)}:\n{output}\n"
+                f"See {tempdir} for full results"
+            )
+
+        with open(
+            joinpath(self.rtl_profile, "manifest.json"), encoding="utf-8"
+        ) as stream:
+            timing = json.load(stream).get("timing_contract")
+
+        commands = {}
+        read_responses = 0
+        with open(joinpath(tempdir, "sau.csv"), encoding="utf-8") as trace:
+            for row in csv.DictReader(trace):
+                command_id = int(row["command_id"])
+                command = commands.setdefault(
+                    command_id,
+                    {"result_beats": 0, "write_beats": 0},
+                )
+                event = row["event"]
+                if event == "command_accepted":
+                    command["accepted"] = int(row["cycle"])
+                elif event == "command_complete":
+                    command["complete"] = int(row["cycle"])
+                elif event == "result_produced":
+                    command["result_beats"] += 1
+                elif event == "write_accepted":
+                    command["write_beats"] += 1
+                elif event == "read_response_visible":
+                    read_responses += 1
+
+        ordered = [commands[key] for key in sorted(commands)]
+        actual = {
+            "command_extent_cycles": [
+                command["complete"] - command["accepted"]
+                for command in ordered
+            ],
+            "inter_command_gap_cycles": [
+                ordered[index + 1]["accepted"] - command["complete"]
+                for index, command in enumerate(ordered[:-1])
+            ],
+            "result_beats_per_command": [
+                command["result_beats"] for command in ordered
+            ],
+            "write_beats_per_command": [
+                command["write_beats"] for command in ordered
+            ],
+        }
+        errors = [] if not timing else [
+            f"{field}: expected {expected}, got {actual.get(field)}"
+            for field, expected in timing.items()
+            if actual.get(field) != expected
+        ]
+        if errors:
+            test_util.fail(
+                "SAU strict functional timing comparison failed for "
+                f"{os.path.basename(self.rtl_profile)}:\n" +
+                "\n".join(errors) +
+                f"\nSee {tempdir} for full results"
+            )
+
+        stats = {}
+        with open(joinpath(tempdir, "stats.txt"), encoding="utf-8") as stream:
+            for line in stream:
+                match = self.stat_pattern.match(line)
+                if match:
+                    stats[match.group(1)] = int(float(match.group(2)))
+        expected_stats = {
+            "payloadReadBeats": read_responses,
+            "payloadWriteBeats": sum(
+                command["write_beats"] for command in ordered
+            ),
+        }
+        stat_errors = [
+            f"{name}: expected {expected}, got {stats.get(name)}"
+            for name, expected in expected_stats.items()
+            if stats.get(name) != expected
+        ]
+        if stat_errors:
+            test_util.fail(
+                "SAU strict payload statistics failed for "
+                f"{os.path.basename(self.rtl_profile)}:\n" +
+                "\n".join(stat_errors) +
+                f"\nSee {tempdir} for full results"
+            )
+
+
 def verify_sau_config(name, config_args):
     gem5_verify_config(
         name=name,
@@ -253,6 +378,91 @@ for rtl_profile in (
 ):
     verify_sau_rtl_profile(rtl_profile)
     verify_sau_rtl_timing_memory(rtl_profile)
+
+
+flow1_functional_profile = joinpath(
+    config.base_dir,
+    "tests",
+    "gem5",
+    "sau",
+    "functional_ref",
+    "int8_gemm_64x160x64_atbd_flow1_cutbit8",
+)
+gem5_verify_config(
+    name="sau-functional-int8_gemm_64x160x64_atbd_flow1_cutbit8",
+    fixtures=(),
+    verifiers=(
+        verifier.MatchRegex(exit_regex),
+        VerifySauFunctionalMemory(flow1_functional_profile),
+    ),
+    config=joinpath(
+        config.base_dir,
+        "tests",
+        "gem5",
+        "sau",
+        "configs",
+        "sau_flow1_functional.py",
+    ),
+    config_args=(),
+    valid_isas=(constants.riscv_tag,),
+    length=constants.quick_tag,
+)
+
+flow2_functional_profile = joinpath(
+    config.base_dir,
+    "tests",
+    "gem5",
+    "sau",
+    "functional_ref",
+    "int8_gemm_32x512x32_atbd_flow2_cutbit8",
+)
+gem5_verify_config(
+    name="sau-functional-int8_gemm_32x512x32_atbd_flow2_cutbit8",
+    fixtures=(),
+    verifiers=(
+        verifier.MatchRegex(exit_regex),
+        VerifySauFunctionalMemory(flow2_functional_profile),
+    ),
+    config=joinpath(
+        config.base_dir,
+        "tests",
+        "gem5",
+        "sau",
+        "configs",
+        "sau_flow2_functional.py",
+    ),
+    config_args=(),
+    valid_isas=(constants.riscv_tag,),
+    length=constants.quick_tag,
+)
+
+flow2_double_functional_profile = joinpath(
+    config.base_dir,
+    "tests",
+    "gem5",
+    "sau",
+    "functional_ref",
+    "int8_gemm_32x768x32_atbd_flow2_cutbit8",
+)
+gem5_verify_config(
+    name="sau-functional-int8_gemm_32x768x32_atbd_flow2_cutbit8",
+    fixtures=(),
+    verifiers=(
+        verifier.MatchRegex(exit_regex),
+        VerifySauFunctionalMemory(flow2_double_functional_profile),
+    ),
+    config=joinpath(
+        config.base_dir,
+        "tests",
+        "gem5",
+        "sau",
+        "configs",
+        "sau_flow2_double_functional.py",
+    ),
+    config_args=(),
+    valid_isas=(constants.riscv_tag,),
+    length=constants.quick_tag,
+)
 
 
 legacy_direct_profile = joinpath(

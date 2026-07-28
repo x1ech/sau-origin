@@ -64,10 +64,10 @@ reported, but a stalled cycle is counted once.
 | --- | --- | --- | --- | --- |
 | Controller and all address counters | clear | load raw CSR and start from zero | return idle; no queued start | all four modes use the same command boundary |
 | Input RF addressing/valid | clear | new fill/read sequence | valid/counters clear | no retained accumulator semantics |
-| Transposer T0/T1 | clear | clear when `!sa_flow_mode[1]`; otherwise retain bank contents/ownership until consumed | ready/valid follow bank state | 00 CNORMAL and 01 CTRANS clear; 10 RETAIN and 11 TRETAIN retain |
-| Transposer T2/result serializer | clear | starts empty for non-retain; result ordering follows flow mode | drains before non-retain done | CTRANS/TRETAIN select transposed output ordering |
+| Transposer T0/T1 | clear | operand transpose ownership is controlled only by trans_mode | ready/valid follow bank state | frozen RTL has shared flow-retain clear wiring, but this is not an output-order selector and needs multi-command validation |
+| Transposer T2/result serializer | clear | starts empty for normal/transpose output; ordering is owned only by flow mode | drains before non-retain done | F=00 drains rows; F=01 drains transposed columns; F=10 retains output for later accumulation |
 | PE pipeline | clear | control restarts | valid pipeline drains | `SA_ENGINE.keep_mode=sa_flow_mode[1]`; 10/11 retain accumulator state |
-| Output RF | reset storage is not a functional initializer; valid/control clear | 00/01 add against zero, 10/11 read and add existing 16-bit value | non-retain unloads before done; retain completion follows keep guard | only bit 1 enables accumulation; bit 0 changes ordering |
+| Output RF | reset storage is not a functional initializer; valid/control clear | F=00/01 add against zero; F=10 reads and adds existing 16-bit value | non-retain unloads before done; retain completion follows keep guard | output behavior is flow-mode-owned; trans_mode has no effect |
 | valid/last tokens | clear | generated from accepted transfers | must fully drain before done | retained data never implies retention of stale valid tokens |
 
 ## 4. RTL path/equivalence classes
@@ -84,10 +84,10 @@ validation blockers.
 
 | path_id | RTL guard / CSR class | Selected resources and effects | Observable boundary | Representative |
 | --- | --- | --- | --- | --- |
-| T-ABD | `T=00` | no operand transpose; direct result when non-flow-transpose | A/B mux, no T0/T1 load | pending before this path is implemented |
-| T-ATBD | `T=01` | A loads operand transposer; result passes transpose path | T0/T1 input/output and final result | `atbd_cutbit8`, `atbd_cutbit1` |
+| T-ABD | `T=00` | no operand transpose | A/B mux, no T0/T1 load | pending before this path is implemented |
+| T-ATBD | `T=01` | A loads operand transposer | T0/T1 input/output and A payload | `atbd_cutbit8`, `atbd_cutbit1` |
 | T-ABTD | `T=10` | B loads operand transposer; initial switch is B-side | B read payload and T0/T1 bank traffic | `abtd_boundary` |
-| T-ABDT | `T=11` | no operand transpose load; transposed-result selection | result transposer and serializer | pending before this path is implemented |
+| T-ABDT | `T=11` | no modeled A/B transpose; raw RTL path name retained | input mux/control only; output remains flow-mode-owned | pending before this path is implemented |
 | R-none | `R=00` | no resident operand reuse | alternating input-switch path | deferred while RTL evolves |
 | R-A | `R=01` | `A_reuse_flag`; resident A reused | A RF and streamed B | `atbd_cutbit8` |
 | R-B | `R=10` | `B_reuse_flag`; resident B reused | B RF and streamed A | deferred; RTL interface is not stable |
@@ -95,13 +95,14 @@ validation blockers.
 | F-normal | `F=00` | clear, normal order, output RF adds zero | ordinary serializer/unload | `atbd_cutbit8` |
 | F-trans | `F=01` | clear, transposed output order | T2/result ordering | pending |
 | F-retain | `F=10` | retain PE/transposer state; output RF accumulates old value | keep completion, output RAW | pending |
-| F-tretain | `F=11` | retain plus transposed order | combined keep/T2/output RAW | pending |
+| F-tretain | `F=11` | raw value preserved; functional meaning requires explicit confirmation | pending output boundary | pending |
 
-Cross-product mapping is compositional: T selects operand/result transpose,
-R selects operand retention and scheduler input switching, and F selects
-clear/retain plus output order. A combination is not illegal merely because
-its payload maturity is pending. Before implementing a row marked `pending`,
-its listed boundary must be captured and bound to this RTL contract.
+Cross-product mapping is compositional: T selects only operand transpose
+routing, R selects operand retention and scheduler input switching, and F
+owns output order/retention. F=00 is normal output, F=01 is transposed output,
+and F=10 retains output data for the next accumulation. Raw F=11 remains
+decoded but functionally unconfirmed. A combination is not illegal merely
+because its payload maturity is pending.
 
 ## 5. CSR support domain
 
@@ -111,7 +112,7 @@ assigns every value a friendly semantic name.
 
 | Field | Width | RTL consumer / path | Int8 GEMM classification | Validation |
 | --- | ---: | --- | --- | --- |
-| `trans_mode` | 2 | scheduler, operand/result transposers | 00–11 executable | 01 E2E; 10 boundary |
+| `trans_mode` | 2 | scheduler and operand transposers only | 00–11 executable | 01 E2E; 10 boundary |
 | `reuse_mode` | 2 | scheduler, A/B reuse bits | 01 currently supported; 00/10/11 decoded but deferred | 01 E2E; historical 11 probe preserved |
 | `sa_flow_mode` | 2 | PE keep, transposer clear, output RF | 00–11 executable | 00 E2E; others pending |
 | `register_mode` | 2 | input RF and feeder | 00/01/11 share non-DW guard; 10 selects depthwise/single-column path and is an operator switch | 00 E2E |

@@ -94,9 +94,12 @@ rejectOutOfStageOperatorSwitches(const SauCsrConfig &config)
 
 /**
  * The strict per-tick timing chain is validated for the PLAN3_STEP0
- * T-ATBD/R-A/F-normal path only.  register_mode 00/01/11 share the RTL
- * non-depthwise guard, so they select the same structural path and are
- * not a maturity boundary.
+ * T-ATBD/R-A path with normal, transpose, and retain flow modes. F-normal
+ * and F-trans share the scheduler/execute control chain; F-trans changes
+ * only the result-side serializer ordering. F-retain completes without
+ * output and carries PE state into the next command. register_mode 00/01/11
+ * share the RTL non-depthwise guard, so they select the same structural path
+ * and are not a maturity boundary.
  */
 bool
 onTimingValidatedPath(const SauCsrConfig &config, std::string &reason)
@@ -117,10 +120,10 @@ onTimingValidatedPath(const SauCsrConfig &config, std::string &reason)
             " selects a reuse path without a validated per-tick "
             "timing chain");
     }
-    if (config.saFlowMode != 0x0) {
+    if (config.saFlowMode == 0x3) {
         add("sa_flow_mode=" + std::to_string(config.saFlowMode) +
-            " selects a clear/retain or result-order path without a "
-            "validated per-tick timing chain");
+            " selects transpose-retain without a validated per-tick "
+            "timing and payload chain");
     }
     return reason.empty();
 }
@@ -242,8 +245,11 @@ SauCsrConfig::decode(uint64_t commandId) const
 {
     rejectOutOfStageOperatorSwitches(*this);
 
-    const uint32_t residentLoadBeats = checkedProduct(
+    const uint32_t residentRows = checkedProduct(
         registerInput.xBurst, registerInput.yCycle,
+        "SAU CSR resident-load beat count overflows");
+    const uint32_t residentLoadBeats = checkedProduct(
+        residentRows, registerInput.cCycle,
         "SAU CSR resident-load beat count overflows");
     const uint32_t inputBeatsPerFlow = product3(
         input.xBurst, input.yBurst, input.instructionBurst,

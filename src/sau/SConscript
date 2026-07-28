@@ -30,14 +30,16 @@ Source("transposer.cc")
 DebugFlag("SAU")
 
 GTest("address_generator.test", "address_generator.test.cc",
-      "address_generator.cc", "command.cc")
+      "address_generator.cc", "address_program.cc", "command.cc",
+      "resource_config.cc")
 GTest("address_program.test", "address_program.test.cc",
       "address_program.cc", "resource_config.cc")
 GTest("boundary_trace.test", "boundary_trace.test.cc", "boundary_trace.cc",
       "address_program.cc", "functional_memory.cc", "input_datapath.cc",
       "resource_config.cc", "transposer.cc")
 GTest("a_register_file.test", "a_register_file.test.cc",
-      "a_register_file.cc", "command.cc")
+      "a_register_file.cc", "address_program.cc", "command.cc",
+      "resource_config.cc")
 GTest("array_input_scheduler.test", "array_input_scheduler.test.cc",
       "array_input_scheduler.cc")
 GTest("command.test", "command.test.cc", "command.cc")
@@ -52,10 +54,11 @@ GTest("memory_port.test", "memory_port.test.cc", "memory_port.cc",
       "../mem/protocol/timing.cc", "../sim/bufval.cc", "../sim/port.cc",
       with_tag("gem5 trace"))
 GTest("output_datapath.test", "output_datapath.test.cc",
-      "output_datapath.cc")
+      "output_datapath.cc", "address_program.cc")
 GTest("payload_datapath.test", "payload_datapath.test.cc",
-      "payload_datapath.cc", "input_datapath.cc", "resource_config.cc",
-      "systolic_array.cc", "pe_datapath.cc", "transposer.cc")
+      "payload_datapath.cc", "input_datapath.cc", "output_datapath.cc",
+      "address_program.cc", "resource_config.cc", "systolic_array.cc",
+      "pe_datapath.cc", "transposer.cc")
 GTest("pe_datapath.test", "pe_datapath.test.cc", "pe_datapath.cc")
 GTest("resource_config.test", "resource_config.test.cc",
       "resource_config.cc")

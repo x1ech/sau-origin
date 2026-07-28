@@ -68,7 +68,6 @@ TEST(SauResourceConfig, DispatchesOnlyRtlConnectedFieldsPerResource)
 
     EXPECT_TRUE(configs.transposeReuse.loadOperandA);
     EXPECT_FALSE(configs.transposeReuse.loadOperandB);
-    EXPECT_TRUE(configs.transposeReuse.transposedResult);
     EXPECT_TRUE(configs.transposeReuse.reuseA);
     EXPECT_FALSE(configs.transposeReuse.reuseB);
     EXPECT_FALSE(configs.transposeReuse.retainBanks);
@@ -99,23 +98,21 @@ TEST(SauResourceConfig, ChangingALegalFieldChangesOnlyItsOwningResource)
               baseline.streamAddress.baseAddress);
     EXPECT_EQ(changed.writeback.baseAddress, baseline.writeback.baseAddress);
 
-    // trans_mode owns the transposer bank load side and result transpose.
+    // trans_mode owns only the operand-transposer load side.
     control = atbdReuseAControl();
     control.transMode = 2;
     changed = deriveResourceConfigs(control);
     EXPECT_EQ(changed.controller.transMode, SauTransMode::ABTD);
     EXPECT_FALSE(changed.transposeReuse.loadOperandA);
     EXPECT_TRUE(changed.transposeReuse.loadOperandB);
-    EXPECT_TRUE(changed.transposeReuse.transposedResult);
     EXPECT_EQ(changed.array.cutbit, baseline.array.cutbit);
 
-    // trans_mode=00 is the only direct-result path.
+    // trans_mode=00 does not transpose either operand.
     control = atbdReuseAControl();
     control.transMode = 0;
     changed = deriveResourceConfigs(control);
     EXPECT_FALSE(changed.transposeReuse.loadOperandA);
     EXPECT_FALSE(changed.transposeReuse.loadOperandB);
-    EXPECT_FALSE(changed.transposeReuse.transposedResult);
 
     // reuse_mode drives the two scheduler reuse bits; 11 asserts both.
     control = atbdReuseAControl();
@@ -125,15 +122,21 @@ TEST(SauResourceConfig, ChangingALegalFieldChangesOnlyItsOwningResource)
     EXPECT_TRUE(changed.transposeReuse.reuseB);
 
     // sa_flow_mode bit1 retains banks/accumulators and switches the
-    // output RF to accumulate; bit0 selects transposed output order.
+    // output RF to accumulate. Frozen sa_feeder RTL selects result
+    // transposition only for the exact CTRANS encoding.
     control = atbdReuseAControl();
-    control.saFlowMode = 3;
+    control.saFlowMode = 2;
     changed = deriveResourceConfigs(control);
     EXPECT_TRUE(changed.transposeReuse.retainBanks);
     EXPECT_TRUE(changed.array.keepMode);
     EXPECT_TRUE(changed.output.accumulateExisting);
-    EXPECT_TRUE(changed.output.transposedOrder);
+    EXPECT_FALSE(changed.output.transposedOrder);
     EXPECT_EQ(changed.input.padding, baseline.input.padding);
+
+    control.saFlowMode = 1;
+    changed = deriveResourceConfigs(control);
+    EXPECT_FALSE(changed.output.accumulateExisting);
+    EXPECT_TRUE(changed.output.transposedOrder);
 
     // A vertical counter change reaches only the stream address program.
     control = atbdReuseAControl();
@@ -198,8 +201,9 @@ TEST(SauResourceConfig, SelectsTheStepZeroPathForEveryLegalCombination)
                 const auto configs = deriveResourceConfigs(control);
                 EXPECT_EQ(configs.transposeReuse.loadOperandA, trans == 1);
                 EXPECT_EQ(configs.transposeReuse.loadOperandB, trans == 2);
-                EXPECT_EQ(configs.transposeReuse.transposedResult,
-                          trans != 0);
+                EXPECT_EQ(configs.output.accumulateExisting,
+                          (flow & 0x2) != 0);
+                EXPECT_EQ(configs.output.transposedOrder, flow == 1);
             }
         }
     }

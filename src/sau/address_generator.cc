@@ -2,12 +2,20 @@
 
 #include <cassert>
 
+#include "sau/resource_config.hh"
+
 namespace gem5::sau
 {
 
 AddressGenerator::AddressGenerator(const SauCommand &command)
     : command(command) // 拷贝 command，防止外部修改影响正在进行的地址序列
 {
+    const auto &raw = command.control.registerInput;
+    if (command.instructionLoops == 1 && raw.xBurst != 0 &&
+        raw.yCycle != 0 && raw.cCycle != 0) {
+        residentAddress.emplace(
+            deriveResourceConfigs(command.control).residentAddress);
+    }
     updateFront(); // 初始化为第一个 A preload beat
 }
 
@@ -33,6 +41,9 @@ AddressGenerator::pop()
     //   每个 instruction 先预装 A 一次，再按 flow stream B。
     // A 后续进入阵列的复用不再产生外部 SRAM read。
 
+    if (stream == StreamKind::OperandA && residentAddress) {
+        residentAddress->advance();
+    }
     ++beat;                               // 前进同一 stream 内的 beat
     if (beat < streamDesc().beats) {      // 还没到该 stream 最后一个 beat
         updateFront();
@@ -129,9 +140,11 @@ AddressGenerator::updateFront()
     const auto &desc = streamDesc();
     const Addr address = stream == StreamKind::OperandB ?
         operandBAddress() :
-        desc.base +
-            static_cast<Addr>(instruction) * desc.instructionStrideBytes +
-            static_cast<Addr>(beat) * desc.strideBytes;
+        residentAddress ? residentAddress->address() :
+            desc.base +
+                static_cast<Addr>(instruction) *
+                    desc.instructionStrideBytes +
+                static_cast<Addr>(beat) * desc.strideBytes;
     current = {
         stream,
         address,

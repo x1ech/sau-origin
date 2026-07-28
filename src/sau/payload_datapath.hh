@@ -7,6 +7,7 @@
 
 #include "sau/data_beat.hh"
 #include "sau/input_datapath.hh"
+#include "sau/output_datapath.hh"
 #include "sau/resource_config.hh"
 #include "sau/systolic_array.hh"
 #include "sau/transposer.hh"
@@ -40,6 +41,18 @@ struct ArrayOutputBoundaryTransfer
     OperandVector32x8 data;
 };
 
+struct OutputRegisterBoundaryTransfer
+{
+    uint64_t edge = 0;
+    OutputRegisterUpdate update;
+};
+
+struct OutputUnloadBoundaryTransfer
+{
+    uint64_t edge = 0;
+    OutputRegisterUnload unload;
+};
+
 struct PayloadBoundaryEvents
 {
     std::optional<PayloadBoundaryTransfer> operandA;
@@ -49,6 +62,8 @@ struct PayloadBoundaryEvents
     std::optional<TransposerBoundaryTransfer> transposerPrefetch;
     std::optional<ArrayInputBoundaryTransfer> arrayInput;
     std::optional<ArrayOutputBoundaryTransfer> arrayOutput;
+    std::optional<OutputRegisterBoundaryTransfer> outputRegister;
+    std::optional<OutputUnloadBoundaryTransfer> outputUnload;
 };
 
 /**
@@ -80,7 +95,10 @@ struct PayloadBoundaryEvents
 class StrictPayloadDatapath
 {
   public:
-    explicit StrictPayloadDatapath(const SauResourceConfigs &configs);
+    explicit StrictPayloadDatapath(
+        const SauResourceConfigs &configs,
+        const std::optional<SystolicArray::AccumulatorMatrix> &retained =
+            std::nullopt);
 
     /** Clear the per-edge observable boundary events. */
     void beginCycle();
@@ -90,6 +108,10 @@ class StrictPayloadDatapath
     void onOperandAValid(uint64_t edge);
     void onOperandBValid(uint64_t edge);
     void onSaEnable(uint64_t edge);
+    /** Consume one driver-visible result_final_valid payload edge. */
+    void onResultValid(uint64_t edge);
+    /** Advance the output-RF unload state from the driver core state. */
+    void onRegisterUnload(uint64_t edge, bool registerUnloadState);
     /** Assert the array result-start request using the command cutbit. */
     void requestArrayOutput();
     bool arrayOutputRequested() const { return outputRequested; }
@@ -105,6 +127,13 @@ class StrictPayloadDatapath
     uint64_t transposerInputStalls() const { return inputStalls; }
     uint64_t transposerOutputStalls() const { return outputStalls; }
     uint64_t payloadUnderflows() const { return underflows; }
+    uint64_t serializerInputStalls() const { return serializerInputBlocked; }
+    uint64_t serializerOutputUnderflows() const
+    {
+        return serializerOutputEmpty;
+    }
+    uint64_t outputRegisterUpdates() const { return outputUpdates; }
+    uint64_t outputUnloadBeats() const { return unloadBeats; }
     uint64_t transposerBusyCycles() const { return busyCycles; }
     unsigned transposerMaxOccupancy() const { return maxOccupancy; }
     std::optional<uint64_t> firstRowEdge() const { return firstRowAt; }
@@ -116,6 +145,22 @@ class StrictPayloadDatapath
     const InputRegisterFile &registerFileState() const { return file; }
     const TransposerArbiter &arbiterState() const { return arbiter; }
     const SystolicArray &arrayState() const { return array; }
+    /**
+     * Advance the still-clocked RTL array through its command-gap tail and
+     * return the stable PE accumulator image for the following command.
+     */
+    SystolicArray::AccumulatorMatrix finishRetainedArrayState();
+    const ResultSerializer &resultSerializerState() const
+    {
+        return resultSerializer;
+    }
+    const OutputRegisterFile &outputRegisterState() const
+    {
+        return outputRegister;
+    }
+    bool hasWritePayload() const { return !writePayloads.empty(); }
+    const OutputRegisterUnload &nextWritePayload() const;
+    OutputRegisterUnload takeWritePayload();
     /** The most recent column consumed at an SA-enable edge. */
     const MemoryBeat256 &lastColumn() const { return lastColumnData; }
     const PayloadBoundaryEvents &boundaryEvents() const { return events; }
@@ -130,12 +175,18 @@ class StrictPayloadDatapath
     std::optional<InputReadPointerProgram> readout;
     TransposerArbiter arbiter;
     SystolicArray array;
+    ResultSerializer resultSerializer;
+    OutputRegisterFile outputRegister;
     bool outputPhaseStarted = false;
     bool outputRequested = false;
+    uint32_t arrayInputsInTile = 0;
+    uint32_t arrayRowsStreamed = 0;
+    bool unloadRequestObserved = false;
 
     uint8_t writePointer = 0;
     std::deque<MemoryBeat256> readoutQueue;
     std::deque<MemoryBeat256> streamQueue;
+    std::deque<OutputRegisterUnload> writePayloads;
 
     uint64_t residentCount = 0;
     uint64_t streamedCount = 0;
@@ -146,6 +197,10 @@ class StrictPayloadDatapath
     uint64_t inputStalls = 0;
     uint64_t outputStalls = 0;
     uint64_t underflows = 0;
+    uint64_t serializerInputBlocked = 0;
+    uint64_t serializerOutputEmpty = 0;
+    uint64_t outputUpdates = 0;
+    uint64_t unloadBeats = 0;
     uint64_t busyCycles = 0;
     unsigned maxOccupancy = 0;
     std::optional<uint64_t> firstRowAt;

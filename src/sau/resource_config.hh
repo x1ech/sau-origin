@@ -73,11 +73,10 @@ struct SauInputResourceConfig
 struct SauTransposeReuseResourceConfig
 {
     SauTransMode transMode = SauTransMode::ABD;
-    // trans_mode selects which operand loads the T0/T1 banks and whether
-    // the result passes the transpose path (PLAN3_STEP0 path table).
+    // trans_mode selects only which operand loads the T0/T1 banks.
+    // Output ordering is owned exclusively by sa_flow_mode.
     bool loadOperandA = false;
     bool loadOperandB = false;
-    bool transposedResult = false;
     // reuse_mode bit0 is A_reuse_flag, bit1 is B_reuse_flag; 11 asserts
     // both bits per the Step 0 probe.
     bool reuseA = false;
@@ -99,7 +98,9 @@ struct SauArrayResourceConfig
 struct SauOutputResourceConfig
 {
     // sa_flow_mode[1]: add against the existing 16-bit value instead of
-    // zero; sa_flow_mode[0]: transposed result/unload ordering.
+    // zero. Output transpose selection belongs exclusively to flow mode;
+    // the currently defined functional values are 0 normal, 1 transpose,
+    // and 2 retain.
     bool accumulateExisting = false;
     bool transposedOrder = false;
     uint8_t internalXStep = 0;

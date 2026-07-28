@@ -43,8 +43,6 @@ deriveResourceConfigs(const SauControlFields &control)
         control.trans() == SauTransMode::ATBD;
     configs.transposeReuse.loadOperandB =
         control.trans() == SauTransMode::ABTD;
-    configs.transposeReuse.transposedResult =
-        control.trans() != SauTransMode::ABD;
     configs.transposeReuse.reuseA = (control.reuseMode & 0x1) != 0;
     configs.transposeReuse.reuseB = (control.reuseMode & 0x2) != 0;
     configs.transposeReuse.retainBanks = (control.saFlowMode & 0x2) != 0;
@@ -53,7 +51,8 @@ deriveResourceConfigs(const SauControlFields &control)
     configs.array.cutbit = control.cutbit;
 
     configs.output.accumulateExisting = (control.saFlowMode & 0x2) != 0;
-    configs.output.transposedOrder = (control.saFlowMode & 0x1) != 0;
+    configs.output.transposedOrder =
+        control.saFlow() == SauSaFlowMode::CTrans;
     configs.output.internalXStep = control.output.xStep;
     configs.output.internalXBurst = control.output.xBurst;
     configs.output.internalYStep = control.output.yStep;

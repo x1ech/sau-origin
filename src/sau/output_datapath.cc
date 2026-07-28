@@ -5,6 +5,70 @@
 namespace gem5::sau
 {
 
+ResultSerializer::ResultSerializer(const SauOutputResourceConfig &config)
+    : transposedOrder(config.transposedOrder)
+{}
+
+void
+ResultSerializer::accept(const OperandVector32x8 &row)
+{
+    if (!canAccept()) {
+        throw std::logic_error(
+            "result serializer cannot accept while its bank is full");
+    }
+    rows[inputCount] = row;
+    ++inputCount;
+    if (inputCount == BeatLanes) {
+        ready = true;
+    }
+}
+
+OutputVector32x16
+ResultSerializer::output(unsigned index) const
+{
+    OutputVector32x16 result;
+    for (unsigned lane = 0; lane < BeatLanes; ++lane) {
+        const int8_t value = transposedOrder
+                                 ? rows[BeatLanes - 1 - lane].lanes[index]
+                                 : rows[index].lanes[lane];
+        result.lanes[lane] = value;
+    }
+    return result;
+}
+
+SerializedResult
+ResultSerializer::peek() const
+{
+    if (!ready) {
+        throw std::logic_error(
+            "result serializer output requested before 32 rows");
+    }
+    return SerializedResult{output(outputCount), outputCount == BeatLanes - 1};
+}
+
+SerializedResult
+ResultSerializer::take()
+{
+    const SerializedResult result = peek();
+    if (result.last) {
+        inputCount = 0;
+        outputCount = 0;
+        ready = false;
+    } else {
+        ++outputCount;
+    }
+    return result;
+}
+
+void
+ResultSerializer::reset()
+{
+    rows = {};
+    inputCount = 0;
+    outputCount = 0;
+    ready = false;
+}
+
 OutputRegisterFile::OutputRegisterFile(
     const SauOutputResourceConfig &config)
     : config(config)
@@ -78,6 +142,9 @@ OutputRegisterFile::compute(const OutputVector32x16 &input) const
 OutputRegisterUpdate
 OutputRegisterFile::accept(const OutputVector32x16 &input)
 {
+    if (unloadActive || unloadDoneFlag) {
+        throw std::logic_error("output-register update conflicts with unload");
+    }
     const bool last = endX() && endY() && endFlow() && endInstruction();
     const uint8_t acceptedAddress = address;
     WriteBeat256 data = compute(input);
@@ -134,6 +201,96 @@ OutputRegisterFile::advancePointer()
     }
 }
 
+SauResidentAddressResourceConfig
+OutputRegisterFile::unloadAddressConfig(Addr baseAddress) const
+{
+    SauResidentAddressResourceConfig result;
+    result.baseAddress = baseAddress;
+    result.xBurst = config.registerXBurst;
+    result.yStep = config.registerYStep;
+    result.yCycle = config.registerYCycle;
+    result.cStep = config.registerCStep;
+    result.cCycle = config.registerCCycle;
+    return result;
+}
+
+void
+OutputRegisterFile::startUnload(Addr baseAddress)
+{
+    if (!resultDone) {
+        throw std::logic_error(
+            "output-register unload started before accumulation completed");
+    }
+    if (unloadActive || unloadDoneFlag) {
+        throw std::logic_error("output-register unload already launched");
+    }
+    unloadAddress.emplace(unloadAddressConfig(baseAddress));
+    unloadAddressReg.reset();
+    unloadDelay1.reset();
+    unloadDelay2.reset();
+    // register_addr first enters RUNNING, then registers its first valid
+    // address. The enclosing d1/d2 pipeline adds two more edges.
+    unloadLaunchDelay = 1;
+    unloadActive = true;
+}
+
+std::optional<OutputRegisterUnload>
+OutputRegisterFile::tickUnload()
+{
+    if (!unloadActive) {
+        return std::nullopt;
+    }
+
+    // Every stage samples the pre-edge register snapshot.
+    const auto nextDelay2 = unloadDelay1;
+    const auto nextDelay1 = unloadAddressReg;
+    std::optional<OutputRegisterUnload> nextAddressReg;
+
+    if (unloadLaunchDelay != 0) {
+        --unloadLaunchDelay;
+    } else if (unloadAddress && !unloadAddress->done()) {
+        const uint8_t logicalAddress =
+            static_cast<uint8_t>(unloadAddress->writePointer());
+        nextAddressReg =
+            OutputRegisterUnload{unloadAddress->address(), logicalAddress,
+                                 read(logicalAddress), unloadAddress->last()};
+        unloadAddress->advance();
+    }
+
+    unloadAddressReg = nextAddressReg;
+    unloadDelay1 = nextDelay1;
+    unloadDelay2 = nextDelay2;
+
+    if (unloadDelay2 && unloadDelay2->last) {
+        unloadActive = false;
+        unloadDoneFlag = true;
+    }
+    return unloadDelay2;
+}
+
+void
+OutputRegisterFile::clearUnloadControl()
+{
+    unloadAddress.reset();
+    unloadAddressReg.reset();
+    unloadDelay1.reset();
+    unloadDelay2.reset();
+    unloadLaunchDelay = 0;
+    unloadActive = false;
+    unloadDoneFlag = false;
+}
+
+void
+OutputRegisterFile::clearCompletion()
+{
+    if (unloadActive) {
+        throw std::logic_error(
+            "output-register completion cleared during unload");
+    }
+    resultDone = false;
+    clearUnloadControl();
+}
+
 void
 OutputRegisterFile::reset()
 {
@@ -149,6 +306,7 @@ OutputRegisterFile::reset()
     countInstruction = 0;
     acceptedCount = 0;
     resultDone = false;
+    clearUnloadControl();
 }
 
 } // namespace gem5::sau

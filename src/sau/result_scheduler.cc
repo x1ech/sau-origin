@@ -14,8 +14,9 @@ ResultScheduler::ResultScheduler(
       fillLatency(fillLatency),
       flowGapCycles(flowGap)
 {
-    if (totalOutputs == 0 || outputsPerFlow == 0) {
-        throw std::invalid_argument("SAU result schedule must be nonempty");
+    if (outputsPerFlow == 0) {
+        throw std::invalid_argument(
+            "SAU result schedule flow extent must be nonzero");
     }
 }
 

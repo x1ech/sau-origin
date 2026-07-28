@@ -11,11 +11,12 @@ namespace
 
 RtlCommandDriverConfig
 commandDriverConfig(uint32_t flowTimes = 8,
-                    uint32_t instructionTimes = 8)
+                    uint32_t instructionTimes = 8,
+                    uint8_t saFlowMode = 0)
 {
     const uint32_t residentXBurst = flowTimes;
     return {
-        {32, flowTimes, instructionTimes, 1, 1, 0, false},
+        {32, flowTimes, instructionTimes, 1, 1, saFlowMode, false},
         {residentXBurst, 32, 1},
         {1, 32, flowTimes, instructionTimes},
         {1, 32, flowTimes, instructionTimes, 32, 3, 2, 2, 2},
@@ -1115,6 +1116,57 @@ TEST(RtlCommandDriverSkeleton, ConservesCurrentFlowInstructionShapes)
     }
 }
 
+TEST(RtlCommandDriverSkeleton, FlowTransposeSharesNonRetainControlTiming)
+{
+    RtlCommandDriverSkeleton normal(commandDriverConfig(5, 2, 0));
+    RtlCommandDriverSkeleton transpose(commandDriverConfig(5, 2, 1));
+
+    for (uint32_t cycle = 0; cycle < 5000; ++cycle) {
+        normal.tick(cycle == 0);
+        transpose.tick(cycle == 0);
+
+        EXPECT_EQ(transpose.coreState(), normal.coreState());
+        EXPECT_EQ(transpose.streamReadEnable(), normal.streamReadEnable());
+        EXPECT_EQ(transpose.dataAValid(), normal.dataAValid());
+        EXPECT_EQ(transpose.dataBValid(), normal.dataBValid());
+        EXPECT_EQ(transpose.saEnable(), normal.saEnable());
+        EXPECT_EQ(transpose.resultValid(), normal.resultValid());
+        EXPECT_EQ(transpose.nativeWriteValid(), normal.nativeWriteValid());
+        EXPECT_EQ(transpose.commandDone(), normal.commandDone());
+        if (normal.commandDone()) {
+            break;
+        }
+    }
+
+    EXPECT_TRUE(normal.commandDoneObserved());
+    EXPECT_TRUE(transpose.commandDoneObserved());
+    EXPECT_EQ(transpose.commandDoneEdge(), normal.commandDoneEdge());
+    EXPECT_EQ(transpose.resultTokens(), normal.resultTokens());
+    EXPECT_EQ(transpose.physicalWriteTokens(),
+              normal.physicalWriteTokens());
+}
+
+TEST(RtlCommandDriverSkeleton, FlowRetainCompletesWithoutResultOrWriteback)
+{
+    RtlCommandDriverSkeleton retain(commandDriverConfig(8, 1, 2));
+
+    for (uint32_t cycle = 0;
+         cycle < 5000 && !retain.commandDone(); ++cycle) {
+        retain.tick(cycle == 0);
+    }
+
+    EXPECT_TRUE(retain.commandDoneObserved());
+    EXPECT_EQ(retain.commandDoneEdge(), 569u);
+    EXPECT_EQ(retain.residentReadTokens(), 256u);
+    EXPECT_EQ(retain.streamReadTokens(), 256u);
+    EXPECT_EQ(retain.acceptedSaTokens(), 256u);
+    EXPECT_EQ(retain.resultTokens(), 0u);
+    EXPECT_EQ(retain.nativeWriteTokens(), 0u);
+    EXPECT_EQ(retain.physicalWriteTokens(), 0u);
+    EXPECT_FALSE(retain.resultWindow().observed);
+    EXPECT_FALSE(retain.memoryWriteWindow().observed);
+}
+
 TEST(RtlExecuteUpdateSkeleton, CountsEnabledSaEdgesAndPipelinesExecuteDone)
 {
     RtlExecuteUpdateSkeleton execute({32, 8, 0, false});
@@ -1189,12 +1241,11 @@ TEST(RtlExecuteUpdateSkeleton, FinalInstructionWaitsForResultLast)
     EXPECT_EQ(updateFinishedCycle, 79U);
 }
 
-TEST(RtlExecuteUpdateSkeleton, RejectsUnsupportedControlModes)
+TEST(RtlExecuteUpdateSkeleton, RejectsUnsupportedKernelSize)
 {
     EXPECT_THROW((RtlExecuteUpdateSkeleton({32, 8, 3, false})),
                  std::invalid_argument);
-    EXPECT_THROW((RtlExecuteUpdateSkeleton({32, 8, 0, true})),
-                 std::invalid_argument);
+    EXPECT_NO_THROW((RtlExecuteUpdateSkeleton({32, 8, 0, true})));
 }
 
 TEST(SauSchedule, RequiresResidentAAndTransposeCompletion)

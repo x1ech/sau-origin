@@ -1,5 +1,6 @@
 #include "sau/systolic_array.hh"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace gem5::sau
@@ -31,11 +32,6 @@ SystolicArray::tick(const std::optional<SystolicArrayInput> &input)
     ready.clear();
 
     if (input) {
-        if (finishSeen) {
-            throw std::logic_error(
-                "systolic-array input follows the finish token");
-        }
-        finishSeen = input->finish;
         ++acceptedInputCount;
         for (unsigned macroRow = 0; macroRow < MacroRows; ++macroRow) {
             for (unsigned macroColumn = 0;
@@ -71,7 +67,10 @@ SystolicArray::requestOutput(unsigned cutbit)
         throw std::invalid_argument(
             "array stream cutbit exceeds the raw 5-bit CSR domain");
     }
-    if (outputStartActive || resultStreamStarted) {
+    const bool streamActive = std::any_of(
+        streamStates.begin(), streamStates.end(),
+        [](StreamState state) { return state == StreamState::Streaming; });
+    if (outputStartActive || streamActive) {
         throw std::logic_error(
             "systolic-array result stream already requested");
     }
@@ -114,6 +113,10 @@ SystolicArray::commit(const MacroEvent &event)
             const unsigned column =
                 event.macroColumn * MacroSize + localColumn;
             snapshot[row][column] = pes[row][column].accumulator();
+            // SA_PE_array clears on acc_finish only when keep_mode is low.
+            if (!keepMode) {
+                pes[row][column].reset();
+            }
         }
     }
 }
@@ -159,7 +162,6 @@ SystolicArray::advanceResultStream(uint8_t priorSnapshotReady)
     if (streamStates[0] == StreamState::Streaming &&
         outputStartActive) {
         outputStartActive = false;
-        resultStreamStarted = true;
     }
     for (unsigned macroRow = 0; macroRow < MacroRows; ++macroRow) {
         if (streamStates[macroRow] != StreamState::Streaming) {
@@ -205,11 +207,21 @@ SystolicArray::reset()
     storageReadyValue = false;
     calFinishPulse = false;
     outputStartActive = false;
-    resultStreamStarted = false;
-    finishSeen = false;
     streamCutbit = 0;
     streamOutputValue.reset();
     streamRowValue.reset();
+    keepMode = false;
+}
+
+void
+SystolicArray::restoreAccumulators(const AccumulatorMatrix &state)
+{
+    reset();
+    for (unsigned row = 0; row < Rows; ++row) {
+        for (unsigned column = 0; column < Columns; ++column) {
+            pes[row][column].restore(state[row][column]);
+        }
+    }
 }
 
 int32_t

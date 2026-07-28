@@ -2,8 +2,26 @@
 
 ## 状态
 
-**Steps 0–4 已完成；当前进入 Step 5。Step 5 increment 1 已实现，
-等待 focused build/test 验证。**
+**Steps 0–5 已在冻结的 Reuse-A 支持域内完成；下一 checkpoint 是 Step 6/Flow3
+范围判定。Step 5 increment 4 已将 native unload
+payload 接入 strict memory write submission；cutbit-8 与 cutbit-1 strict
+final-memory checkpoint 均 1024/1024 bytes 匹配。Increment 5 已启用 Flow1
+strict per-tick runtime 和 multi-flow/multi-instruction array tile 生命周期；
+64x160x64 两条 command 各自 690 cycles，最终 4096/4096 bytes 匹配。
+Flow2 K512 `[flow2, flow0]` strict runtime 也已闭环：resident A 外部读取复用
+`register_addr.sv` 的 x/y/channel 地址程序，两条 command 分别精确为 569/685
+cycles，间隔 93 cycles，第一条无 result/write，第二条各 32 beats，最终
+1024/1024 bytes 匹配。quick 回归扩展为 25 suites、69/69 checks。
+K768 `[flow2, flow2, flow0]` 进一步验证连续两次 retain：三条 command 精确为
+569/569/685 cycles，间隔 82/89 cycles，只有最终 command 产生 32 个
+result/write beats，最终 1024/1024 bytes 匹配。真实 payload 读写分别由
+`payloadReadBeats`/`payloadWriteBeats` 统计，并由 functional verifier 对照
+architecture trace；重新编译后的 quick 回归为 26 suites、72/72 checks。
+`[flow2, flow1]` diagnostic 时序有效，但输出为
+32x32 tile 内顺时针旋转 90°而非纯转置；无留存的 64x160x64 case 复现相同
+tile-local RTL 行为。2026-07-28 用户确认 gem5 以当前 RTL 语义为对齐目标，
+不额外要求数学上的整矩阵纯转置。64x160x64 fixture 已打包并成为 permanent
+byte-exact functional regression。**
 
 本计划承接 `PLAN2.md` 已完成的 CSR 解码、逐拍控制、地址请求和时序对齐工作。
 `PLAN2` 的完成结果继续作为时序回归基线。2026-07-27 用户根据仍在更新的 RTL
@@ -124,8 +142,9 @@ deferred 不等于 `rtl_illegal`：模型继续完整保存这些 raw 值和已�
 `00/10/11` 的最终语义，再由用户决定恢复支持或显式拒绝；当前历史 probe 不能
 替代届时的最终 RTL 合同。
 
-`sa_flow_mode` 按 RTL 的 `CNORMAL/CTRANS/RETAIN/TRETAIN` 行为影响结果顺序和
-output SRAM 是否累加，不能在功能模型中固定成当前 fixture 的值。
+`sa_flow_mode` 专门控制输出：`0` 正常顺序，`1` 转置顺序，`2` 保留 output
+SRAM 数据供下一次计算累加。`trans_mode` 只控制 Operand-A 或 Operand-B 的输入
+转置，不参与输出顺序选择。raw `3` 继续无损解码，但其功能语义需单独确认。
 
 `cutbit` 是 5-bit CSR 字段，int8 GEMM 必须支持 RTL 可表示的完整 `0..31` 范围，
 包括 `cutbit=1`、现有 fixture 使用的 `cutbit=8`，以及其他合法值。当前 RTL 的
@@ -596,27 +615,45 @@ backpressure 被计入仿真。
 
 ### Step 5：实现配置驱动的 serializer、output RF 与真实写回
 
-当前进度：increment 1 已实现 `register_file_out` accepted-update 侧的 raw
-x/y/flow/instruction pointer、两个 SRAM half、normal/retain lane 运算、RAW
-forwarding 等价语义及 int8 saturation；尚未完成 unload 流水、runtime 接入和真实
-writeback，因此以下 Step 5 完整项暂不勾选。
+当前进度：increment 1 已实现 `register_file_out` accepted-update 侧；increment
+2 新增有限 32-row T2 result serializer、冻结 RTL 的 CTRANS 顺序、registered
+output-RF unload、`register_addr` 外部地址序列和 valid/address/data d1/d2 流水；
+increment 3 将 array row、driver result-valid、output RF 和 native unload FIFO
+接入 strict runtime；increment 4 以该 FIFO 为 strict write payload 权威源，
+校验 token/address/last，并向 strict FunctionalMemory 提交真实 bytes。
+timing-memory/DSE 接口保持原行为；首个 cutbit-8 final-memory golden 已逐字节
+匹配。cutbit-1 的权威 CSR replay 已从 frozen FSDB 提取并同样逐字节匹配。
+flow mode 2 的刷新 K512 RTL capture 已在第一 command done 后 93 cycles 发出
+第二 start，按顺序接受 `[flow2, flow0]`，并在第二 command 后一次性写回匹配
+1024/1024 bytes。flow mode 1 的 K512 diagnostic 同样按顺序接受 `[flow2,
+flow1]`，且 `actual[r][c] == expected[31-c][r]`。无 flow2 留存的
+64x160x64 diagnostic 进一步证明 2x2 tile 位置不变，每个 32x32 tile 独立
+顺时针旋转。按 2026-07-28 用户范围决定，这一观测到的 tile-local 顺序就是 gem5
+需要复现的 RTL flow1 语义。fixture 已包含两条 command 的 CSR、initial/final
+memory、完整 boundary、日志及 Hash。Increment 5 已使模型按同一 tile-local
+顺序执行：每条 command 接受 320 个阵列输入、产生并写回 64 beats，在 RTL 的
+690-cycle command extent 完成；两条 command 的最终 4096 bytes 与 RTL oracle
+一致。K512 与 K768 的 flow2 retain runtime、golden、统计及性能基线均已闭环，
+Step 5 在冻结的 Reuse-A 支持域内完成。
 
-- [ ] 按 `trans_mode` 和 `sa_flow_mode` 实现结果 serializer/transpose 顺序。
-- [ ] 实现 `register_file_out` 的 x/y/flow/instruction pointer、两个 SRAM half、
+- [x] 按 `sa_flow_mode` 实现结果 serializer/transpose 顺序；`trans_mode`
+  不参与输出选择。
+- [x] 实现 `register_file_out` 的 x/y/flow/instruction pointer、两个 SRAM half、
   read-after-write forwarding 和有限端口行为。
-- [ ] 实现 `CNORMAL/CTRANS/RETAIN/TRETAIN` 的 output SRAM 清理/保留、16-bit
-  two's-complement lane wrap accumulation 及 unload/completion guard。
-- [ ] 按 RTL `sat_signed8` 对每个 16-bit lane 饱和，组装真实 256-bit write
+- [x] 实现 flow mode `0/1/2` 的 output SRAM 正常/转置/保留行为、16-bit
+  two's-complement lane wrap accumulation及 unload/completion guard；raw `3`
+  在语义确认前不宣称功能支持。
+- [x] 按 RTL `sat_signed8` 对每个 16-bit lane 饱和，组装真实 256-bit write
   payload；strict/timing-memory 分别按 Step 1 的唯一数据真源提交。
-- [ ] command complete 必须等待相应 result、output、writeback 和 memory
+- [x] command complete 必须等待相应 result、output、writeback 和 memory
   visibility 条件，不使用预设完成周期。
 
 验收：
 
 - output SRAM 覆盖 16-bit lane 溢出、同址 RAW forwarding 和
   `-129/-128/127/128` int8 饱和边界；
-- `CNORMAL/CTRANS/RETAIN/TRETAIN` 各有真实 golden，并覆盖它们与 transpose/
-  reuse 的结构交互；
+- flow mode `0/1/2` 各有真实 golden，并覆盖它们与 operand transpose/reuse
+  的结构交互；raw `3` 确认语义后再加入验收；
 - `32x32x32, trans=01, reuse=01, cutbit=8` 与 `cutbit=1` 作为首个完整
   end-to-end checkpoint，write payload 和最终 memory 逐字节匹配 RTL；
 - 随后每个 Step 0 mode 结构等价类至少有一个真实 RTL end-to-end golden。
@@ -690,14 +727,19 @@ raw CSR writes
  -> final memory bytes
 ```
 
-- [ ] 原 23 个 timing quick suite、63 个检查全部继续通过。
-- [ ] 新增 focused functional tests 和 workload end-to-end tests。
-- [ ] 默认不输出逐拍数据 trace；debug trace 必须按 command、周期范围和模块过滤。
-- [ ] 在 trace 关闭时按固定命令记录 `32x32x32` 和 `64x256x256` 的 wall-clock、
+- [x] 原 timing quick suite 全部继续通过；当前连同功能回归为 26 suites、
+  72/72 checks。
+- [x] 新增 focused functional tests 和 Flow0/Flow1/Flow2 workload
+  end-to-end tests。
+- [x] 默认不输出逐拍 payload boundary trace；strict architecture/state/ledger
+  保持开启作为验证合同，debug boundary trace 由显式文件参数启用。
+- [x] 在 payload trace 关闭时按固定命令记录 `32x32x32` 和 `64x256x256` 的 wall-clock、
   peak RSS、simulated cycles 和 host memory allocation 热点，形成可重复性能基线；
-  后续若出现明显退化必须定位原因。
-- [ ] 统计增加 payload beat 和功能 compare 结果，但不改变已有 stats 名称语义。
-- [ ] 更新 `README.md` 和 `STATUS.md`：说明 workload、支持域、运行命令、
+  后续若出现明显退化必须定位原因。结果见
+  `docs/reports/plan3-step5-performance-baseline.md`。
+- [x] 统计增加 payload beat；功能 compare 由 regression verifier 报告并对照
+  trace/final memory，不改变已有 stats 名称语义或向模型注入 RTL oracle。
+- [x] 更新 `README.md` 和 `STATUS.md`：说明 workload、支持域、运行命令、
   验证结果和明确未支持配置。
 
 ## 6. 预计修改文件

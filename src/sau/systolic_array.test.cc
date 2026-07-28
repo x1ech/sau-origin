@@ -202,5 +202,76 @@ TEST(SystolicArray, StreamsThirtyTwoSnapshotRowsThroughTheTokenChain)
     }
 }
 
+TEST(SystolicArray, ClearsAndStreamsConsecutiveInstructionTiles)
+{
+    SystolicArray array;
+    unsigned tiles = 0;
+    unsigned rows = 0;
+
+    for (unsigned edge = 0; edge <= 109; ++edge) {
+        std::optional<SystolicArrayInput> input;
+        if (edge < 64) {
+            input = uniformInput(1, 1);
+            input->finish = edge == 31 || edge == 63;
+        }
+        if (edge == 44 || edge == 77) {
+            array.requestOutput(0);
+        }
+        array.tick(input);
+        if (!array.streamOutput()) {
+            continue;
+        }
+        for (const int8_t lane : array.streamOutput()->lanes) {
+            EXPECT_EQ(lane, 32);
+        }
+        if (++rows == SystolicArray::Rows) {
+            ++tiles;
+            rows = 0;
+        }
+    }
+
+    EXPECT_EQ(tiles, 2u);
+    EXPECT_EQ(array.acceptedInputs(), 64u);
+}
+
+TEST(SystolicArray, RestoresRetainedPeStateIntoTheFinalCommand)
+{
+    SystolicArray retain;
+    retain.setKeepMode(true);
+    for (unsigned edge = 0;
+         edge <= 31 + SystolicArray::MaxWavefrontDelay; ++edge) {
+        std::optional<SystolicArrayInput> input;
+        if (edge < 32) {
+            input = uniformInput(1, 2);
+            input->finish = edge == 31;
+        }
+        retain.tick(input);
+    }
+    EXPECT_EQ(retain.accumulator(0, 0), 64);
+    EXPECT_EQ(retain.accumulator(31, 31), 64);
+
+    SystolicArray final;
+    final.restoreAccumulators(retain.accumulators());
+    final.setKeepMode(false);
+    for (unsigned edge = 0; edge <= 76; ++edge) {
+        std::optional<SystolicArrayInput> input;
+        if (edge < 32) {
+            input = uniformInput(3, 4);
+            input->finish = edge == 31;
+        }
+        if (edge == 44) {
+            final.requestOutput(0);
+        }
+        final.tick(input);
+        if (final.streamOutput()) {
+            for (const int8_t lane : final.streamOutput()->lanes) {
+                EXPECT_EQ(lane, 127);
+            }
+        }
+    }
+    EXPECT_EQ(final.accumulator(0, 0), 0);
+    EXPECT_EQ(final.accumulator(31, 31), 0);
+}
+
 } // anonymous namespace
 } // namespace gem5::sau

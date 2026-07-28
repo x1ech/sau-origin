@@ -105,7 +105,8 @@ buildRtlCommandDriverConfig(const SauCommand &command,
         policy.residentLoadBeats / rtl.saSize;
     return {
         {rtl.saSize, command.flowLoops, policy.scheduleInstructions,
-         policy.transMode, policy.reuseMode, 0, false},
+         policy.transMode, policy.reuseMode,
+         command.control.saFlowMode, false},
         {residentXBurst, rtl.saSize, 1},
         {address.xCount, address.yCount, address.flowCount,
          address.instructionCount},
@@ -289,6 +290,20 @@ SauModel::SauModel(const Params &params)
                       entry.decoded.maturityReason);
             }
         }
+        for (size_t index = 0; index < fixtureCommands.size(); ++index) {
+            const auto &command =
+                fixtureCommands[index].decoded.command;
+            if ((command.control.saFlowMode & 0x2) == 0) {
+                continue;
+            }
+            panic_if(index + 1 == fixtureCommands.size(),
+                     "SAU retain command %d has no following command to "
+                     "consume its PE accumulator state",
+                     command.id);
+            panic_if(command.instructionLoops != 1,
+                     "SAU strict retain runtime currently requires one "
+                     "instruction tile per command");
+        }
     }
     panic_if(functionalMemorySize == 0 &&
                  (!memoryImageFile.empty() || !finalMemoryDumpFile.empty()),
@@ -376,7 +391,8 @@ SauModel::preloadTimingMemoryImage()
 }
 
 void
-SauModel::commitStrictWrite(const Beat &writeBeat)
+SauModel::commitStrictWrite(const Beat &writeBeat,
+                            const WriteBeat256 &writePayload)
 {
     if (!functionalMemory) {
         return;
@@ -384,10 +400,13 @@ SauModel::commitStrictWrite(const Beat &writeBeat)
     panic_if(!functionalMemory->contains(writeBeat.address, beatBytes),
              "SAU strict write outside the functional memory range: %#x",
              writeBeat.address);
-    // The accepted local edge is the strict commit boundary. First-stage
-    // writeback data is still zero; the output datapath (PLAN3 Step 5)
-    // becomes the payload source at this same commit point.
-    functionalMemory->writeBeat(writeBeat.address, MemoryBeat256{});
+    // The accepted local edge is the strict commit boundary. Keep the
+    // external-memory byte view distinct from the output datapath type even
+    // though both carry the same 32 address-ordered bytes.
+    MemoryBeat256 memoryPayload;
+    memoryPayload.bytes = writePayload.bytes;
+    functionalMemory->writeBeat(writeBeat.address, memoryPayload);
+    ++stats.payloadWriteBeats;
 }
 
 void
@@ -496,7 +515,9 @@ SauModel::submitCommand(const SauCommand &command)
         // authority the strict driver edges also move real payloads
         // through the input/transposer resources.
         if (functionalMemory) {
-            payloadDatapath.emplace(deriveResourceConfigs(command.control));
+            payloadDatapath.emplace(
+                deriveResourceConfigs(command.control), retainedArrayState);
+            retainedArrayState.reset();
             if (!boundaryTraceFile.empty() && activeCommandIndex == 0) {
                 boundaryTrace.emplace(boundaryTraceFile);
                 boundaryTrace->emitZero("sau_sram_rdata", 0);
@@ -994,13 +1015,29 @@ SauModel::issueWrites()
            memoryCanIssue()) {
         const auto &token = outputBuffer.front();
         const uint32_t beatIndex = token.index;
+        const Addr scheduledAddress =
+            activeCommand->output.base +
+            static_cast<Addr>(beatIndex) *
+                activeCommand->output.strideBytes;
+        const OutputRegisterUnload *writePayload = nullptr;
+        if (rtlCommandDriver && payloadDatapath) {
+            panic_if(!payloadDatapath->hasWritePayload(),
+                     "strict SAU lacks an output payload for an RTL write "
+                     "request");
+            writePayload = &payloadDatapath->nextWritePayload();
+            panic_if(writePayload->logicalAddress != beatIndex,
+                     "strict SAU output payload index differs from the "
+                     "result token");
+            panic_if(writePayload->address != scheduledAddress,
+                     "strict SAU output payload address differs from the "
+                     "command write address");
+        }
         Beat writeBeat{
             StreamKind::Output,
-            activeCommand->output.base +
-                static_cast<Addr>(beatIndex) *
-                    activeCommand->output.strideBytes,
+            writePayload ? writePayload->address : scheduledAddress,
             beatIndex,
-            beatIndex + 1 == expectedOutputBeats(),
+            writePayload ? writePayload->last :
+                beatIndex + 1 == expectedOutputBeats(),
         };
         panic_if(
             rtlCommandDriver &&
@@ -1013,10 +1050,25 @@ SauModel::issueWrites()
         }
 
         const bool acceptedOrBlocked = calibrationMemory ?
-            true : memoryPort.trySend(writeBeat, true);
+            true : memoryPort.trySend(
+                writeBeat, true,
+                writePayload ? writePayload->data.bytes.data() : nullptr);
         if (calibrationMemory) {
             requestAccepted(writeBeat, true);
-            commitStrictWrite(writeBeat);
+            panic_if(rtlCommandDriver && functionalMemory && !writePayload,
+                     "strict SAU functional write lacks output payload");
+            if (writePayload) {
+                commitStrictWrite(writeBeat, writePayload->data);
+            } else if (functionalMemory) {
+                // Preserve the legacy timing-only/DSE zero-data contract.
+                commitStrictWrite(writeBeat, WriteBeat256{});
+            }
+        }
+        if (writePayload) {
+            // trySend() has copied the payload into its Packet even when the
+            // timing request is blocked, so ownership can now leave the
+            // datapath queue.
+            payloadDatapath->takeWritePayload();
         }
         outputBuffer.pop();
         ++nextWriteIndex;
@@ -1286,6 +1338,16 @@ SauModel::updatePhase()
                 rtlCommandDriver->physicalWriteTokens() !=
                     expectedOutputBeats(),
                 "strict SAU command-driver token conservation failed");
+            panic_if(
+                payloadDatapath &&
+                    (payloadDatapath->serializerInputStalls() != 0 ||
+                     payloadDatapath->serializerOutputUnderflows() != 0 ||
+                     payloadDatapath->outputRegisterUpdates() !=
+                         expectedOutputBeats() ||
+                     payloadDatapath->outputUnloadBeats() !=
+                         expectedOutputBeats() ||
+                     payloadDatapath->hasWritePayload()),
+                "strict SAU functional output-resource conservation failed");
             emitRtlStageLedger(*activeCommand);
         }
         flushPayloadStats();
@@ -1302,6 +1364,14 @@ SauModel::updatePhase()
             static_cast<uint64_t>(commandCycle());
         ++stats.commandsCompleted;
         const bool moreCommands = nextCommandIndex < commandCount;
+        const bool retainArray =
+            (activeCommand->control.saFlowMode & 0x2) != 0;
+        if (payloadDatapath && retainArray) {
+            retainedArrayState =
+                payloadDatapath->finishRetainedArrayState();
+        } else if (!retainArray) {
+            retainedArrayState.reset();
+        }
         activeCommand.reset();
         readGenerator.reset();
         aRegisterFile.reset();
@@ -1629,10 +1699,12 @@ SauModel::emitRtlStageLedger(const SauCommand &command)
                "RtlCommandDriver feeder data_A_valid");
     emitWindow("operand_b", rtlCommandDriver->operandBWindow(),
                "RtlCommandDriver feeder data_B_valid");
-    emitWindow("result", rtlCommandDriver->resultWindow(),
-               "RtlCommandDriver result_final_valid");
-    emitWindow("memory_write", rtlCommandDriver->memoryWriteWindow(),
-               "RtlCommandDriver mem_ctrl write request");
+    if (expectedOutputBeats() != 0) {
+        emitWindow("result", rtlCommandDriver->resultWindow(),
+                   "RtlCommandDriver result_final_valid");
+        emitWindow("memory_write", rtlCommandDriver->memoryWriteWindow(),
+                   "RtlCommandDriver mem_ctrl write request");
+    }
     panic_if(!rtlCommandDriver->commandDoneObserved(),
              "strict SAU stage ledger missed command_done");
     timingLedger << command.id << ",actual_command_done_edge,"
@@ -1672,6 +1744,12 @@ SauModel::advanceRtlCommandDriver()
         payloadDatapath->requestArrayOutput();
     }
     payloadDatapath->sampleCycle(rtlDriverEdge);
+    if (rtlCommandDriver->resultValid()) {
+        payloadDatapath->onResultValid(rtlDriverEdge);
+    }
+    payloadDatapath->onRegisterUnload(
+        rtlDriverEdge,
+        rtlCommandDriver->coreState() == RtlCoreState::RegisterUnload);
     if (!boundaryTrace || activeCommandIndex != 0) {
         return;
     }
@@ -1896,10 +1974,12 @@ SauModel::emitScheduleState(std::string_view cause)
 bool
 SauModel::commandLocallyComplete() const
 {
+    const uint32_t outputBeats = expectedOutputBeats();
     return activeCommand &&
         (!rtlCommandDriver || rtlCommandDriver->commandDone()) &&
-        writesAccepted == expectedOutputBeats() &&
+        writesAccepted == outputBeats &&
         outputBuffer.size() == 0 &&
+        (!payloadDatapath || !payloadDatapath->hasWritePayload()) &&
         // ArrayPipeline occupancy is a capacity/II accounting mechanism.
         // ResultScheduler and accepted writeback define architectural
         // completion; waiting for every shadow admission token to age by the
@@ -1907,11 +1987,12 @@ SauModel::commandLocallyComplete() const
         // extent is smaller than input work (the N-sweep case).
         arrayInputScheduler && arrayInputScheduler->complete() &&
         resultScheduler && resultScheduler->complete() &&
-        lastWriteCycle &&
-        (rtlCommandDriver ||
-         static_cast<uint64_t>(commandCycle()) >=
-             static_cast<uint64_t>(*lastWriteCycle +
-                                   activeCompletionDelayCycles())) &&
+        (outputBeats == 0 ||
+         (lastWriteCycle &&
+          (rtlCommandDriver ||
+           static_cast<uint64_t>(commandCycle()) >=
+               static_cast<uint64_t>(*lastWriteCycle +
+                                     activeCompletionDelayCycles())))) &&
         (!readGenerator || readGenerator->empty()) &&
         visibleReadBeats == acceptedReadBeats &&
         visibleMemoryResponses.empty() &&
@@ -1962,6 +2043,9 @@ SauModel::expectedOutputBeats() const
     if (!activeCommand) {
         return 0;
     }
+    if ((activeCommand->control.saFlowMode & 0x2) != 0) {
+        return 0;
+    }
     return activeCommand->output.beats * activeCommand->instructionLoops;
 }
 
@@ -1977,7 +2061,8 @@ SauModel::outputBeatsPerInstruction() const
 {
     assert(activeCommand);
     const uint32_t totalInstructions = scheduleInstructionCount();
-    const uint32_t totalOutputs = expectedOutputBeats();
+    const uint32_t totalOutputs =
+        activeCommand->output.beats * activeCommand->instructionLoops;
     if (totalOutputs % totalInstructions != 0) {
         throw std::invalid_argument(
             "SAU output beats must divide evenly across schedule instructions");
@@ -2235,6 +2320,8 @@ SauModel::SauStats::SauStats(statistics::Group *parent, unsigned commandCount)
                "primary-cause priority"),
       ADD_STAT(payloadReadBeats, statistics::units::Count::get(),
                "Strict read beats consumed with real payloads"),
+      ADD_STAT(payloadWriteBeats, statistics::units::Count::get(),
+               "Strict write beats committed with real payloads"),
       ADD_STAT(transposerInputRows, statistics::units::Count::get(),
                "Operand rows accepted into the transposer banks"),
       ADD_STAT(transposerOutputColumns, statistics::units::Count::get(),

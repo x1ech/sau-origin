@@ -18,6 +18,7 @@ atbdSmallControl()
     control.reuseMode = 1;
     control.saFlowMode = 0;
     control.cutbit = 8;
+    control.flowLoopTimes = 1;
     control.registerInput.xBurst = 1;
     control.registerInput.yStep = 1;
     control.registerInput.yCycle = 32;
@@ -30,6 +31,20 @@ atbdSmallControl()
     control.input.flowBurst = 1;
     control.input.instructionStep = 1;
     control.input.instructionBurst = 1;
+    control.outputAddress = 0x29120c00;
+    control.output.xStep = 0;
+    control.output.xBurst = 1;
+    control.output.yStep = 1;
+    control.output.yBurst = 32;
+    control.output.flowStep = 0;
+    control.output.flowBurst = 1;
+    control.output.instructionStep = 0;
+    control.output.instructionBurst = 1;
+    control.output.registerXBurst = 1;
+    control.output.registerYStep = 1;
+    control.output.registerYCycle = 32;
+    control.output.registerCStep = 1;
+    control.output.registerCCycle = 1;
     return control;
 }
 
@@ -200,6 +215,69 @@ TEST(StrictPayloadDatapath, DrivesAtbdPairsThroughTheArrayResultStream)
                       satTruncateInt24(sum, 8));
         }
     }
+
+    // Driver result-valid edges drain the finite result serializer into
+    // register_file_out. Flow mode 0 preserves row order.
+    ASSERT_TRUE(datapath.resultSerializerState().outputReady());
+    for (unsigned row = 0; row < 32; ++row) {
+        datapath.beginCycle();
+        datapath.onResultValid(120 + row);
+        const auto &update = datapath.boundaryEvents().outputRegister;
+        ASSERT_TRUE(update);
+        EXPECT_EQ(update->edge, 120u + row);
+        EXPECT_EQ(update->update.address, row);
+        EXPECT_EQ(update->update.last, row == 31);
+        for (unsigned column = 0; column < 32; ++column) {
+            EXPECT_EQ(update->update.data.bytes[column],
+                      static_cast<uint8_t>(outputs[row].lanes[column]));
+        }
+    }
+    EXPECT_EQ(datapath.outputRegisterUpdates(), 32u);
+    EXPECT_TRUE(datapath.outputRegisterState().resultAccumDone());
+    EXPECT_FALSE(datapath.resultSerializerState().outputReady());
+
+    // The first REGISTER_UNLOAD edge arms register_out_state. The next
+    // edge launches register_addr; the registered address and d1/d2
+    // pipeline then expose the first native payload four ticks later.
+    datapath.beginCycle();
+    datapath.onRegisterUnload(200, true);
+    datapath.beginCycle();
+    datapath.onRegisterUnload(201, true);
+    unsigned firstUnloadEdge = 0;
+    unsigned lastUnloadEdge = 0;
+    for (uint64_t edge = 202; edge <= 240; ++edge) {
+        datapath.beginCycle();
+        datapath.onRegisterUnload(edge, true);
+        const auto &unload = datapath.boundaryEvents().outputUnload;
+        if (!unload) {
+            continue;
+        }
+        if (firstUnloadEdge == 0) {
+            firstUnloadEdge = edge;
+        }
+        if (unload->unload.last) {
+            lastUnloadEdge = edge;
+        }
+    }
+    EXPECT_EQ(firstUnloadEdge, 205u);
+    EXPECT_EQ(lastUnloadEdge, 236u);
+    EXPECT_EQ(datapath.outputUnloadBeats(), 32u);
+    EXPECT_TRUE(datapath.outputRegisterState().unloadDone());
+
+    for (unsigned row = 0; row < 32; ++row) {
+        ASSERT_TRUE(datapath.hasWritePayload());
+        const auto payload = datapath.takeWritePayload();
+        EXPECT_EQ(payload.logicalAddress, row);
+        EXPECT_EQ(payload.address,
+                  0x29120c00 + static_cast<Addr>(row) * BeatBytes);
+        EXPECT_EQ(payload.last, row == 31);
+        for (unsigned column = 0; column < 32; ++column) {
+            EXPECT_EQ(payload.data.bytes[column],
+                      static_cast<uint8_t>(outputs[row].lanes[column]));
+        }
+    }
+    EXPECT_FALSE(datapath.hasWritePayload());
+    EXPECT_THROW(datapath.takeWritePayload(), std::logic_error);
 }
 
 TEST(StrictPayloadDatapath, KeepsOperandBOutsideTheAtbdBanks)

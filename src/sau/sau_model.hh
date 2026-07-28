@@ -143,6 +143,9 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     // Strict payload-side input datapath; present only when the run has
     // a functional memory authority (PLAN3 Step 3 runtime integration).
     std::optional<StrictPayloadDatapath> payloadDatapath;
+    // Flow2/3 keep-mode state crosses the command boundary in the RTL PE
+    // array while command-local queues and serializers restart.
+    std::optional<SystolicArray::AccumulatorMatrix> retainedArrayState;
     std::optional<BoundaryTraceWriter> boundaryTrace;
     SauSchedule scheduleState;
     std::deque<Beat> availableB;
@@ -243,7 +246,8 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
     Cycles activeCompletionDelayCycles() const;
     Cycles activeCommandStartCycles() const;
     void preloadTimingMemoryImage();
-    void commitStrictWrite(const Beat &writeBeat);
+    void commitStrictWrite(const Beat &writeBeat,
+                           const WriteBeat256 &writePayload);
     void flushPayloadStats();
     void dumpFinalMemory();
     void emitTimingLedger(const SauCommand &command);
@@ -306,6 +310,7 @@ class SauModel : public ClockedObject, private SauMemoryPortOwner
         statistics::Vector primaryStallCycles;
         // PLAN3 Step 3 strict payload-side resources.
         statistics::Scalar payloadReadBeats;      // payload-carrying reads
+        statistics::Scalar payloadWriteBeats;     // payload-carrying writes
         statistics::Scalar transposerInputRows;   // bank rows accepted
         statistics::Scalar transposerOutputColumns;
         statistics::Scalar transposerInputStalls; // row with no free bank

@@ -1,7 +1,19 @@
 #include "sau/pe_datapath.hh"
 
+#include <stdexcept>
+
 namespace gem5::sau
 {
+
+void
+SystolicPe::restore(int32_t value)
+{
+    if (value < Int24Min || value > Int24Max) {
+        throw std::invalid_argument(
+            "retained SAU PE accumulator exceeds signed 24-bit range");
+    }
+    accumulatorValue = value;
+}
 
 void
 SystolicPe::tick(const SystolicPeInputs &inputs)

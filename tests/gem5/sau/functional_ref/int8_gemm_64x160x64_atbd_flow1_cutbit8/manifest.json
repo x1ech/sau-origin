@@ -1,0 +1,73 @@
+{
+  "beat_bytes": 32,
+  "command_count": 2,
+  "command_start_cycles": [
+    29172,
+    30189
+  ],
+  "csr_modes": {
+    "conv_kernal": 0,
+    "cutbit": 8,
+    "pe_work_mode": 0,
+    "register_mode": 0,
+    "reuse_mode": 1,
+    "sa_flow_mode": 1,
+    "shift_flag": 0,
+    "stride_flag": 0,
+    "trans_mode": 1
+  },
+  "elaboration_params": {
+    "ADDR_DELAY": 2,
+    "COL_NUM": 32,
+    "OUTPUTDW": 24,
+    "REGDEPTH": 256,
+    "ROW_NUM": 32,
+    "SA_SIZE": 32,
+    "SRAM_DATA_WIDTH": 256,
+    "SRAM_DELAY": 3,
+    "clock_period_ns": 1.667
+  },
+  "fixture_name": "int8_gemm_64x160x64_atbd_flow1_cutbit8",
+  "fixture_role": "end_to_end_flow1_tile_order",
+  "matrix": {
+    "k": 160,
+    "m": 64,
+    "n": 64
+  },
+  "memory_contract": {
+    "boundary_trace": "boundary.csv",
+    "external_beat_bytes": 32,
+    "final_output": "final_output_memory.hex",
+    "initial_image": "initial_memory.hex",
+    "initial_image_semantics": "pre-simulation firmware data image",
+    "output_base": "0x29126000",
+    "output_byte_order": "ascending byte address, one int8 byte per line",
+    "output_end_exclusive": "0x29127000",
+    "output_layout": "tile_grid_fixed_32x32_each_clockwise_90",
+    "output_size_bytes": 4096
+  },
+  "operation": "int8_gemm",
+  "replay": {
+    "clock_edge": "posedge",
+    "firmware_build": "make && make mod3",
+    "sampled_scope": "top_yinglong_tb.u_dut.u_dut_kui.SAU_1_inst",
+    "simulation": "make yinglong_compile_sau; make yinglong_run",
+    "trace_cycle_zero_fsdb_time_ps": 1250,
+    "waveform_reader": "/home/xch/work/npi_fsdb_probe/src/npi_fsdb_probe"
+  },
+  "result": {
+    "element_count": 4096,
+    "rtl_output_is_oracle": true,
+    "software_reference_is_oracle": false,
+    "software_reference_mismatches": 4072
+  },
+  "rtl_contract": {
+    "fsdb_path": "/home/xch/work/npu_lpnpu/sim/vcs/build/yinglong/yinglong.fsdb",
+    "fsdb_sha256": "ebae0177e8f72b01f627bf6d4303255db11457ff9f09295669c1b00c81204139",
+    "npu_repo_head": "ad97aaa7fa6c70e40c8bf8cce07486628eea9b81",
+    "npu_worktree_diff_sha256": "d439974f194de8d0f8c30bc0e5599d37695d7cc61aa7077d75c79aaac79de8ab",
+    "simulator": "VCS T-2022.06_Full64",
+    "simv_sha256": "adce69439f65e5bab8acbd76257b58e5c0a09634035c255f7fefd36c6846ce08"
+  },
+  "schema_version": 1
+}

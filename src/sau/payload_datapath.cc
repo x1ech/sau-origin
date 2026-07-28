@@ -1,14 +1,23 @@
 #include "sau/payload_datapath.hh"
 
+#include <stdexcept>
+
 namespace gem5::sau
 {
 
 StrictPayloadDatapath::StrictPayloadDatapath(
-    const SauResourceConfigs &configs)
+    const SauResourceConfigs &configs,
+    const std::optional<SystolicArray::AccumulatorMatrix> &retained)
     : configs(configs),
       writePath(configs.input.padding),
-      arbiter(configs.transposeReuse)
+      arbiter(configs.transposeReuse),
+      resultSerializer(configs.output),
+      outputRegister(configs.output)
 {
+    if (retained) {
+        array.restoreAccumulators(*retained);
+    }
+    array.setKeepMode(configs.array.keepMode);
     arbiter.clearOnStart();
     restartReadoutProgram();
 }
@@ -145,10 +154,17 @@ StrictPayloadDatapath::onSaEnable(uint64_t edge)
     // fallback for the deferred reuse/transposition modes.
     if (configs.transposeReuse.transMode == SauTransMode::ATBD &&
         configs.transposeReuse.reuseA && arrayWeightPipeline) {
+        const uint32_t inputsPerTile =
+            SystolicArray::Rows * configs.controller.flowTimes;
+        if (inputsPerTile == 0) {
+            throw std::logic_error(
+                "strict payload array tile has zero input extent");
+        }
+        const bool finish = arrayInputsInTile + 1 == inputsPerTile;
         pendingArrayInput = SystolicArrayInput{
             operandFromBeat(output.data),
             operandFromBeat(*arrayWeightPipeline),
-            output.last
+            finish
         };
         events.arrayInput = ArrayInputBoundaryTransfer{
             edge,
@@ -156,6 +172,7 @@ StrictPayloadDatapath::onSaEnable(uint64_t edge)
             pendingArrayInput->weights,
             pendingArrayInput->finish
         };
+        arrayInputsInTile = finish ? 0 : arrayInputsInTile + 1;
     }
     ++outputColumns;
     if (!firstColumnAt) {
@@ -168,6 +185,67 @@ StrictPayloadDatapath::requestArrayOutput()
 {
     array.requestOutput(configs.array.cutbit);
     outputRequested = true;
+}
+
+void
+StrictPayloadDatapath::onResultValid(uint64_t edge)
+{
+    if (!resultSerializer.outputReady()) {
+        ++serializerOutputEmpty;
+        return;
+    }
+    const SerializedResult result = resultSerializer.take();
+    const OutputRegisterUpdate update = outputRegister.accept(result.data);
+    ++outputUpdates;
+    events.outputRegister = OutputRegisterBoundaryTransfer{edge, update};
+}
+
+void
+StrictPayloadDatapath::onRegisterUnload(uint64_t edge,
+                                        bool registerUnloadState)
+{
+    if (!registerUnloadState) {
+        unloadRequestObserved = false;
+        return;
+    }
+    if (!outputRegister.resultAccumDone()) {
+        return;
+    }
+    if (!unloadRequestObserved) {
+        // register_out_state samples REGISTER_UNLOAD && result_accum_done.
+        // Its rising-edge flag becomes visible on the following tick.
+        unloadRequestObserved = true;
+        return;
+    }
+    if (!outputRegister.unloading() && !outputRegister.unloadDone()) {
+        outputRegister.startUnload(configs.writeback.baseAddress);
+        return;
+    }
+
+    const auto payload = outputRegister.tickUnload();
+    if (!payload) {
+        return;
+    }
+    writePayloads.push_back(*payload);
+    ++unloadBeats;
+    events.outputUnload = OutputUnloadBoundaryTransfer{edge, *payload};
+}
+
+const OutputRegisterUnload &
+StrictPayloadDatapath::nextWritePayload() const
+{
+    if (writePayloads.empty()) {
+        throw std::logic_error("strict payload write queue is empty");
+    }
+    return writePayloads.front();
+}
+
+OutputRegisterUnload
+StrictPayloadDatapath::takeWritePayload()
+{
+    const OutputRegisterUnload payload = nextWritePayload();
+    writePayloads.pop_front();
+    return payload;
 }
 
 unsigned
@@ -192,13 +270,32 @@ StrictPayloadDatapath::sampleCycle(uint64_t edge)
     }
     array.tick(pendingArrayInput);
     if (array.streamOutput()) {
-        events.arrayOutput = ArrayOutputBoundaryTransfer{
-            edge, *array.streamRow(), *array.streamOutput()
-        };
+        const OperandVector32x8 row = *array.streamOutput();
+        events.arrayOutput =
+            ArrayOutputBoundaryTransfer{edge, *array.streamRow(), row};
+        if (!resultSerializer.canAccept()) {
+            ++serializerInputBlocked;
+        } else {
+            resultSerializer.accept(row);
+        }
+        ++arrayRowsStreamed;
+        if (arrayRowsStreamed == SystolicArray::Rows) {
+            arrayRowsStreamed = 0;
+            outputRequested = false;
+        }
     }
     if (events.operandB) {
         arrayWeightPipeline = events.operandB->data;
     }
+}
+
+SystolicArray::AccumulatorMatrix
+StrictPayloadDatapath::finishRetainedArrayState()
+{
+    while (!array.pipelineEmpty()) {
+        array.tick();
+    }
+    return array.accumulators();
 }
 
 } // namespace gem5::sau

@@ -2,7 +2,9 @@
 #define __SAU_ADDRESS_GENERATOR_HH__
 
 #include <cstdint>
+#include <optional>
 
+#include "sau/address_program.hh"
 #include "sau/types.hh"
 
 namespace gem5::sau
@@ -38,6 +40,10 @@ class AddressGenerator
     uint32_t instruction = 0;       // 当前游标：第几个 instruction 循环
     bool exhausted = false;         // 全部分生成完毕的标志
     Beat current;                   // 最后一拍 updateFront() 算出的 beat，供 front() 返回
+    // CSR-replayed resident reads use register_addr.sv's raw nested
+    // x/y/channel walk. Synthetic direct commands leave this disengaged
+    // and retain StreamDesc's linear address formula.
+    std::optional<RtlResidentAddressProgram> residentAddress;
 };
 
 } // namespace gem5::sau

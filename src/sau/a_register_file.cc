@@ -2,8 +2,35 @@
 
 #include <stdexcept>
 
+#include "sau/address_program.hh"
+#include "sau/resource_config.hh"
+
 namespace gem5::sau
 {
+namespace
+{
+
+bool
+matchesResidentAddress(const SauCommand &command, const Beat &beat)
+{
+    const auto &raw = command.control.registerInput;
+    if (command.instructionLoops != 1 || raw.xBurst == 0 ||
+        raw.yCycle == 0 || raw.cCycle == 0) {
+        return false;
+    }
+
+    RtlResidentAddressProgram program(
+        deriveResourceConfigs(command.control).residentAddress);
+    for (uint32_t index = 0; index < beat.index; ++index) {
+        if (program.done()) {
+            return false;
+        }
+        program.advance();
+    }
+    return !program.done() && beat.address == program.address();
+}
+
+} // anonymous namespace
 
 ARegisterFileIn::ARegisterFileIn(
     const SauCommand &command, uint32_t totalArrayInputs)
@@ -26,8 +53,15 @@ ARegisterFileIn::load(const Beat &beat)
         throw std::invalid_argument("operand A load beat index out of range");
     }
 
+    if (matchesResidentAddress(command, beat)) {
+        loaded[slot(0, beat.index)] = true;
+        return;
+    }
+
     // AddressGenerator emits A preload once per instruction. Infer the
-    // instruction by matching the external A preload address.
+    // instruction by matching the external A preload address. Synthetic
+    // direct commands use this linear fallback; CSR commands are matched
+    // against register_addr.sv's nested program above.
     for (uint32_t instruction = 0; instruction < command.instructionLoops;
          ++instruction) {
         const Addr expected =

@@ -1,4 +1,9 @@
 {
+  "beat_bytes": 32,
+  "command_count": 1,
+  "command_start_cycles": [
+    29112
+  ],
   "csr_modes": {
     "conv_kernal": 0,
     "cutbit": 1,
@@ -41,8 +46,12 @@
   },
   "operation": "int8_gemm",
   "replay": {
+    "clock_edge": "posedge",
+    "csr_writes": "csr_writes.csv",
     "firmware_build": "make all mod3 SAU_TEST_CASE=1",
+    "sampled_scope": "top_yinglong_tb.u_dut.u_dut_kui.SAU_1_inst",
     "simulation": "env SIM_TB_NAME=top_yinglong_tb FSDB_NAME=<name> <simv> -l sim.log -ucli +assert_enable +fsdb+autofsdb -i sim/vcs/script/case_yinglong/simv_verdi.tcl +firmware=<firmware-build-dir>",
+    "trace_cycle_zero_fsdb_time_ps": 1250,
     "waveform_reader": "/home/xch/work/npi_fsdb_probe/src/npi_fsdb_probe"
   },
   "result": {
