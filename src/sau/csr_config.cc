@@ -93,13 +93,11 @@ rejectOutOfStageOperatorSwitches(const SauCsrConfig &config)
 }
 
 /**
- * The strict per-tick timing chain is validated for the PLAN3_STEP0
- * T-ATBD/R-A path with normal, transpose, and retain flow modes. F-normal
- * and F-trans share the scheduler/execute control chain; F-trans changes
- * only the result-side serializer ordering. F-retain completes without
- * output and carries PE state into the next command. register_mode 00/01/11
- * share the RTL non-depthwise guard, so they select the same structural path
- * and are not a maturity boundary.
+ * The strict per-tick timing chain is validated for T-ATBD/R-A with normal,
+ * transpose, and retain flow, plus the frozen single-command T-ABTD/R-A
+ * normal-flow boundary. Other ABTD flow modes remain unimplemented.
+ * register_mode 00/01/11 share the RTL non-depthwise guard, so they select
+ * the same structural path and are not a maturity boundary.
  */
 bool
 onTimingValidatedPath(const SauCsrConfig &config, std::string &reason)
@@ -110,20 +108,19 @@ onTimingValidatedPath(const SauCsrConfig &config, std::string &reason)
         }
         reason += part;
     };
-    if (config.transMode != 0x1) {
+    const bool validatedTransposeFlow =
+        (config.transMode == 0x1 && config.saFlowMode <= 0x2) ||
+        (config.transMode == 0x2 && config.saFlowMode == 0x0);
+    if (!validatedTransposeFlow) {
         add("trans_mode=" + std::to_string(config.transMode) +
-            " selects a transpose path without a validated per-tick "
-            "timing chain");
+            ", sa_flow_mode=" + std::to_string(config.saFlowMode) +
+            " selects a transpose/flow path without a validated per-tick "
+            "timing and payload chain");
     }
     if (config.reuseMode != 0x1) {
         add("reuse_mode=" + std::to_string(config.reuseMode) +
             " selects a reuse path without a validated per-tick "
             "timing chain");
-    }
-    if (config.saFlowMode == 0x3) {
-        add("sa_flow_mode=" + std::to_string(config.saFlowMode) +
-            " selects transpose-retain without a validated per-tick "
-            "timing and payload chain");
     }
     return reason.empty();
 }

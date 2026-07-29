@@ -19,7 +19,7 @@ commandDriverConfig(uint32_t flowTimes = 8,
         {32, flowTimes, instructionTimes, 1, 1, saFlowMode, false},
         {residentXBurst, 32, 1},
         {1, 32, flowTimes, instructionTimes},
-        {1, 32, flowTimes, instructionTimes, 32, 3, 2, 2, 2},
+        {1, 32, flowTimes, instructionTimes, 32, 3, 2, 2, 2, 1, 1},
         {32, flowTimes, 0, false},
         {32, 4, 4},
         {1, 32, 1, instructionTimes, instructionTimes, 32, 1},
@@ -1054,6 +1054,63 @@ TEST(RtlCommandDriverSkeleton, RunsBaselineCsrShapeToCommandDone)
     EXPECT_EQ(driver.memoryWriteWindow().span(), 256U);
     EXPECT_TRUE(driver.commandDoneObserved());
     EXPECT_EQ(driver.commandDoneEdge(), 2772U);
+}
+
+TEST(RtlCommandDriverSkeleton, MatchesFrozenAbtdSingleCommandTiming)
+{
+    auto config = commandDriverConfig(1, 1);
+    config.scheduler.transMode = 0x2;
+    config.inputFeeder.transMode = 0x2;
+    RtlCommandDriverSkeleton driver(config);
+
+    uint32_t firstResultCycle = 0;
+    uint32_t resultLastCycle = 0;
+    uint32_t firstWriteCycle = 0;
+    uint32_t writeLastCycle = 0;
+    uint32_t commandDoneCycle = 0;
+    for (uint32_t cycle = 0; cycle < 500; ++cycle) {
+        driver.tick(cycle == 0);
+        if (driver.resultValid() && firstResultCycle == 0) {
+            firstResultCycle = cycle;
+        }
+        if (driver.resultLast()) {
+            resultLastCycle = cycle;
+        }
+        if (driver.memoryWriteRequestValid() && firstWriteCycle == 0) {
+            firstWriteCycle = cycle;
+        }
+        if (driver.memoryWriteRequestLast()) {
+            writeLastCycle = cycle;
+        }
+        if (driver.commandDone()) {
+            commandDoneCycle = cycle;
+            break;
+        }
+    }
+
+    // Frozen ABTD boundary cycles relative to the accepted final 0x20c CSR
+    // write, where the internal start is sampled high on the same posedge.
+    EXPECT_EQ(firstResultCycle, 157U);
+    EXPECT_EQ(resultLastCycle, 188U);
+    EXPECT_EQ(firstWriteCycle, 196U);
+    EXPECT_EQ(writeLastCycle, 227U);
+    EXPECT_EQ(commandDoneCycle, 231U);
+
+    EXPECT_EQ(driver.residentReadTokens(), 32U);
+    EXPECT_EQ(driver.streamReadTokens(), 32U);
+    // Raw ABTD replays A across load+execute. B exposes one leaked resident
+    // tail plus the 32 streamed rows; only 32 rows are accepted by the array.
+    EXPECT_EQ(driver.operandATokens(), 64U);
+    EXPECT_EQ(driver.operandBTokens(), 33U);
+    EXPECT_EQ(driver.acceptedSaTokens(), 32U);
+    EXPECT_EQ(driver.resultTokens(), 32U);
+    EXPECT_EQ(driver.physicalWriteTokens(), 32U);
+    EXPECT_EQ(driver.operandAWindow().firstEdge, 45U);
+    EXPECT_EQ(driver.operandAWindow().lastEdge, 108U);
+    EXPECT_EQ(driver.operandBWindow().firstEdge, 42U);
+    EXPECT_EQ(driver.operandBWindow().lastEdge, 108U);
+    EXPECT_TRUE(driver.commandDoneObserved());
+    EXPECT_EQ(driver.commandDoneEdge(), 231U);
 }
 
 TEST(RtlCommandDriverSkeleton, RejectsInconsistentComponentConfiguration)

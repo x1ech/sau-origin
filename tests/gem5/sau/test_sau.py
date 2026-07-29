@@ -451,6 +451,35 @@ for rtl_profile in (
     verify_sau_rtl_timing_memory(rtl_profile)
 
 
+abtd_functional_profile = joinpath(
+    config.base_dir,
+    "tests",
+    "gem5",
+    "sau",
+    "functional_ref",
+    "int8_gemm_32x32x32_abtd_boundary",
+)
+gem5_verify_config(
+    name="sau-functional-int8_gemm_32x32x32_abtd_unintended",
+    fixtures=(),
+    verifiers=(
+        verifier.MatchRegex(exit_regex),
+        VerifySauFunctionalMemory(abtd_functional_profile),
+    ),
+    config=joinpath(
+        config.base_dir,
+        "tests",
+        "gem5",
+        "sau",
+        "configs",
+        "sau_abtd_functional.py",
+    ),
+    config_args=(),
+    valid_isas=(constants.riscv_tag,),
+    length=constants.quick_tag,
+)
+
+
 flow1_functional_profile = joinpath(
     config.base_dir,
     "tests",

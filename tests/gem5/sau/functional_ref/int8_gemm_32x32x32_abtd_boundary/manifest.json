@@ -1,4 +1,9 @@
 {
+  "beat_bytes": 32,
+  "command_count": 1,
+  "command_start_cycles": [
+    29016
+  ],
   "csr_modes": {
     "conv_kernal": 0,
     "cutbit": 8,
@@ -22,7 +27,7 @@
     "clock_period_ns": 1.667
   },
   "fixture_name": "int8_gemm_32x32x32_abtd_boundary",
-  "fixture_role": "transposer_boundary_not_end_to_end_oracle",
+  "fixture_role": "legal_unintended_end_to_end_oracle",
   "matrix": {
     "k": 32,
     "m": 32,
@@ -41,12 +46,30 @@
   },
   "operation": "int8_gemm",
   "replay": {
+    "clock_edge": "posedge",
+    "csr_trace_provenance": {
+      "address_order": [
+        "0x200",
+        "0x202",
+        "0x204",
+        "0x206",
+        "0x208",
+        "0x20a",
+        "0x20c"
+      ],
+      "command": "python3 util/sau/extract_boundary_csr.py --boundary tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary/boundary.csv --csr-writes tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary/csr_writes.csv --csr-snapshot tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary/csr_snapshot.json --infer-fixed-write-order",
+      "method": "fixed firmware write order inferred from seven sampled nonzero csr_wdata setup pulses; accepted posedges are one cycle later, cross-checked against the complete paired ATBD trace; csr_addr and csr_we were not retained in boundary.csv",
+      "observed_internal_start_cycle": 29016
+    },
     "firmware_build": "make all mod3 SAU_TEST_CASE=1",
+    "sampled_scope": "top_yinglong_tb.u_dut.u_dut_kui.SAU_1_inst",
     "simulation": "env SIM_TB_NAME=top_yinglong_tb FSDB_NAME=<name> <simv> -l sim.log -ucli +assert_enable +fsdb+autofsdb -i sim/vcs/script/case_yinglong/simv_verdi.tcl +firmware=<firmware-build-dir>",
+    "trace_cycle_zero_fsdb_time_ps": 1250,
     "waveform_reader": "/home/xch/work/npi_fsdb_probe/src/npi_fsdb_probe"
   },
   "result": {
     "element_count": 1024,
+    "rtl_output_is_oracle": true,
     "software_reference_is_oracle": false,
     "software_reference_mismatches": 1005
   },
@@ -57,6 +80,18 @@
     "npu_worktree_diff_sha256": "77c85c48680ab8c39c36251cbc6eb07aee3324ca0395b424c46da1aef4934b4a",
     "simulator": "VCS T-2022.06_Full64",
     "simv_sha256": "c8048098eb5237ffe5e39bb54d917fd4fe9ef501757f30ef07433854e498df57"
+  },
+  "timing_contract": {
+    "command_extent_cycles": [
+      231
+    ],
+    "inter_command_gap_cycles": [],
+    "result_beats_per_command": [
+      32
+    ],
+    "write_beats_per_command": [
+      32
+    ]
   },
   "schema_version": 1
 }

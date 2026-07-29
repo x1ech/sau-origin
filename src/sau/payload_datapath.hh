@@ -75,8 +75,8 @@ struct PayloadBoundaryEvents
  * - a mem_ctrl-visible resident beat enters the input register file
  *   through the write path at the sequential write pointer;
  * - a mem_ctrl-visible streamed beat queues for the feeder operand-B
- *   chain (payloads pair with driver pulses in stream order; the
- *   four-register chain delay stays owned by the driver);
+ *   chain; ABTD's first B-valid exposes the resident tail before the
+ *   streamed sequence (register delays stay owned by the driver);
  * - a register-file read-valid edge advances the read-pointer program
  *   (replaying it when exhausted, the reuse readout) and queues the
  *   readout payload for the operand-A path;
@@ -107,7 +107,13 @@ class StrictPayloadDatapath
     void onRegisterFileReadValid(uint64_t edge);
     void onOperandAValid(uint64_t edge);
     void onOperandBValid(uint64_t edge);
-    void onSaEnable(uint64_t edge);
+    /**
+     * Advance sa_feeder's registered payload mux and trans_load_valid edge.
+     * ABTD uses B-valid as the bank-load trigger, while outputInputSwitch
+     * selects whether the registered row payload comes from A or B.
+     */
+    void advanceFeederMux(uint64_t edge, uint8_t outputInputSwitch);
+    void onSaEnable(uint64_t edge, uint8_t outputInputSwitch = 0x1);
     /** Consume one driver-visible result_final_valid payload edge. */
     void onResultValid(uint64_t edge);
     /** Advance the output-RF unload state from the driver core state. */
@@ -178,6 +184,7 @@ class StrictPayloadDatapath
     ResultSerializer resultSerializer;
     OutputRegisterFile outputRegister;
     bool outputPhaseStarted = false;
+    bool outputPhaseStartPending = false;
     bool outputRequested = false;
     uint32_t arrayInputsInTile = 0;
     uint32_t arrayRowsStreamed = 0;
@@ -186,6 +193,8 @@ class StrictPayloadDatapath
     uint8_t writePointer = 0;
     std::deque<MemoryBeat256> readoutQueue;
     std::deque<MemoryBeat256> streamQueue;
+    std::optional<MemoryBeat256> abtdResidentTail;
+    bool abtdResidentTailConsumed = false;
     std::deque<OutputRegisterUnload> writePayloads;
 
     uint64_t residentCount = 0;
@@ -206,6 +215,7 @@ class StrictPayloadDatapath
     std::optional<uint64_t> firstRowAt;
     std::optional<uint64_t> firstColumnAt;
     MemoryBeat256 lastColumnData;
+    std::optional<MemoryBeat256> pendingMuxTransposerRow;
     std::optional<MemoryBeat256> arrayWeightPipeline;
     std::optional<SystolicArrayInput> pendingArrayInput;
     PayloadBoundaryEvents events;

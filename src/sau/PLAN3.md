@@ -2,7 +2,7 @@
 
 ## 状态
 
-**Steps 0–5 已在冻结的 Reuse-A 支持域内完成；Step 6 increment 4 已开始，
+**Steps 0–5 已在冻结的 Reuse-A 支持域内完成；Step 6 increment 13 已完成，
 Flow3 继续 explicit fail-fast。Step 5 increment 4 已将 native unload
 payload 接入 strict memory write submission；cutbit-8 与 cutbit-1 strict
 final-memory checkpoint 均 1024/1024 bytes 匹配。Increment 5 已启用 Flow1
@@ -17,7 +17,14 @@ K768 `[flow2, flow2, flow0]` 进一步验证连续两次 retain：三条 command
 result/write beats，最终 1024/1024 bytes 匹配。真实 payload 读写分别由
 `payloadReadBeats`/`payloadWriteBeats` 统计，并由 functional verifier 对照
 architecture trace；Step 6 chain fixture 加入后 quick 回归为 27 suites、
-75/75 checks。
+75/75 checks。ABTD strict runtime 已到达 RTL 的 32 个 result/write 边界并在
+cycle 231 完成；final memory 首轮有 915/1024 bytes 不同。边界定位到 gem5
+在 transposer 第 32 行写入的同拍提前读出，产生两列，而 RTL `ready_o/outCol`
+下一拍才可见且只读一列；ready-delay 修复后 boundary 与最终 1024/1024 bytes
+均匹配。完整 quick 首轮 67/75，8 个 PLAN2 strict trace 因 ABTD 的 SA-pair
+admission 被错误全局应用而失败；限定为 ABTD/R-A/Flow0 后全部恢复。ABTD 已
+注册为 permanent legal-but-unintended functional oracle，完整 quick 为
+28 suites、78/78 checks。
 `[flow2, flow1]` diagnostic 时序有效，但输出为
 32x32 tile 内顺时针旋转 90°而非纯转置；无留存的 64x160x64 case 复现相同
 tile-local RTL 行为。2026-07-28 用户确认 gem5 以当前 RTL 语义为对齐目标，
@@ -678,7 +685,45 @@ write→read 链式 fixture：`[flow2, flow2, flow0]` 的最终 command 写 32 b
 command 的 completion poll，但 crossbar 在 SAU active 期间阻塞 CPU 后续 CSR，
 三次 start 仍全部在 IDLE 且分别晚于前一 done 110/105 cycles。该证据只冻结
 Yinglong 软件可见的串行 admission；不使用非权威 UVM，也不推断强制直连
-`SA_CORE` 的 start 行为。
+`SA_CORE` 的 start 行为。Increment 5 已把现有 ABTD Step-0 boundary package
+从事件计数 smoke test 提升为统一 `compare_boundary.py` 的 payload/cycle
+精确回归，覆盖 SRAM read、A/B feeder 和 transposer input/output 边界，重编译后
+focused test 已通过。ATBD/ABTD package 另由可执行 pair validator 冻结为相同
+initial memory、geometry、elaboration、output range 和其他 CSR，仅
+`trans_mode=1→2`，且 RTL final memory 必须不同；ABTD gem5 端到端输出仍待实现，
+因此下方成对测试验收项暂不勾选。一次 direct-A/transposed-B focused 假设虽然
+测试通过，但与冻结 ABTD boundary 揭示的 Reuse-A raw 控制不一致，已在未提交前
+撤回：当前 RTL 由 B-valid 触发 bank load，却经 `input_switch`/feeder mux 选择
+resident A payload。下一增量必须先把这条已证明的 mux/control 链纳入通用
+strict payload runtime；strict command-driver 继续保持 ATBD-only guard。
+Increment 6 已实现该通用链：driver 的 delayed `outputInputSwitch()` 每拍送入
+payload resource，ABTD 由 B-valid 锁存下一拍 transposer load，row payload
+则按 switch bit 1 从当前 A/B feeder output 选择；focused test 覆盖初始 `11`
+选择 B 和 Reuse-A `01` 选择 A，完整 payload focused set 通过 5/5。
+Increment 7 按冻结 `sa_feeder.sv` 的 raw `input_switch=01` array arbiter
+继续连接：混合 transposer column 进入 activation-left，registered B 进入
+weight-above；扩展测试同时检查该异常 payload 而非理想 ABTD，完整 payload
+focused set 通过 5/5。Increment 8 为 ABTD package 增加可重放 CSR：原 boundary
+未保留 `csr_we/csr_addr`，因此 manifest 明确标注由七个非零 `csr_wdata` 脉冲与
+固件固定 `0x200..0x20c` 写序推导，并用采样的 trans/reuse/cutbit 和紧邻 start
+交叉检查；不把推导地址伪称为原始采样，也尚未放开 strict ABTD admission。
+Increment 9 先加入独立 command-driver 周期守门。首轮构建证明原预期把
+`csr_wdata` setup 变化拍误作 accepted CSR 拍；完整 ATBD `csr_we` 证据确认
+accepted posedge 晚一拍。修正零点后 ABTD result 为 157–188、write 为
+196–227、done 为 231，定向与完整 schedule 测试通过 1/1、38/38。该测试同时
+暴露 timing skeleton 的 B-valid 仍错误计为 64；冻结 boundary 实际为 resident
+tail 1 拍加 streamed 32 拍。Increment 10 补 `feeder.sv` 的
+`NO_INPUT→ONE_INPUT→TWO_INPUT` gate，完整 schedule 通过 38/38。Increment 11
+把早期 B payload 绑定 resident tail，后续 32 拍顺序消费 streamed B，并按冻结
+ready gate 丢弃 single-tile 最后一个 pending overflow row；payload 通过 5/5。
+Increment 12 依据冻结 `sa_feeder.sv` 明确 pre-ready 行为：`sa_en_i=EN_i_d`
+不等待 transposer ready，而未选中 T0/T1 时 `trans_sa_data=0`，因此前 31 个
+array input 使用零 activation，最后一拍使用首个 real column；等待重编译。
+Verdi license 当前不可用，无法为新增 array 信号补采 FSDB；此项保持未验证风险。
+Increment 12 payload 通过 5/5。Increment 13 仅把 `ABTD/Reuse-A/Flow0` 提升为
+resource-timed，并把 architecture admission 从额外的 A/B-valid 脉冲改为 32 个
+`saEnable()`；其他 ABTD flow/reuse 继续 fail-fast。CSR focused 通过 10/10，
+等待 strict runtime 增量链接。
 
 - [x] 默认 sequential workload 必须保证下一 start 在前一 command 完成且写回可见
   后出现；静态可判定时在仿真开始前拒绝，受 timing-memory 动态 stall 影响而无法
@@ -747,8 +792,8 @@ raw CSR writes
  -> final memory bytes
 ```
 
-- [x] 原 timing quick suite 全部继续通过；当前连同功能回归为 27 suites、
-  75/75 checks。
+- [x] 原 timing quick suite 全部继续通过；当前连同 ABTD 功能回归为
+  28 suites、78/78 checks。
 - [x] 新增 focused functional tests 和 Flow0/Flow1/Flow2 workload
   end-to-end tests。
 - [x] 默认不输出逐拍 payload boundary trace；strict architecture/state/ledger

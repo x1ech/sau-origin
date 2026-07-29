@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -14,11 +15,26 @@ namespace
 
 constexpr char PackageDirectory[] =
     "tests/gem5/sau/functional_ref/int8_gemm_32x32x32_abtd_boundary";
+constexpr char BoundaryComparator[] = "util/sau/compare_boundary.py";
 
 std::string
 temporaryPath(const char *name)
 {
     return std::string(testing::TempDir()) + name;
+}
+
+std::string
+shellQuote(const std::string &value)
+{
+    std::string quoted = "'";
+    for (const char character : value) {
+        if (character == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += character;
+        }
+    }
+    return quoted + "'";
 }
 
 TEST(BoundaryTraceWriter, WritesPerSignalCyclesAndHexValues)
@@ -126,6 +142,29 @@ TEST(BoundaryTrace, GeneratesTheAbtdModelTrace)
     EXPECT_EQ(lines, 1u + 65u + 64u + 33u + 32u + 33u);
     EXPECT_EQ(rdata, 65u);
     EXPECT_EQ(dataB, 33u);
+
+    // Promote the Step-0 ABTD package from a payload source/count smoke
+    // test to a permanent RTL boundary regression.  The qualifier pairs
+    // compare only payloads accepted by the corresponding RTL valid, while
+    // the model already emits accepted transfers.  The RTL capture stops
+    // after the first transposer output column, so its matching prefix is
+    // authoritative and the model may continue through the finite bank.
+    const std::string command =
+        "python3 " + shellQuote(BoundaryComparator) +
+        " --mode=cycles"
+        " --strip-prefix=SAU_1_inst."
+        " --signals=sau_sram_rdata,data_A,data_B,"
+        "u_trans2sa_top.trans0_inRow,"
+        "u_trans2sa_top.trans0_outCol"
+        " --qualify=data_A=data_A_valid,data_B=data_B_valid,"
+        "u_trans2sa_top.trans0_inRow="
+        "u_trans2sa_top.trans0_inRow_en"
+        " --allow-actual-extra " +
+        shellQuote(std::string(PackageDirectory) + "/boundary.csv") + " " +
+        shellQuote(path);
+    EXPECT_EQ(std::system(command.c_str()), 0)
+        << "ABTD model boundary differs from the frozen RTL package";
+
     std::remove(path.c_str());
 }
 

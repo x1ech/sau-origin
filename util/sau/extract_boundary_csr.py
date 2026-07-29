@@ -6,10 +6,14 @@ import csv
 import json
 from pathlib import Path
 
-from build_rtl_golden_package import CsrState
+try:
+    from .build_rtl_golden_package import CsrState
+except ImportError:
+    from build_rtl_golden_package import CsrState
 
 
 SCOPE_SUFFIX = "SAU_1_inst."
+FIXED_CSR_WRITE_ADDRESSES = tuple(range(0x200, 0x20E, 2))
 
 
 def signal_name(path):
@@ -53,7 +57,10 @@ def read_events(path):
     return events
 
 
-def extract(events, zero_ps, period_ps):
+def extract(events, zero_ps, period_ps, infer_fixed_write_order=False):
+    if infer_fixed_write_order:
+        return infer_writes_from_data_pulses(events, zero_ps, period_ps)
+
     values = {}
     writes = []
     snapshots = []
@@ -98,6 +105,68 @@ def extract(events, zero_ps, period_ps):
     return writes, snapshots
 
 
+def infer_writes_from_data_pulses(events, zero_ps, period_ps):
+    """Recover a stripped seven-write trace without claiming sampled addr/we."""
+    data_pulses = []
+    start_cycles = []
+    observed_modes = {}
+
+    for time_ps in sorted(events):
+        for name, value, _row_number in events[time_ps]:
+            if name == "csr_wdata":
+                data = binary_value(value)
+                if data:
+                    data_pulses.append((cycle_at(
+                        time_ps, zero_ps, period_ps), data))
+            elif name == "start" and binary_value(value) == 1:
+                start_cycles.append(cycle_at(
+                    time_ps, zero_ps, period_ps))
+            elif name in {"trans_mode", "reuse_mode", "cutbit"}:
+                observed_modes[name] = binary_value(value)
+
+    if len(start_cycles) != 1:
+        raise ValueError(
+            "fixed-order inference requires exactly one observed start")
+    if len(data_pulses) != len(FIXED_CSR_WRITE_ADDRESSES):
+        raise ValueError(
+            "fixed-order inference requires exactly seven nonzero "
+            "csr_wdata pulses")
+    if start_cycles[0] != data_pulses[-1][0] + 1:
+        raise ValueError(
+            "fixed-order inference requires start one cycle after the "
+            "final csr_wdata pulse")
+
+    writes = []
+    state = CsrState()
+    for (pulse_cycle, data), address in zip(
+            data_pulses, FIXED_CSR_WRITE_ADDRESSES):
+        # Value-change traces expose the CSR bus setup at the preceding
+        # interval boundary. The accepted posedge is the following cycle,
+        # as cross-checked against the complete ATBD csr_we trace.
+        accepted_cycle = pulse_cycle + 1
+        writes.append({
+            "cycle": accepted_cycle,
+            "csr_addr": "0x{:03x}".format(address),
+            "csr_operation": 1,
+            "csr_wdata": "0x{:016x}".format(data),
+            "accepted": 1,
+        })
+        state.apply(address, data)
+
+    snapshot = state.snapshot(1, start_cycles[0], len(writes))
+    for name in ("trans_mode", "reuse_mode", "cutbit"):
+        if name not in observed_modes:
+            raise ValueError(
+                "fixed-order inference requires observed {}".format(name))
+        expected = int(snapshot[name], 0) if isinstance(
+            snapshot[name], str) else snapshot[name]
+        if observed_modes[name] != expected:
+            raise ValueError(
+                "inferred {}={} differs from observed {}".format(
+                    name, expected, observed_modes[name]))
+    return writes, [snapshot]
+
+
 def write_csv(path, rows):
     with path.open("w", newline="") as output:
         writer = csv.DictWriter(
@@ -118,12 +187,17 @@ def main():
     parser.add_argument("--csr-snapshot", type=Path, required=True)
     parser.add_argument("--trace-cycle-zero-ps", type=int, default=1250)
     parser.add_argument("--clock-period-ps", type=int, default=1667)
+    parser.add_argument(
+        "--infer-fixed-write-order", action="store_true",
+        help="infer 0x200..0x20c from seven csr_wdata pulses in a stripped "
+             "single-command Step-0 trace")
     args = parser.parse_args()
 
     writes, snapshots = extract(
         read_events(args.boundary),
         args.trace_cycle_zero_ps,
         args.clock_period_ps,
+        args.infer_fixed_write_order,
     )
     write_csv(args.csr_writes, writes)
     args.csr_snapshot.write_text(

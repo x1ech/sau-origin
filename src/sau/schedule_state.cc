@@ -789,14 +789,32 @@ RtlInputFeederSkeleton::tick(const RtlInputFeederInputs &inputs)
     // resident-load tail that is still visible after the scheduler has
     // entered TRANSPOSE_LOAD, while admitting the streamed operand once the
     // delayed input switch selects 01.
+    const bool abtdReuseA =
+        config.transMode == 0x2 && config.reuseMode == 0x1;
+    OutputState nextOutputState = outputState;
+    if (abtdReuseA) {
+        if (outputState == OutputState::NoInput && inputs.memoryDataLast) {
+            nextOutputState = OutputState::OneInput;
+        } else if (
+            outputState == OutputState::OneInput &&
+            delayedCoreStateReg == RtlCoreState::TransposeLoad &&
+            delayedCoreState == RtlCoreState::ReuseLoad) {
+            nextOutputState = OutputState::TwoInput;
+        }
+    }
     dataBValidReg =
-        !inputSwitchCaseReg && memoryValidPipeline.back();
+        !inputSwitchCaseReg &&
+        (!abtdReuseA || !noInputStateReg) &&
+        memoryValidPipeline.back();
     for (uint32_t index = memoryValidPipeline.size() - 1;
          index > 0; --index) {
         memoryValidPipeline[index] = memoryValidPipeline[index - 1];
     }
     memoryValidPipeline[0] = memoryDataValidReg;
     memoryDataValidReg = inputs.memoryDataValid;
+    noInputStateReg = noInputDelayReg;
+    noInputDelayReg = outputState == OutputState::NoInput;
+    outputState = nextOutputState;
 
     outputInputSwitchReg = outputInputSwitchPipeline.back();
     for (uint32_t index = outputInputSwitchPipeline.size() - 1;
@@ -1133,6 +1151,7 @@ RtlCommandDriverSkeleton::tick(bool startWrite)
     inputFeederInputs.coreState = scheduler.coreState();
     inputFeederInputs.inputSwitch = scheduler.inputSwitch();
     inputFeederInputs.memoryDataValid = readPath.memoryDataValid();
+    inputFeederInputs.memoryDataLast = readPath.memoryDataLast();
     inputFeederInputs.lastFlowTime = scheduler.lastFlowTime();
 
     RtlSaEnableInputs saEnableInputs;

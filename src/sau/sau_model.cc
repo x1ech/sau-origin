@@ -80,6 +80,11 @@ buildRtlCommandDriverConfig(const SauCommand &command,
                             const TimingPolicy &policy,
                             const RtlTimingParameters &rtl)
 {
+    const bool validatedTransposeFlow =
+        (policy.transMode == 0x1 &&
+         command.control.saFlowMode <= 0x2) ||
+        (policy.transMode == 0x2 &&
+         command.control.saFlowMode == 0x0);
     const auto &address = command.operandBAddress;
     const uint64_t streamedBeats =
         static_cast<uint64_t>(address.xCount) * address.yCount *
@@ -96,7 +101,7 @@ buildRtlCommandDriverConfig(const SauCommand &command,
         policy.outputBeats !=
             static_cast<uint64_t>(rtl.saSize) *
                 policy.scheduleInstructions ||
-        policy.transMode != 0x1 || policy.reuseMode != 0x1) {
+        !validatedTransposeFlow || policy.reuseMode != 0x1) {
         throw std::invalid_argument(
             "unsupported strict RTL command-driver shape");
     }
@@ -112,7 +117,8 @@ buildRtlCommandDriverConfig(const SauCommand &command,
          address.instructionCount},
         {address.xCount, address.yCount, address.flowCount,
          address.instructionCount, rtl.saSize, rtl.sramDelay,
-         rtl.memAddressDelay, rtl.memCtrlDelay, rtl.registerDelay},
+         rtl.memAddressDelay, rtl.memCtrlDelay, rtl.registerDelay,
+         policy.transMode, policy.reuseMode},
         {rtl.saSize, command.flowLoops, 0, false},
         {rtl.saSize, 4, 4},
         {1, rtl.saSize, 1, policy.scheduleInstructions,
@@ -521,8 +527,18 @@ SauModel::submitCommand(const SauCommand &command)
         // releaseA/releaseB and ResultScheduler::produce() consume driver
         // pulses directly. Keep only their structural extents in strict mode;
         // the neutral timing fields must not become a second scheduler.
+        // ABTD completion counts architectural SA-enable pairs rather than
+        // its divergent raw feeder-valid pulses. Existing ATBD strict traces
+        // keep their independently visible A/B admission extents.
+        const bool abtdSaPairAdmission =
+            command.control.transMode == 0x2 &&
+            command.control.reuseMode == 0x1 &&
+            command.control.saFlowMode == 0x0;
         arrayInputScheduler.emplace(
-            activeArrayInputABeats(), activeArrayInputBBeats(),
+            abtdSaPairAdmission ? command.workItems :
+                activeArrayInputABeats(),
+            abtdSaPairAdmission ? command.workItems :
+                activeArrayInputBBeats(),
             0, 1, 1, Cycles(0), Cycles(0), Cycles(0), Cycles(0));
         resultScheduler.emplace(
             expectedOutputBeats(), outputBeatsPerInstruction(),
@@ -741,8 +757,19 @@ SauModel::advanceArray()
         return;
     }
     if (rtlCommandDriver) {
-        const bool bWanted = rtlCommandDriver->dataBValid();
-        const bool aWanted = rtlCommandDriver->dataAValid();
+        // ABTD exposes extra feeder A/B-valid pulses during transpose
+        // loading, so its architectural work enters only on sa_en_i.
+        // Preserve the established independent A/B trace contract for ATBD.
+        const bool abtdSaPairAdmission =
+            activeCommand->control.transMode == 0x2 &&
+            activeCommand->control.reuseMode == 0x1 &&
+            activeCommand->control.saFlowMode == 0x0;
+        const bool aWanted = abtdSaPairAdmission ?
+            rtlCommandDriver->saEnable() :
+            rtlCommandDriver->dataAValid();
+        const bool bWanted = abtdSaPairAdmission ?
+            rtlCommandDriver->saEnable() :
+            rtlCommandDriver->dataBValid();
         const bool bProgressed = bWanted ? advanceArrayB(true) : false;
         const bool aProgressed =
             aWanted ? advanceArrayA(bProgressed, true) : false;
@@ -1757,8 +1784,11 @@ SauModel::advanceRtlCommandDriver()
     if (rtlCommandDriver->dataBValid()) {
         payloadDatapath->onOperandBValid(rtlDriverEdge);
     }
+    payloadDatapath->advanceFeederMux(rtlDriverEdge,
+                                      rtlCommandDriver->outputInputSwitch());
     if (rtlCommandDriver->saEnable()) {
-        payloadDatapath->onSaEnable(rtlDriverEdge);
+        payloadDatapath->onSaEnable(rtlDriverEdge,
+                                    rtlCommandDriver->outputInputSwitch());
     }
     if (rtlCommandDriver->arrayRowScoreValid() &&
         !payloadDatapath->arrayOutputRequested()) {

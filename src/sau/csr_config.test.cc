@@ -347,7 +347,11 @@ TEST(SauCsrConfig, DecodesEveryLegalModeCombinationLosslessly)
                 EXPECT_EQ(control.saFlow(),
                           static_cast<SauSaFlowMode>(flow));
 
-                if (trans == 1 && reuse == 1 && flow <= 2) {
+                const bool resourceTimed =
+                    reuse == 1 &&
+                    ((trans == 1 && flow <= 2) ||
+                     (trans == 2 && flow == 0));
+                if (resourceTimed) {
                     EXPECT_EQ(decoded.maturity,
                               ValidationMaturity::ResourceTimed);
                     EXPECT_TRUE(decoded.maturityReason.empty());

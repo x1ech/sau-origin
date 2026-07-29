@@ -31,6 +31,7 @@ atbdSmallControl()
     control.input.flowBurst = 1;
     control.input.instructionStep = 1;
     control.input.instructionBurst = 1;
+    control.vertical.instructionCycle = 1;
     control.outputAddress = 0x29120c00;
     control.output.xStep = 0;
     control.output.xBurst = 1;
@@ -45,6 +46,14 @@ atbdSmallControl()
     control.output.registerYCycle = 32;
     control.output.registerCStep = 1;
     control.output.registerCCycle = 1;
+    return control;
+}
+
+SauControlFields
+abtdSmallControl()
+{
+    auto control = atbdSmallControl();
+    control.transMode = 2;
     return control;
 }
 
@@ -299,6 +308,92 @@ TEST(StrictPayloadDatapath, KeepsOperandBOutsideTheAtbdBanks)
     EXPECT_EQ(datapath.operandBTokens(), 4u);
     EXPECT_EQ(datapath.transposerInputRows(), 0u);
     EXPECT_EQ(datapath.payloadUnderflows(), 0u);
+}
+
+TEST(StrictPayloadDatapath,
+     UsesBValidAsLoadTriggerAndInputSwitchAsPayloadMuxForAbtd)
+{
+    StrictPayloadDatapath datapath(deriveResourceConfigs(abtdSmallControl()));
+
+    std::array<MemoryBeat256, 32> residentRows;
+    std::array<MemoryBeat256, 32> streamedRows;
+    for (unsigned row = 0; row < 32; ++row) {
+        residentRows[row] = patternBeat(row);
+        streamedRows[row] = patternBeat(row + 64);
+        datapath.onMemoryDataVisible(row, residentRows[row], false);
+        datapath.onMemoryDataVisible(row, streamedRows[row], true);
+    }
+
+    // Frozen ABTD exposes one resident-tail B pulse before A readout.
+    datapath.beginCycle();
+    datapath.onOperandBValid(0);
+    ASSERT_TRUE(datapath.boundaryEvents().operandB);
+    EXPECT_EQ(datapath.boundaryEvents().operandB->data, residentRows[31]);
+    datapath.advanceFeederMux(0, 0x3);
+    datapath.sampleCycle(0);
+
+    // First A readout pass has no streamed B-valid.
+    for (unsigned row = 0; row < 32; ++row) {
+        const uint64_t edge = row + 1;
+        datapath.beginCycle();
+        datapath.onRegisterFileReadValid(edge);
+        datapath.onOperandAValid(edge);
+        datapath.advanceFeederMux(edge, 0x3);
+        if (row == 0) {
+            ASSERT_TRUE(datapath.boundaryEvents().transposerInput);
+            EXPECT_EQ(datapath.boundaryEvents().transposerInput->data,
+                      residentRows[31]);
+        }
+        datapath.sampleCycle(edge);
+    }
+
+    // The second A replay coincides with all 32 streamed B pulses. Switch 01
+    // makes B-valid the load trigger but selects the current A payload. The
+    // first streamed trigger only schedules the registered load; SA-enable
+    // begins on the following edge.
+    for (unsigned row = 0; row < 32; ++row) {
+        const uint64_t edge = row + 33;
+        datapath.beginCycle();
+        datapath.onRegisterFileReadValid(edge);
+        datapath.onOperandAValid(edge);
+        datapath.onOperandBValid(edge);
+        ASSERT_TRUE(datapath.boundaryEvents().operandB);
+        EXPECT_EQ(datapath.boundaryEvents().operandB->data,
+                  streamedRows[row]);
+        datapath.advanceFeederMux(edge, 0x1);
+        if (row != 0) {
+            datapath.onSaEnable(edge, 0x1);
+            ASSERT_TRUE(datapath.boundaryEvents().arrayInput);
+            EXPECT_EQ(datapath.boundaryEvents().arrayInput->activations,
+                      OperandVector32x8{});
+            EXPECT_FALSE(datapath.boundaryEvents().transposerOutput);
+            EXPECT_FALSE(datapath.boundaryEvents().arrayInput->finish);
+        }
+        datapath.sampleCycle(edge);
+    }
+
+    // The final B trigger arrives after the single T0 tile is already full;
+    // frozen ready gating drops that pending overflow row. The registered
+    // ready/outCol state is now visible to the final SA-enable edge.
+    datapath.beginCycle();
+    datapath.advanceFeederMux(65, 0x1);
+    EXPECT_FALSE(datapath.boundaryEvents().transposerInput);
+    datapath.onSaEnable(65, 0x1);
+    ASSERT_TRUE(datapath.boundaryEvents().arrayInput);
+    ASSERT_TRUE(datapath.boundaryEvents().transposerOutput);
+    EXPECT_EQ(
+        datapath.boundaryEvents().arrayInput->activations,
+        operandFromBeat(datapath.boundaryEvents().transposerOutput->data));
+    EXPECT_TRUE(datapath.boundaryEvents().arrayInput->finish);
+
+    EXPECT_EQ(datapath.transposerInputRows(), 32u);
+    EXPECT_EQ(datapath.transposerInputStalls(), 1u);
+    EXPECT_EQ(datapath.payloadUnderflows(), 0u);
+    EXPECT_EQ(datapath.operandATokens(), 64u);
+    EXPECT_EQ(datapath.operandBTokens(), 33u);
+    EXPECT_EQ(datapath.transposerOutputColumns(), 1u);
+    EXPECT_EQ(datapath.transposerOutputStalls(), 0u);
+    EXPECT_TRUE(datapath.arbiterState().columnReady());
 }
 
 TEST(StrictPayloadDatapath, CountsPulsePayloadDivergence)

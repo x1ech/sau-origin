@@ -62,8 +62,9 @@ the next Flow0 command's Operand-A input, proving a real command-to-command
 write/read dependency and matching all 1024 final RTL bytes. The optional
 fixture `memory_dependencies` field is verifier-only metadata over the
 existing trace and final-memory comparator; it does not add another memory
-model or expected-result path. The quick regression passes 75/75 checks
-across 27 suites.
+model or expected-result path. ABTD is the permanent legal-but-unintended
+case: its RTL output, not mathematical GEMM, is authoritative. The quick
+regression passes 78/78 checks across 28 suites.
 Step 6 increments 1–2 preflight strict raw fixture starts with the same
 RTL command-driver skeleton used at runtime. A next start at or before the
 prior command-done/write-visible edge is rejected during construction, before
@@ -153,10 +154,11 @@ and `reuse_mode=01`. Five coverage shapes (32x32x32, 64x32x256, 64x256x32,
 rules. Three independently accepted hold-outs (96x256x256, 64x128x256, and
 64x256x128) then passed without fixture-specific timing adjustment.
 
-All eight packages are registered as RISC-V quick strict and timing-memory
-causal tests. Together with the Flow1 and Flow2 functional fixtures, permanent legacy
-direct-command regression, fixed/constrained runs, and DSE simulations, the
-full quick set contains 27 suites and currently passes 75/75 checks:
+All eight timing profiles are registered as RISC-V quick strict and
+timing-memory causal tests. Together with the ABTD, Flow1, and Flow2 functional
+fixtures, permanent legacy direct-command regression, fixed/constrained runs,
+and DSE simulations, the full quick set contains 28 suites and currently
+passes 78/78 checks:
 
 ```bash
 cd tests

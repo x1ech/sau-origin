@@ -1,11 +1,11 @@
 # SAU Cycle-Level Behavioral Model Status
 
 Status type: Current snapshot
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 - Active branch: `feature/sau-command-types`
 - Plan entry: [`PLAN.md`](PLAN.md)
-- Active plan: [`PLAN3.md`](PLAN3.md), Step 6 increment 4
+- Active plan: [`PLAN3.md`](PLAN3.md), Step 6 increment 13 complete
 - Historical status index: [`docs/status/INDEX.md`](docs/status/INDEX.md)
 
 ## Current Goal
@@ -16,11 +16,15 @@ Final memory and strict boundary timing must match RTL without direct GEMM.
 
 ## Current Stage
 
-- The original timing-model milestone and PLAN2 CSR/control/timing alignment
-  are complete. PLAN2 commit `458ad7e3cb` remains the timing regression
-  baseline.
-- PLAN3 Steps 0–5 are complete for the frozen Reuse-A domain
-  (`reuse_mode=01`); Step 6 increment 4 is active and Flow3 remains fail-fast.
+- PLAN2 is complete; Step 6 increment 13 is complete on frozen Reuse-A.
+- ABTD boundary passes; its pair differs from ATBD only by `trans_mode=1→2`
+  and has distinct RTL final memory.
+- The generic payload runtime consumes delayed `outputInputSwitch()`: ABTD
+  B-valid schedules next-edge bank load and switch bit 1 selects A/B payload.
+  Increment 7 routes switch-01 transposer output to activation and registered B
+  to weight; payload passes 5/5. Increment 8 adds reproducible ABTD CSR replay
+  with inferred fixed address order and sampled mode/start cross-checks.
+  Increment 12 payload passes 5/5; increment 13 narrowly opens ABTD Flow0.
 - Yinglong crossbar serializes CPU CSR access; every no-poll probe start stayed
   in IDLE. Forced internal starts and UVM are outside this acceptance claim.
 - A four-command chain proves strict memory persistence: command 4 reads the
@@ -80,19 +84,6 @@ Final memory and strict boundary timing must match RTL without direct GEMM.
   halves, saturation, signed16 overflow, same-address forwarding, pointer
   nesting, registered unload timing/address/payload/last, phase ownership,
   completion clear versus reset, and invalid zero dimensions.
-- The refreshed K512 RTL run accepts a flow-mode-2 command followed by a
-  flow-mode-0 command. The second start is 93 SAU cycles after the first done;
-  only the final command produces the 32-row output/write burst, and final
-  memory matches 1024/1024 bytes.
-- Flow1 executes two sequential M64/K160/N64 commands. Each command consumes
-  320 array inputs, emits and writes 64 results, and completes at edge 690.
-  Final memory matches the packaged RTL oracle for 4096/4096 bytes.
-- Flow2 retains the 32x32 PE accumulator state across command completion and
-  drains any still-live macro pipeline state before capture. The following
-  Flow0 command restores that state and performs the only final writeback.
-- The permanent Flow2 functional verifier checks final memory plus the
-  packaged command extents, inter-command gap, and per-command result/write
-  counts.
 
 ## Authoritative Sources and Baselines
 
@@ -113,7 +104,7 @@ Final memory and strict boundary timing must match RTL without direct GEMM.
 
 | Scope | Result | Status |
 | --- | --- | --- |
-| SAU quick regression | 75/75 checks across 27 suites with start-policy and chain coverage | Passed |
+| SAU quick regression | 78/78 checks across 28 suites, including permanent ABTD unintended-output coverage | Passed |
 | Step 4 focused targets | `boundary_trace` 4/4, `payload_datapath` 4/4, `schedule_state` 33/33 | Passed |
 | Step 4 strict runtime boundary | 32 input pairs and 32 result rows; payload/sequence/cycles equal frozen RTL | Passed |
 | Step 5 focused resources | address 5/5, A RF 7/7, CSR 10/10, output 11/11, payload 4/4, array 9/9, command driver 35/35 | Passed |
@@ -126,6 +117,15 @@ Final memory and strict boundary timing must match RTL without direct GEMM.
 | Step 5 performance baseline | Three-run medians 0.16–0.17 s and 66,328–70,140 KiB RSS; [report](docs/reports/plan3-step5-performance-baseline.md) | Passed |
 | Step 6 start admission | focused 37/37; Yinglong starts remain after done; [report](docs/reports/plan3-step6-yinglong-start-serialization.md) | Passed |
 | Step 6 memory chain | `[2,2,0,0]`; command 3 write → command 4 Operand-A read; 1024/1024 bytes | Passed |
+| Step 6 ABTD exact boundary regression | SRAM read, feeder A/B, transposer input/output payload and cycles | Passed |
+| Step 6 ATBD/ABTD pair contract | Same input/config except `trans_mode=1→2`; distinct RTL final memory | Passed |
+| Step 6 ABTD feeder/array routing | Registered mux and switch-01 array extension; payload 5/5 | Passed |
+| Step 6 ABTD CSR replay | 7 inferred writes, decoded snapshot, package SHA-256; Python 21/21 | Passed |
+| Step 6 ABTD command timing | Result 157–188, write 196–227, done 231; schedule 38/38 | Passed |
+| Step 6 ABTD feeder valid | A=64, B=1 resident tail + 32 streamed, SA=32; schedule 38/38 | Passed |
+| Step 6 ABTD feeder payload | Resident tail, 32 streamed B, 32 transposer rows; payload 5/5 | Passed |
+| Step 6 ABTD array inputs | 31 zero activations, then first real column; payload 5/5 | Passed |
+| Step 6 ABTD strict runtime | Boundary exact; one transposer column; done=231; final memory 1024/1024, SHA-256 `2c2dd1…075` | Passed |
 
 ## Blockers and Risks
 
@@ -135,16 +135,14 @@ Final memory and strict boundary timing must match RTL without direct GEMM.
 - Reuse modes other than Reuse-A are intentionally deferred; do not expand
   acceptance scope while the source RTL is evolving.
 - Raw Flow3/transpose-retain remains decoded but functionally unconfirmed.
+- Verdi license is unavailable; new ABTD array FSDB signals cannot be exported.
 
 ## Next Actions
 
-1. Expand integrated transpose coverage within the supported Reuse-A scope.
-2. Add the paired legal-but-unintended transpose-mode RTL comparison.
-3. Verify remaining reset/clear/retain state boundaries.
+1. Expand integrated transpose coverage beyond the single ABTD fixture.
+2. Verify remaining reset/clear/retain state boundaries.
+3. Keep Reuse-B/AB/none deferred until the evolving RTL is frozen.
 
 ## Historical Detail
 
-Pre-migration detail is preserved at the
-[status archive](docs/status/archive/status-through-2026-07-27-plan3-step5-increment1.md);
-use [`docs/status/INDEX.md`](docs/status/INDEX.md) only for provenance or
-regression investigation.
+Pre-migration detail is in the [status archive](docs/status/archive/status-through-2026-07-27-plan3-step5-increment1.md); use [`docs/status/INDEX.md`](docs/status/INDEX.md) only for provenance/regression.

@@ -194,6 +194,8 @@ struct RtlInputFeederConfig
     uint32_t addressDelay = 2;
     uint32_t memoryControlDelay = 2;
     uint32_t registerDelay = 2;
+    uint8_t transMode = 1;
+    uint8_t reuseMode = 1;
 };
 
 struct RtlInputFeederInputs
@@ -201,6 +203,7 @@ struct RtlInputFeederInputs
     RtlCoreState coreState = RtlCoreState::Idle;
     uint8_t inputSwitch = 0;
     bool memoryDataValid = false;
+    bool memoryDataLast = false;
     bool lastFlowTime = false;
 };
 
@@ -544,6 +547,12 @@ class RtlInputFeederSkeleton
         Idle,
         Burst,
     };
+    enum class OutputState
+    {
+        NoInput,
+        OneInput,
+        TwoInput,
+    };
 
     RtlInputFeederConfig config;
     std::vector<RtlCoreState> coreStatePipeline;
@@ -566,6 +575,9 @@ class RtlInputFeederSkeleton
     uint32_t shiftDataCounter = 0;
     bool dataAValidReg = false;
     bool dataBValidReg = false;
+    OutputState outputState = OutputState::NoInput;
+    bool noInputDelayReg = true;
+    bool noInputStateReg = true;
     uint8_t inputSwitchDelayReg = 0;
     uint8_t outputInputSwitchReg = 0;
     bool inputSwitchCaseReg = false;
@@ -622,10 +634,10 @@ class RtlSchedulerSkeleton
 };
 
 /**
- * Isolated CSR-to-command-done timing driver for the current fixed
- * ATB/reuse-A contract. Every component samples one shared pre-edge snapshot
- * and commits at the end of tick(). The driver contains no golden cycles,
- * fixture identity, matrix dimensions, addresses, or arithmetic data.
+ * Isolated CSR-to-command-done timing driver for the current fixed Reuse-A
+ * contract. Every component samples one shared pre-edge snapshot and commits
+ * at the end of tick(). The driver contains no golden cycles, fixture
+ * identity, matrix dimensions, addresses, or arithmetic data.
  */
 class RtlCommandDriverSkeleton
 {
