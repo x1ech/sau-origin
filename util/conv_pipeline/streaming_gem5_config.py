@@ -17,4 +17,19 @@ def streaming_simobject_parameters(
         output_ready_high_cycles,
     )
     params["detailed_pe_trace"] = detailed_pe_trace
+    shared = loaded.config.shared_spad
+    params.update({
+        "spad_a_base": shared.a_base,
+        "spad_a_rows": shared.a_rows,
+        "spad_b_base": shared.b_base,
+        "spad_b_rows": shared.b_rows,
+        "spad_c_base": shared.c_base,
+        "spad_c_rows": shared.c_rows,
+        "spad_d_base": shared.d_base,
+        "spad_d_rows": shared.d_rows,
+        "b_buffer_depth": shared.b_buffer_depth,
+        "d_pending_rows": shared.d_pending_rows,
+        "weight_reuse": shared.weight_reuse,
+        "bank_arbitration": shared.arbitration,
+    })
     return params

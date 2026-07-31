@@ -57,6 +57,18 @@ requestValidMask(const SramRequest &request)
     return mask;
 }
 
+uint16_t
+responseValidMask(const SramResponse &response)
+{
+    uint16_t mask = 0;
+    for (uint64_t bank = 0; bank < SpBanks; ++bank) {
+        if (response.valid[bank]) {
+            mask |= uint16_t{1} << bank;
+        }
+    }
+    return mask;
+}
+
 void
 writeRequestRows(std::ostream &stream, const SramRequest &request)
 {
@@ -179,7 +191,12 @@ StreamingConvPipelineTraceWriter::emit(
         return;
     }
     const auto &producer = cycle.producer;
-    output << 1 << ',' << configSha256 << ',' << cycle.cycle << ','
+    const bool aRequestValid = requestValidMask(producer.request) != 0;
+    const bool aResponseValid =
+        responseValidMask(producer.response) != 0;
+    const auto &aRequestTag =
+        producer.s0Fire ? producer.s0.tag : producer.s1.tag;
+    output << 2 << ',' << configSha256 << ',' << cycle.cycle << ','
            << producer.s0Valid << ',' << producer.s0Ready << ','
            << producer.s0Fire << ','
            << (producer.s0Valid ? producer.s0.tag.tileIndex : 0) << ','
@@ -226,7 +243,42 @@ StreamingConvPipelineTraceWriter::emit(
            << ',' << cycle.sau.rowScoreValid << ','
            << (cycle.sau.rowScoreValid ? cycle.sau.rowSequence : 0) << ','
            << cycle.sau.calFinish << ',' << cycle.outputCollected << ','
-           << cycle.drained;
+           << cycle.drained << ',';
+    writeHex(output, requestValidMask(producer.request), 4);
+    output << ',';
+    writeHex(output, requestValidMask(producer.grant), 4);
+    output << ',';
+    writeHex(output, responseValidMask(producer.response), 4);
+    output << ','
+           << (aRequestValid ? aRequestTag.tileIndex : 0) << ','
+           << (aRequestValid ? aRequestTag.kIndex : 0) << ','
+           << (aResponseValid ? producer.s1.tag.tileIndex : 0) << ','
+           << (aResponseValid ? producer.s1.tag.kIndex : 0) << ',';
+    writeHex(output, requestValidMask(cycle.bRequest), 4);
+    output << ',';
+    writeHex(output, requestValidMask(cycle.bGrant), 4);
+    output << ',';
+    writeHex(output, responseValidMask(cycle.bResponse), 4);
+    output << ',' << cycle.bRequestBuffer << ',' << cycle.bRequestSlot
+           << ',' << cycle.bRequestK << ',' << cycle.bResponseBuffer
+           << ',' << cycle.bResponseSlot << ',' << cycle.bResponseK
+           << ',';
+    writeHex(output, requestValidMask(cycle.cRequest), 4);
+    output << ',';
+    writeHex(output, requestValidMask(cycle.cGrant), 4);
+    output << ',';
+    writeHex(output, responseValidMask(cycle.cResponse), 4);
+    output << ',' << cycle.cRequestByte << ',' << cycle.cResponseByte
+           << ',' << cycle.dQueueOccupancy << ',';
+    writeHex(output, cycle.dHeadPendingMask, 4);
+    output << ',';
+    writeHex(output, requestValidMask(cycle.dRequest), 4);
+    output << ',';
+    writeHex(output, requestValidMask(cycle.dGrant), 4);
+    output << ',' << cycle.dHeadWillRetire << ',' << cycle.dEnqueue
+           << ',' << cycle.dDequeue << ',' << cycle.bEntryHit << ','
+           << cycle.bReuseHit << ',' << cycle.activeBBuffer << ','
+           << cycle.nextExpectedK << ',' << cycle.bReadyEntries;
     if (detailed) {
         output << ',';
         writePeMask(output, cycle.sau.peValidMask);

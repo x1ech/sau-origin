@@ -75,6 +75,19 @@ TEST(StreamingConfig, AcceptsW6Stride2AndRejectsExplorationLimits)
     const auto derived = validateStreamingConfig(streamingConfig());
     EXPECT_EQ(derived.k, uint64_t{18});
     EXPECT_EQ(derived.expectedTiles, uint64_t{1});
+    EXPECT_EQ(derived.sharedSpad.aBase, uint64_t{0});
+    EXPECT_EQ(
+        derived.sharedSpad.bBase,
+        derived.sharedSpad.aBase + derived.sharedSpad.aRows);
+    EXPECT_EQ(
+        derived.sharedSpad.cBase,
+        derived.sharedSpad.bBase + derived.sharedSpad.bRows);
+    EXPECT_EQ(
+        derived.sharedSpad.dBase,
+        derived.sharedSpad.cBase + derived.sharedSpad.cRows);
+    EXPECT_EQ(derived.sharedSpad.bBufferDepth, derived.k);
+    EXPECT_EQ(derived.sharedSpad.dPendingRows, uint64_t{1});
+    EXPECT_TRUE(derived.sharedSpad.weightReuse);
 
     auto invalid = streamingConfig();
     invalid.im2col.strideW = 1;
@@ -90,6 +103,45 @@ TEST(StreamingConfig, AcceptsW6Stride2AndRejectsExplorationLimits)
     EXPECT_THROW(validateStreamingConfig(invalid), std::invalid_argument);
     invalid = streamingConfig();
     invalid.im2col.dilationW = 2;
+    EXPECT_THROW(validateStreamingConfig(invalid), std::invalid_argument);
+}
+
+TEST(StreamingConfig, FreezesAddressesAndRejectsInvalidRegions)
+{
+    const auto config = streamingConfig();
+    const auto derived = validateStreamingConfig(config);
+    EXPECT_EQ(
+        bAddress(config, derived, 17, 2),
+        (ScratchpadAddress{2, derived.sharedSpad.bBase + 17}));
+    EXPECT_EQ(
+        cAddress(config, derived, 2, 0),
+        (ScratchpadAddress{2, derived.sharedSpad.cBase}));
+    EXPECT_EQ(
+        cAddress(config, derived, 2, 1),
+        (ScratchpadAddress{2, derived.sharedSpad.cBase + 1}));
+    EXPECT_EQ(
+        dAddress(config, derived, 0, 1, 2, 2),
+        (ScratchpadAddress{2, derived.sharedSpad.dBase + 5}));
+    EXPECT_THROW(
+        bAddress(config, derived, 18, 0), std::invalid_argument);
+    EXPECT_THROW(
+        cAddress(config, derived, 0, 2), std::invalid_argument);
+    EXPECT_THROW(
+        dAddress(config, derived, 1, 0, 0, 0),
+        std::invalid_argument);
+
+    auto invalid = config;
+    invalid.sharedSpad = derived.sharedSpad;
+    invalid.sharedSpad.configured = true;
+    invalid.sharedSpad.bBase = invalid.sharedSpad.aBase;
+    EXPECT_THROW(validateStreamingConfig(invalid), std::invalid_argument);
+    invalid.sharedSpad = derived.sharedSpad;
+    invalid.sharedSpad.configured = true;
+    --invalid.sharedSpad.bRows;
+    EXPECT_THROW(validateStreamingConfig(invalid), std::invalid_argument);
+    invalid.sharedSpad = derived.sharedSpad;
+    invalid.sharedSpad.configured = true;
+    invalid.sharedSpad.dBase = SpBankEntries - 1;
     EXPECT_THROW(validateStreamingConfig(invalid), std::invalid_argument);
 }
 
@@ -226,6 +278,87 @@ TEST(StreamingFifo, SupportsFullPopPushAndChecksConservation)
     EXPECT_EQ(blocked.nextCount, uint64_t{4});
     EXPECT_THROW(decideElasticFifo(0, false, true), std::logic_error);
     EXPECT_THROW(decideElasticFifo(5, false, false), std::out_of_range);
+}
+
+TEST(DPendingQueue, DepthOneRetiresAndEnqueuesInTheSameCycle)
+{
+    const auto exchange = decideDPendingQueue(
+        1, 1, 0x0007, 0x0007, true);
+    EXPECT_TRUE(exchange.headWillRetire);
+    EXPECT_TRUE(exchange.pushReady);
+    EXPECT_TRUE(exchange.outputGrant);
+}
+
+TEST(DPendingQueue, PartialWriteBackpressuresTheSauAtDepthOne)
+{
+    const auto partial = decideDPendingQueue(
+        1, 1, 0x0007, 0x0003, true);
+    EXPECT_FALSE(partial.headWillRetire);
+    EXPECT_FALSE(partial.pushReady);
+    EXPECT_FALSE(partial.outputGrant);
+
+    const auto externallyStalled = decideDPendingQueue(
+        1, 1, 0x0007, 0x0007, false);
+    EXPECT_TRUE(externallyStalled.headWillRetire);
+    EXPECT_TRUE(externallyStalled.pushReady);
+    EXPECT_FALSE(externallyStalled.outputGrant);
+
+    EXPECT_THROW(
+        decideDPendingQueue(0, 1, 0x0001, 0, true),
+        std::logic_error);
+    EXPECT_THROW(
+        decideDPendingQueue(1, 1, 0x0001, 0x0002, true),
+        std::logic_error);
+}
+
+TEST(SharedSpadArbitration, AppliesAThenDThenBPerBank)
+{
+    SramRequest a;
+    SramRequest b;
+    SramRequest d;
+    for (uint64_t bank = 0; bank < 4; ++bank) {
+        b.valid[bank] = true;
+        b.address[bank] = static_cast<uint16_t>(100 + bank);
+    }
+    a.valid[0] = true;
+    a.address[0] = 10;
+    a.valid[1] = true;
+    a.address[1] = 11;
+    d.valid[1] = true;
+    d.address[1] = 21;
+    d.valid[2] = true;
+    d.address[2] = 22;
+
+    const auto decision = arbitrateSharedSpad(a, b, {}, d);
+    EXPECT_TRUE(decision.aGrant.valid[0]);
+    EXPECT_TRUE(decision.aGrant.valid[1]);
+    EXPECT_FALSE(decision.dGrant.valid[1]);
+    EXPECT_TRUE(decision.dGrant.valid[2]);
+    EXPECT_FALSE(decision.bGrant.valid[0]);
+    EXPECT_FALSE(decision.bGrant.valid[1]);
+    EXPECT_FALSE(decision.bGrant.valid[2]);
+    EXPECT_TRUE(decision.bGrant.valid[3]);
+    EXPECT_EQ(decision.readGrant.address[0], uint16_t{10});
+    EXPECT_EQ(decision.readGrant.address[1], uint16_t{11});
+    EXPECT_FALSE(decision.readGrant.valid[2]);
+    EXPECT_EQ(decision.readGrant.address[3], uint16_t{103});
+}
+
+TEST(SharedSpadArbitration, KeepsCInitializationExclusive)
+{
+    SramRequest c;
+    c.valid[3] = true;
+    c.address[3] = 33;
+    const auto cOnly = arbitrateSharedSpad({}, {}, c, {});
+    EXPECT_TRUE(cOnly.cGrant.valid[3]);
+    EXPECT_TRUE(cOnly.readGrant.valid[3]);
+    EXPECT_EQ(cOnly.readGrant.address[3], uint16_t{33});
+
+    SramRequest b;
+    b.valid[4] = true;
+    EXPECT_THROW(
+        arbitrateSharedSpad({}, b, c, {}),
+        std::logic_error);
 }
 
 TEST(StreamingConsumer, LaunchesThenAcceptsOnlyMatchingTileAndK)

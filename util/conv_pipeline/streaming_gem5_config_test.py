@@ -25,6 +25,11 @@ class StreamingGem5ConfigTest(unittest.TestCase):
         self.assertEqual(1, params["stride_h"])
         self.assertEqual(32, params["out_w"])
         self.assertEqual(7, params["output_ready_period"])
+        self.assertEqual(
+            loaded.config.shared_spad.b_base, params["spad_b_base"])
+        self.assertEqual(
+            loaded.derived.k, params["b_buffer_depth"])
+        self.assertEqual("a_d_b", params["bank_arbitration"])
 
     def test_rejects_non_boolean_trace_mode(self):
         loaded = self.loaded_fixture()

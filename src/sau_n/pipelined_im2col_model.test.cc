@@ -52,6 +52,32 @@ runToDrained(PipelinedIm2ColModel &model, bool fifoPushReady = true)
     throw std::runtime_error("pipelined Im2Col test did not drain");
 }
 
+std::vector<PipelinedIm2ColCycle>
+runSharedToDrained(
+    PipelinedIm2ColModel &model,
+    const BankedScratchpad &scratchpad,
+    const SharedAGrantFunction &grantFunction =
+        [](const SramRequest &request) { return request; })
+{
+    std::vector<PipelinedIm2ColCycle> cycles;
+    SramRequest inFlight;
+    for (uint64_t attempts = 0; attempts < 100000; ++attempts) {
+        const auto response =
+            scratchpad.combinationalResponse(inFlight);
+        cycles.push_back(
+            model.tickShared(true, response, grantFunction));
+        inFlight = cycles.back().grant;
+        if (cycles.back().drained) {
+            EXPECT_FALSE(model.hasPendingSharedRead());
+            EXPECT_TRUE(std::none_of(
+                inFlight.valid.begin(), inFlight.valid.end(),
+                [](bool valid) { return valid; }));
+            return cycles;
+        }
+    }
+    throw std::runtime_error("shared Im2Col test did not drain");
+}
+
 std::vector<StreamingFifoEntry>
 pushedEntries(const std::vector<PipelinedIm2ColCycle> &cycles)
 {
@@ -363,6 +389,107 @@ TEST(PipelinedIm2Col, UsesCallerProvidedScratchpad)
     ASSERT_EQ(entries.size(), 9U);
     EXPECT_EQ(entries[0].tag.kIndex, uint64_t{0});
     EXPECT_EQ(entries[0].payload.activations[0], uint8_t{0xee});
+}
+
+TEST(PipelinedIm2Col, SharedOneCycleMatchesStandaloneAndTurnsOverAtIiOne)
+{
+    auto config = streamingConfig();
+    config.im2col.c = 8;
+    config.im2col.h = 3;
+    config.im2col.w = 32;
+    config.im2col.outH = 1;
+    config.im2col.outW = 32;
+    config.im2col.strideH = config.im2col.strideW = 1;
+    config.im2col.padTop = config.im2col.padLeft = 0;
+
+    BankedScratchpad scratchpad;
+    scratchpad.preload(config.im2col);
+    PipelinedIm2ColModel standalone(config, scratchpad);
+    const auto standaloneCycles = runToDrained(standalone);
+    PipelinedIm2ColModel shared(
+        config, PipelinedIm2ColMemoryMode::SharedOneCycle);
+    const auto sharedCycles = runSharedToDrained(shared, scratchpad);
+
+    const auto standaloneEntries = pushedEntries(standaloneCycles);
+    const auto sharedEntries = pushedEntries(sharedCycles);
+    ASSERT_EQ(sharedEntries.size(), standaloneEntries.size());
+    for (std::size_t index = 0; index < sharedEntries.size(); ++index) {
+        EXPECT_EQ(sharedEntries[index].tag, standaloneEntries[index].tag);
+        EXPECT_EQ(
+            sharedEntries[index].payload,
+            standaloneEntries[index].payload);
+    }
+    EXPECT_EQ(
+        shared.stats().outputVectors,
+        shared.derived().im2col.expectedVectors);
+    EXPECT_EQ(
+        shared.stats().conflictFreeOutputMaxGap, uint64_t{1});
+
+    uint64_t consecutivePushes = 0;
+    uint64_t longestRun = 0;
+    for (const auto &cycle : sharedCycles) {
+        if (cycle.s2Fire) {
+            ++consecutivePushes;
+            longestRun = std::max(longestRun, consecutivePushes);
+        } else {
+            consecutivePushes = 0;
+        }
+        if (!cycle.s1Fire) {
+            for (uint64_t bank = 0; bank < SpBanks; ++bank) {
+                if (cycle.response.valid[bank] &&
+                    cycle.request.valid[bank]) {
+                    EXPECT_NE(
+                        cycle.request.address[bank],
+                        cycle.responseRequest.address[bank]);
+                }
+            }
+        }
+    }
+    EXPECT_GT(longestRun, StreamingFifoDepth + 2);
+}
+
+TEST(PipelinedIm2Col, SharedGrantDenialRetriesWithoutPhantomResponse)
+{
+    auto config = streamingConfig();
+    config.im2col.h = 3;
+    config.im2col.w = 16;
+    config.im2col.outH = 1;
+    config.im2col.outW = 16;
+    config.im2col.strideH = config.im2col.strideW = 1;
+    config.im2col.padTop = config.im2col.padLeft = 0;
+
+    BankedScratchpad scratchpad;
+    scratchpad.preload(config.im2col);
+    bool deniedOnce = false;
+    const SharedAGrantFunction grant =
+        [&deniedOnce](const SramRequest &request) {
+            SramRequest result = request;
+            if (!deniedOnce && request.valid[0]) {
+                result.valid[0] = false;
+                deniedOnce = true;
+            }
+            return result;
+        };
+    PipelinedIm2ColModel shared(
+        config, PipelinedIm2ColMemoryMode::SharedOneCycle);
+    const auto cycles = runSharedToDrained(shared, scratchpad, grant);
+
+    EXPECT_TRUE(deniedOnce);
+    EXPECT_EQ(
+        pushedEntries(cycles).size(),
+        shared.derived().im2col.expectedVectors);
+    bool sawRetry = false;
+    for (std::size_t index = 1; index < cycles.size(); ++index) {
+        if (!cycles[index - 1].request.valid[0] ||
+            cycles[index - 1].grant.valid[0]) {
+            continue;
+        }
+        EXPECT_FALSE(cycles[index].response.valid[0]);
+        EXPECT_TRUE(cycles[index].request.valid[0]);
+        sawRetry = true;
+        break;
+    }
+    EXPECT_TRUE(sawRetry);
 }
 
 } // anonymous namespace

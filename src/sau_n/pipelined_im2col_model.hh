@@ -2,6 +2,8 @@
 #define __SAU_N_PIPELINED_IM2COL_MODEL_HH__
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 
 #include "sau_n/banked_scratchpad.hh"
@@ -9,6 +11,15 @@
 
 namespace gem5::sau_n
 {
+
+enum class PipelinedIm2ColMemoryMode : uint8_t
+{
+    StandaloneCombinational = 0,
+    SharedOneCycle = 1,
+};
+
+using SharedAGrantFunction =
+    std::function<SramRequest(const SramRequest &)>;
 
 struct PipelinedIm2ColStats
 {
@@ -49,7 +60,9 @@ struct PipelinedIm2ColCycle
     StreamingS0Payload s0{};
     StreamingS1Payload s1{};
     StreamingS2Payload s2{};
+    SramRequest responseRequest{};
     SramRequest request{};
+    SramRequest grant{};
     SramResponse response{};
     StreamingFifoEntry output{};
     bool producerExhausted = false;
@@ -62,9 +75,16 @@ class PipelinedIm2ColModel
     explicit PipelinedIm2ColModel(const PipelineResolvedConfig &config);
     PipelinedIm2ColModel(
         const PipelineResolvedConfig &config,
+        PipelinedIm2ColMemoryMode memoryMode);
+    PipelinedIm2ColModel(
+        const PipelineResolvedConfig &config,
         const BankedScratchpad &preloadedScratchpad);
 
     PipelinedIm2ColCycle tick(bool fifoPushReady);
+    PipelinedIm2ColCycle tickShared(
+        bool fifoPushReady,
+        const SramResponse &previousResponse,
+        const SharedAGrantFunction &grantFunction);
 
     const PipelineResolvedConfig &config() const { return resolved; }
     const PipelineDerivedConfig &derived() const { return dimensions; }
@@ -72,6 +92,8 @@ class PipelinedIm2ColModel
     uint64_t nextCycle() const { return cycleNumber; }
     bool hasDrained() const { return drainedAt.has_value(); }
     std::optional<uint64_t> drainedCycle() const { return drainedAt; }
+    PipelinedIm2ColMemoryMode memoryMode() const { return accessMode; }
+    bool hasPendingSharedRead() const;
 
   private:
     struct Iterators
@@ -116,10 +138,20 @@ class PipelinedIm2ColModel
     void checkS1Payload(const StreamingS1Payload &payload) const;
     void checkS2Payload(const StreamingS2Payload &payload) const;
     void checkInvariants(const Registers &value) const;
+    PipelinedIm2ColCycle tickImpl(
+        bool fifoPushReady,
+        const SramResponse *previousResponse,
+        const SharedAGrantFunction *grantFunction);
+    void validateSharedGrant(
+        const SramRequest &request, const SramRequest &grant) const;
+    void validateSharedResponse(const SramResponse &response) const;
 
     PipelineResolvedConfig resolved;
     PipelineDerivedConfig dimensions;
-    BankedScratchpad scratchpad;
+    PipelinedIm2ColMemoryMode accessMode =
+        PipelinedIm2ColMemoryMode::StandaloneCombinational;
+    std::unique_ptr<BankedScratchpad> standaloneScratchpad;
+    SramRequest sharedInFlight{};
     Registers registers{};
     PipelinedIm2ColStats counters{};
     uint64_t cycleNumber = 0;

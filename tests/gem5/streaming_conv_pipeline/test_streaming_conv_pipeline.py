@@ -15,19 +15,29 @@ class VerifyStreamingResult(verifier.Verifier):
     """Check trace, stats and output with independent Python oracles."""
 
     def __init__(
-            self, fixture, reference_profile=None, expect_conflicts=False,
+            self, fixture, reference_profile=None,
+            output_ready_period=1, output_ready_high_cycles=1,
+            expect_conflicts=False,
             expect_scattered=False, expect_full_exchange=False,
             expect_input_bubbles=False,
-            expect_output_backpressure=False):
+            expect_output_backpressure=False, expect_b_refill=False,
+            expect_weight_reuse=False, expect_depth_one_baseline=False,
+            expect_full_ab_conflict=False):
         super().__init__()
         self.fixture = fixture
         self.reference_profile = reference_profile
+        self.output_ready_period = output_ready_period
+        self.output_ready_high_cycles = output_ready_high_cycles
         self.flags = {
             "--expect-conflicts": expect_conflicts,
             "--expect-scattered": expect_scattered,
             "--expect-full-exchange": expect_full_exchange,
             "--expect-input-bubbles": expect_input_bubbles,
             "--expect-output-backpressure": expect_output_backpressure,
+            "--expect-b-refill": expect_b_refill,
+            "--expect-weight-reuse": expect_weight_reuse,
+            "--expect-depth-one-baseline": expect_depth_one_baseline,
+            "--expect-full-ab-conflict": expect_full_ab_conflict,
         }
 
     def test(self, params):
@@ -45,6 +55,11 @@ class VerifyStreamingResult(verifier.Verifier):
             f"--trace={joinpath(generated, 'trace.csv')}",
             f"--output={joinpath(generated, 'output.csv')}",
             f"--stats={joinpath(tempdir, 'stats.txt')}",
+            f"--output-ready-period={self.output_ready_period}",
+            (
+                "--output-ready-high-cycles="
+                f"{self.output_ready_high_cycles}"
+            ),
         ]
         if self.reference_profile:
             command.append(
@@ -119,6 +134,8 @@ def verify_streaming(
             VerifyStreamingResult(
                 fixture,
                 reference_profile=reference_profile,
+                output_ready_period=ready_period,
+                output_ready_high_cycles=ready_high,
                 **expectations,
             ),
         ),
@@ -166,6 +183,38 @@ verify_streaming(
     expect_input_bubbles=True,
 )
 verify_streaming(
+    "n2-w6-depth1-no-reuse", "streaming_conv_pipeline",
+    "n2_w6_stride2_depth1_no_reuse",
+    expect_conflicts=True,
+    expect_scattered=True,
+    expect_input_bubbles=True,
+    expect_b_refill=True,
+    expect_depth_one_baseline=True,
+)
+verify_streaming(
+    "n2-w6-depth2-no-reuse", "streaming_conv_pipeline",
+    "n2_w6_stride2_depth2_no_reuse",
+    expect_conflicts=True,
+    expect_scattered=True,
+    expect_input_bubbles=True,
+    expect_b_refill=True,
+)
+verify_streaming(
+    "n2-w6-full-reuse", "streaming_conv_pipeline",
+    "n2_w6_stride2_full_reuse",
+    expect_conflicts=True,
+    expect_scattered=True,
+    expect_weight_reuse=True,
+)
+verify_streaming(
+    "n2-w16-depth1-ab-conflict", "streaming_conv_pipeline",
+    "n2_w16_stride1_depth1_ab_conflict",
+    expect_input_bubbles=True,
+    expect_b_refill=True,
+    expect_depth_one_baseline=True,
+    expect_full_ab_conflict=True,
+)
+verify_streaming(
     "w32-stride2-conflict", "streaming_conv_pipeline",
     "w32_stride2_conflict",
     expect_conflicts=True,
@@ -180,4 +229,5 @@ verify_streaming(
 verify_streaming(
     "target-w32", "conv_pipeline", "08_n1_c16_h16_w32_oc16",
     expect_full_exchange=True,
+    expect_weight_reuse=True,
 )

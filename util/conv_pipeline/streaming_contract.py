@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Independent Step 1 contracts for the streaming Im2Col-to-SAU path."""
+"""Independent contracts for the streaming Im2Col-to-SAU path."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import IntEnum
+import hashlib
+import json
 
 from util.conv_pipeline.pipeline_contract import (
+    DerivedPipelineConfig,
     MAX_CHANNELS,
     ResolvedPipelineConfig,
     SA_COLUMNS,
@@ -15,6 +18,44 @@ from util.conv_pipeline.pipeline_contract import (
 
 
 STREAMING_FIFO_DEPTH = 4
+SPAD_ROWS = 4096
+UINT64_MAX = (1 << 64) - 1
+
+
+class BankArbitrationPolicy(IntEnum):
+    A_D_B = 0
+
+
+@dataclass(frozen=True)
+class SharedSpadConfig:
+    a_base: int
+    a_rows: int
+    b_base: int
+    b_rows: int
+    c_base: int
+    c_rows: int
+    d_base: int
+    d_rows: int
+    b_buffer_depth: int
+    d_pending_rows: int
+    weight_reuse: bool
+    arbitration: str
+
+
+@dataclass(frozen=True)
+class ResolvedStreamingConfig(ResolvedPipelineConfig):
+    shared_spad: SharedSpadConfig
+
+
+@dataclass(frozen=True)
+class StreamingDerivedConfig(DerivedPipelineConfig):
+    shared_spad: SharedSpadConfig
+
+
+@dataclass(frozen=True)
+class ScratchpadAddress:
+    bank: int
+    row: int
 
 
 class StreamingConsumerState(IntEnum):
@@ -139,6 +180,112 @@ def _require_int_range(value, minimum, maximum, field):
             f"{field} must be an integer in [{minimum}, {maximum}]")
 
 
+def _checked_add(left, right, description):
+    _require_int_range(left, 0, UINT64_MAX, f"{description} left operand")
+    _require_int_range(right, 0, UINT64_MAX, f"{description} right operand")
+    result = left + right
+    if result > UINT64_MAX:
+        raise PipelineConfigError(f"{description} overflows uint64")
+    return result
+
+
+def _default_shared_spad(config, derived):
+    a_base = config.im2col.spad_base
+    a_rows = derived.im2col.total_spatial_words
+    b_base = _checked_add(a_base, a_rows, "default B base")
+    b_rows = derived.k
+    c_base = _checked_add(b_base, b_rows, "default C base")
+    c_rows = 2
+    d_base = _checked_add(c_base, c_rows, "default D base")
+    d_rows = (
+        config.im2col.n * config.im2col.out_h * config.im2col.out_w)
+    return SharedSpadConfig(
+        a_base=a_base,
+        a_rows=a_rows,
+        b_base=b_base,
+        b_rows=b_rows,
+        c_base=c_base,
+        c_rows=c_rows,
+        d_base=d_base,
+        d_rows=d_rows,
+        b_buffer_depth=derived.k,
+        d_pending_rows=1,
+        weight_reuse=True,
+        arbitration="a_d_b",
+    )
+
+
+def _validate_shared_spad(config, derived, shared):
+    if not isinstance(shared, SharedSpadConfig):
+        raise PipelineConfigError(
+            "shared_spad must be a SharedSpadConfig")
+    required = {
+        "a": derived.im2col.total_spatial_words,
+        "b": derived.k,
+        "c": 2,
+        "d": (
+            config.im2col.n * config.im2col.out_h *
+            config.im2col.out_w),
+    }
+    regions = []
+    for name in ("a", "b", "c", "d"):
+        base = getattr(shared, f"{name}_base")
+        rows = getattr(shared, f"{name}_rows")
+        _require_int_range(base, 0, SPAD_ROWS - 1, f"shared_spad.{name}_base")
+        _require_int_range(
+            rows, required[name], SPAD_ROWS,
+            f"shared_spad.{name}_rows")
+        end = _checked_add(base, rows, f"shared_spad.{name} end")
+        if end > SPAD_ROWS:
+            raise PipelineConfigError(
+                f"shared_spad.{name} region exceeds 4096 rows")
+        regions.append((base, end, name))
+    if shared.a_base != config.im2col.spad_base:
+        raise PipelineConfigError(
+            "shared_spad.a_base must equal im2col.spad_base")
+    regions.sort()
+    for previous, current in zip(regions, regions[1:]):
+        if current[0] < previous[1]:
+            raise PipelineConfigError(
+                "shared_spad regions overlap: " +
+                f"{previous[2]} and {current[2]}")
+    _require_int_range(
+        shared.b_buffer_depth, 1, derived.k,
+        "shared_spad.b_buffer_depth")
+    _require_int_range(
+        shared.d_pending_rows, 1, UINT64_MAX,
+        "shared_spad.d_pending_rows")
+    if type(shared.weight_reuse) is not bool:
+        raise PipelineConfigError("shared_spad.weight_reuse must be a bool")
+    if shared.arbitration != "a_d_b":
+        raise PipelineConfigError(
+            "shared_spad.arbitration must be 'a_d_b'")
+    return shared
+
+
+def resolve_shared_spad(config, overrides=None):
+    """Resolve optional streaming-only shared scratchpad parameters."""
+    if not isinstance(config, ResolvedPipelineConfig):
+        raise PipelineConfigError(
+            "config must be a ResolvedPipelineConfig")
+    derived = validate_and_derive(config)
+    defaults = _default_shared_spad(config, derived)
+    if overrides is None:
+        shared = defaults
+    else:
+        if type(overrides) is not dict:
+            raise PipelineConfigError("shared_spad must be a JSON object")
+        allowed = set(asdict(defaults))
+        unknown = sorted(set(overrides) - allowed)
+        if unknown:
+            raise PipelineConfigError(
+                "shared_spad has unknown fields: " + ", ".join(unknown))
+        values = asdict(defaults)
+        values.update(overrides)
+        shared = SharedSpadConfig(**values)
+    return _validate_shared_spad(config, derived, shared)
+
+
 def validate_streaming_config(config):
     """Apply the exploration-only limits after the frozen base validation."""
     if not isinstance(config, ResolvedPipelineConfig):
@@ -157,7 +304,66 @@ def validate_streaming_config(config):
             config.im2col.dilation_w != 1):
         raise PipelineConfigError(
             "streaming dilation_h/dilation_w must both be 1")
-    return derived
+    shared = (
+        config.shared_spad
+        if isinstance(config, ResolvedStreamingConfig)
+        else resolve_shared_spad(config)
+    )
+    _validate_shared_spad(config, derived, shared)
+    return StreamingDerivedConfig(
+        im2col=derived.im2col,
+        k=derived.k,
+        expected_tiles=derived.expected_tiles,
+        expected_outputs=derived.expected_outputs,
+        expected_macs=derived.expected_macs,
+        shared_spad=shared,
+    )
+
+
+def streaming_canonical_config_bytes(config):
+    if not isinstance(config, ResolvedStreamingConfig):
+        raise PipelineConfigError(
+            "config must be a ResolvedStreamingConfig")
+    validate_streaming_config(config)
+    return json.dumps(
+        asdict(config), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def streaming_resolved_config_sha256(config):
+    return hashlib.sha256(streaming_canonical_config_bytes(config)).hexdigest()
+
+
+def b_address(config, k_index, output_channel):
+    derived = validate_streaming_config(config)
+    _require_int_range(k_index, 0, derived.k - 1, "B k_index")
+    _require_int_range(
+        output_channel, 0, config.out_channels - 1, "B output_channel")
+    return ScratchpadAddress(
+        output_channel, derived.shared_spad.b_base + k_index)
+
+
+def c_address(config, output_channel, byte_index):
+    derived = validate_streaming_config(config)
+    _require_int_range(
+        output_channel, 0, config.out_channels - 1, "C output_channel")
+    _require_int_range(byte_index, 0, 1, "C byte_index")
+    return ScratchpadAddress(
+        output_channel, derived.shared_spad.c_base + byte_index)
+
+
+def d_address(config, n, oh, ow, output_channel):
+    derived = validate_streaming_config(config)
+    _require_int_range(n, 0, config.im2col.n - 1, "D n")
+    _require_int_range(oh, 0, config.im2col.out_h - 1, "D oh")
+    _require_int_range(ow, 0, config.im2col.out_w - 1, "D ow")
+    _require_int_range(
+        output_channel, 0, config.out_channels - 1, "D output_channel")
+    spatial = (
+        (n * config.im2col.out_h + oh) * config.im2col.out_w + ow)
+    return ScratchpadAddress(
+        output_channel, derived.shared_spad.d_base + spatial)
 
 
 def _prefix_mask(count):

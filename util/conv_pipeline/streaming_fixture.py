@@ -2,6 +2,7 @@
 """Strict fixture loader for the compaction-aware streaming pipeline."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from util.conv_pipeline.pipeline_contract import PipelineConfigError
@@ -11,25 +12,49 @@ from util.conv_pipeline.pipeline_fixture import (
     resolve_fixture_fields,
 )
 from util.conv_pipeline.streaming_contract import validate_streaming_config
+from util.conv_pipeline.streaming_contract import (
+    ResolvedStreamingConfig,
+    resolve_shared_spad,
+    streaming_resolved_config_sha256,
+)
 
 
 class StreamingFixtureError(FixtureError):
     """Raised when a fixture violates the streaming exploration contract."""
 
 
+_MISSING = object()
+
+
 def resolve_streaming_fixture(document):
     try:
-        loaded = resolve_fixture_fields(document)
-        derived = validate_streaming_config(loaded.config)
+        if type(document) is not dict:
+            raise StreamingFixtureError(
+                "fixture root must be a JSON object")
+        common_document = dict(document)
+        shared_document = common_document.pop("shared_spad", _MISSING)
+        if shared_document is not _MISSING and type(shared_document) is not dict:
+            raise StreamingFixtureError(
+                "shared_spad must be a JSON object")
+        loaded = resolve_fixture_fields(common_document)
+        shared = resolve_shared_spad(
+            loaded.config,
+            None if shared_document is _MISSING else shared_document,
+        )
+        config = ResolvedStreamingConfig(
+            **loaded.config.__dict__,
+            shared_spad=shared,
+        )
+        derived = validate_streaming_config(config)
     except FixtureError as error:
         raise StreamingFixtureError(str(error)) from error
     except PipelineConfigError as error:
         raise StreamingFixtureError(str(error)) from error
-    return type(loaded)(
-        config=loaded.config,
+    return replace(
+        loaded,
+        config=config,
         derived=derived,
-        warnings=loaded.warnings,
-        resolved_config_sha256=loaded.resolved_config_sha256,
+        resolved_config_sha256=streaming_resolved_config_sha256(config),
     )
 
 

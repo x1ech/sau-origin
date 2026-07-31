@@ -36,6 +36,18 @@ class StreamingConvPipelineTiming(ClockedObject):
     cutbit = Param.UInt64("Arithmetic output right shift")
     weight_generator = Param.String("Deterministic weight generator")
     bias_generator = Param.String("Deterministic bias generator")
+    spad_a_base = Param.UInt64("Shared scratchpad A row base")
+    spad_a_rows = Param.UInt64("Shared scratchpad A region rows")
+    spad_b_base = Param.UInt64("Shared scratchpad B row base")
+    spad_b_rows = Param.UInt64("Shared scratchpad B region rows")
+    spad_c_base = Param.UInt64("Shared scratchpad C row base")
+    spad_c_rows = Param.UInt64("Shared scratchpad C region rows")
+    spad_d_base = Param.UInt64("Shared scratchpad D row base")
+    spad_d_rows = Param.UInt64("Shared scratchpad D region rows")
+    b_buffer_depth = Param.UInt64("Weight vectors per B buffer")
+    d_pending_rows = Param.UInt64("Rows in the pending D write queue")
+    weight_reuse = Param.Bool("Keep resident B entries across spatial tiles")
+    bank_arbitration = Param.String("Shared scratchpad bank arbitration policy")
     resolved_config_sha256 = Param.String(
         "", "Canonical resolved pipeline configuration SHA256"
     )

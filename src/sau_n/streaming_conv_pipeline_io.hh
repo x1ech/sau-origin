@@ -11,7 +11,7 @@
 namespace gem5::sau_n
 {
 
-inline constexpr std::array<std::string_view, 54>
+inline constexpr std::array<std::string_view, 87>
 StreamingPipelineTraceFields = {
     "schema_version", "resolved_config_sha256", "cycle",
     "s0_valid", "s0_ready", "s0_fire", "s0_tile", "s0_k",
@@ -27,6 +27,18 @@ StreamingPipelineTraceFields = {
     "begin_launch", "launch", "input_valid", "input_fire", "sa_state",
     "sa_input_valid", "output_grant", "storage_ready", "row_score_valid",
     "row_sequence", "cal_finish", "output_collected", "drained",
+    "a_request_mask", "a_grant_mask", "a_response_mask",
+    "a_request_tile", "a_request_k", "a_response_tile", "a_response_k",
+    "b_request_mask", "b_grant_mask", "b_response_mask",
+    "b_request_buffer", "b_request_slot", "b_request_k",
+    "b_response_buffer", "b_response_slot", "b_response_k",
+    "c_request_mask", "c_grant_mask", "c_response_mask",
+    "c_request_byte", "c_response_byte",
+    "d_queue_occupancy", "d_head_pending_mask",
+    "d_request_mask", "d_grant_mask", "d_head_will_retire",
+    "d_enqueue", "d_dequeue",
+    "b_entry_hit", "b_reuse_hit", "active_b_buffer",
+    "next_expected_k", "b_ready_entries",
 };
 
 inline constexpr std::array<std::string_view, 6>

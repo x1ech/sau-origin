@@ -47,17 +47,37 @@ minimumReadRounds(const StreamingS1Payload &payload)
 
 PipelinedIm2ColModel::PipelinedIm2ColModel(
     const PipelineResolvedConfig &config)
-    : resolved(config), dimensions(validateStreamingConfig(resolved))
+    : resolved(config), dimensions(validateStreamingConfig(resolved)),
+      standaloneScratchpad(std::make_unique<BankedScratchpad>())
 {
-    scratchpad.preload(resolved.im2col);
+    standaloneScratchpad->preload(resolved.im2col);
+}
+
+PipelinedIm2ColModel::PipelinedIm2ColModel(
+    const PipelineResolvedConfig &config,
+    PipelinedIm2ColMemoryMode memoryMode)
+    : resolved(config), dimensions(validateStreamingConfig(resolved)),
+      accessMode(memoryMode)
+{
+    if (accessMode != PipelinedIm2ColMemoryMode::SharedOneCycle) {
+        throw std::invalid_argument(
+            "explicit PipelinedIm2Col memory mode must be SharedOneCycle");
+    }
 }
 
 PipelinedIm2ColModel::PipelinedIm2ColModel(
     const PipelineResolvedConfig &config,
     const BankedScratchpad &preloadedScratchpad)
     : resolved(config), dimensions(validateStreamingConfig(resolved)),
-      scratchpad(preloadedScratchpad)
+      standaloneScratchpad(
+          std::make_unique<BankedScratchpad>(preloadedScratchpad))
 {
+}
+
+bool
+PipelinedIm2ColModel::hasPendingSharedRead() const
+{
+    return anyRequest(sharedInFlight);
 }
 
 StreamingS0Payload
@@ -304,17 +324,22 @@ void
 PipelinedIm2ColModel::noteRetiredS1(
     const StreamingS1Payload &payload)
 {
-    if (payload.completedReadRounds != minimumReadRounds(payload)) {
+    const uint64_t minimum = minimumReadRounds(payload);
+    const bool invalidRounds =
+        accessMode == PipelinedIm2ColMemoryMode::StandaloneCombinational ?
+        payload.completedReadRounds != minimum :
+        payload.completedReadRounds < minimum;
+    if (invalidRounds) {
         throw std::logic_error(
             "S1 did not retire in the minimum single-port read rounds");
     }
-    if (payload.completedReadRounds > 1) {
+    if (minimum > 1) {
         counters.bankConflictVectors = checkedAdd(
             counters.bankConflictVectors, 1,
             "streaming bank-conflict vector count");
         counters.bankConflictExtraRounds = checkedAdd(
             counters.bankConflictExtraRounds,
-            payload.completedReadRounds - 1,
+            minimum - 1,
             "streaming extra read round count");
     }
 }
@@ -472,21 +497,90 @@ PipelinedIm2ColModel::checkInvariants(const Registers &value) const
         throw std::logic_error(
             "streaming tile iterator did not reach expected tile count");
     }
+    if (accessMode == PipelinedIm2ColMemoryMode::SharedOneCycle &&
+        hasPendingSharedRead() && !value.s1Valid) {
+        throw std::logic_error(
+            "shared A read remains in flight without an S1 context");
+    }
+}
+
+void
+PipelinedIm2ColModel::validateSharedGrant(
+    const SramRequest &request, const SramRequest &grant) const
+{
+    for (uint64_t bank = 0; bank < SpBanks; ++bank) {
+        if (grant.valid[bank] &&
+            (!request.valid[bank] ||
+             grant.address[bank] != request.address[bank])) {
+            throw std::invalid_argument(
+                "shared A grant is not a subset of the proposed request");
+        }
+    }
+}
+
+void
+PipelinedIm2ColModel::validateSharedResponse(
+    const SramResponse &response) const
+{
+    for (uint64_t bank = 0; bank < SpBanks; ++bank) {
+        if (response.valid[bank] != sharedInFlight.valid[bank]) {
+            throw std::invalid_argument(
+                "shared A response valid mask does not match prior grant");
+        }
+    }
 }
 
 PipelinedIm2ColCycle
 PipelinedIm2ColModel::tick(bool fifoPushReady)
 {
+    if (accessMode !=
+        PipelinedIm2ColMemoryMode::StandaloneCombinational) {
+        throw std::logic_error(
+            "shared PipelinedIm2Col model requires tickShared");
+    }
+    return tickImpl(fifoPushReady, nullptr, nullptr);
+}
+
+PipelinedIm2ColCycle
+PipelinedIm2ColModel::tickShared(
+    bool fifoPushReady,
+    const SramResponse &previousResponse,
+    const SharedAGrantFunction &grantFunction)
+{
+    if (accessMode != PipelinedIm2ColMemoryMode::SharedOneCycle) {
+        throw std::logic_error(
+            "standalone PipelinedIm2Col model requires tick");
+    }
+    if (!grantFunction) {
+        throw std::invalid_argument(
+            "shared A grant function must not be empty");
+    }
+    validateSharedResponse(previousResponse);
+    return tickImpl(
+        fifoPushReady, &previousResponse, &grantFunction);
+}
+
+PipelinedIm2ColCycle
+PipelinedIm2ColModel::tickImpl(
+    bool fifoPushReady,
+    const SramResponse *previousResponse,
+    const SharedAGrantFunction *grantFunction)
+{
     if (drainedAt) {
         throw std::logic_error("pipelined Im2Col ticked after drained");
     }
     const Registers old = registers;
-    const SramRequest request = old.s1Valid ?
-        arbitrateS1(old.s1) : SramRequest{};
-    const SramResponse response =
-        scratchpad.combinationalResponse(request);
+    const bool shared =
+        accessMode == PipelinedIm2ColMemoryMode::SharedOneCycle;
+    const SramRequest responseRequest = shared ?
+        sharedInFlight :
+        (old.s1Valid ? arbitrateS1(old.s1) : SramRequest{});
+    const SramResponse response = shared ?
+        *previousResponse :
+        standaloneScratchpad->combinationalResponse(responseRequest);
     const StreamingS1Payload collected = old.s1Valid ?
-        collectS1(old.s1, request, response) : StreamingS1Payload{};
+        collectS1(old.s1, responseRequest, response) :
+        StreamingS1Payload{};
     const bool s1CanRetire = old.s1Valid && s1Complete(collected);
 
     const ElasticAdvanceDecision advance = decideElasticAdvance({
@@ -510,6 +604,19 @@ PipelinedIm2ColModel::tick(bool fifoPushReady)
         throw std::logic_error("streaming ready contract diverged");
     }
 
+    SramRequest request = responseRequest;
+    SramRequest grant = responseRequest;
+    if (shared) {
+        request = {};
+        if (old.s1Valid && !s1CanRetire) {
+            request = arbitrateS1(collected);
+        } else if (s0Fire) {
+            request = arbitrateS1(beginS1(old.s0));
+        }
+        grant = (*grantFunction)(request);
+        validateSharedGrant(request, grant);
+    }
+
     PipelinedIm2ColCycle observation;
     observation.cycle = cycleNumber;
     observation.s0Valid = old.s0Valid;
@@ -525,7 +632,9 @@ PipelinedIm2ColModel::tick(bool fifoPushReady)
     observation.s0 = old.s0;
     observation.s1 = old.s1;
     observation.s2 = old.s2;
+    observation.responseRequest = responseRequest;
     observation.request = request;
+    observation.grant = grant;
     observation.response = response;
     observation.output = old.s2Valid ?
         StreamingFifoEntry{old.s2.tag, old.s2.compacted} :
@@ -595,9 +704,13 @@ PipelinedIm2ColModel::tick(bool fifoPushReady)
     }
 
     registers = next;
+    if (shared) {
+        sharedInFlight = grant;
+    }
     checkInvariants(registers);
     const bool drained = registers.producerExhausted &&
-        !registers.s0Valid && !registers.s1Valid && !registers.s2Valid;
+        !registers.s0Valid && !registers.s1Valid && !registers.s2Valid &&
+        !hasPendingSharedRead();
     if (drained) {
         if (counters.inputVectors != dimensions.im2col.expectedVectors ||
             counters.outputVectors != dimensions.im2col.expectedVectors) {

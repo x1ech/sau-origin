@@ -39,6 +39,24 @@ buildResolvedConfig(const StreamingConvPipelineTimingParams &params)
     config.cutbit = params.cutbit;
     config.weightGenerator = params.weight_generator;
     config.biasGenerator = params.bias_generator;
+    config.sharedSpad.configured = true;
+    config.sharedSpad.aBase = params.spad_a_base;
+    config.sharedSpad.aRows = params.spad_a_rows;
+    config.sharedSpad.bBase = params.spad_b_base;
+    config.sharedSpad.bRows = params.spad_b_rows;
+    config.sharedSpad.cBase = params.spad_c_base;
+    config.sharedSpad.cRows = params.spad_c_rows;
+    config.sharedSpad.dBase = params.spad_d_base;
+    config.sharedSpad.dRows = params.spad_d_rows;
+    config.sharedSpad.bBufferDepth = params.b_buffer_depth;
+    config.sharedSpad.dPendingRows = params.d_pending_rows;
+    config.sharedSpad.weightReuse = params.weight_reuse;
+    if (params.bank_arbitration != "a_d_b") {
+        fatal(
+            "Unsupported shared scratchpad bank arbitration policy '%s'",
+            params.bank_arbitration.c_str());
+    }
+    config.sharedSpad.arbitration = BankArbitrationPolicy::ADB;
     return config;
 }
 
@@ -146,6 +164,38 @@ StreamingConvPipelineTiming::updateFinalStats()
     stats.tilesCompleted = pipeline.tilesCompleted;
     stats.outputRows = pipeline.outputRows;
     stats.outputElements = pipeline.outputElements;
+    stats.spadReadRequestsA = pipeline.spadReadRequestsA;
+    stats.spadReadGrantsA = pipeline.spadReadGrantsA;
+    stats.spadReadResponsesA = pipeline.spadReadResponsesA;
+    stats.spadReadRequestsC = pipeline.spadReadRequestsC;
+    stats.spadReadGrantsC = pipeline.spadReadGrantsC;
+    stats.spadReadResponsesC = pipeline.spadReadResponsesC;
+    stats.spadReadRequestsB = pipeline.spadReadRequestsB;
+    stats.spadReadGrantsB = pipeline.spadReadGrantsB;
+    stats.spadReadResponsesB = pipeline.spadReadResponsesB;
+    stats.bBufferFillVectors = pipeline.bBufferFillVectors;
+    stats.bBufferConsumedVectors = pipeline.bBufferConsumedVectors;
+    stats.bBufferHitVectors = pipeline.bBufferHitVectors;
+    stats.bBufferEmptyCycles = pipeline.bBufferEmptyCycles;
+    stats.bBufferSwitches = pipeline.bBufferSwitches;
+    stats.bPrefetchStallCycles = pipeline.bPrefetchStallCycles;
+    stats.weightReuseHits = pipeline.weightReuseHits;
+    stats.spadWriteRequestsD = pipeline.spadWriteRequestsD;
+    stats.spadWriteGrantsD = pipeline.spadWriteGrantsD;
+    stats.dPendingPeak = pipeline.dPendingPeak;
+    stats.dWriteStallCycles = pipeline.dWriteStallCycles;
+    stats.bBufferAverageOccupancy = average(
+        pipeline.bBufferOccupancySum,
+        pipeline.bBufferOccupancySamples);
+    stats.bBufferPeakOccupancy = pipeline.bBufferPeakOccupancy;
+    for (uint64_t bank = 0; bank < SpBanks; ++bank) {
+        stats.perBankReadCycles[bank] =
+            pipeline.perBankReadCycles[bank];
+        stats.perBankWriteCycles[bank] =
+            pipeline.perBankWriteCycles[bank];
+        stats.perBankReadWriteConflicts[bank] =
+            pipeline.perBankReadWriteConflicts[bank];
+    }
 }
 
 #define STREAMING_STAT(member, unit, description) \
@@ -214,8 +264,49 @@ StreamingConvPipelineTiming::StreamingStats::StreamingStats(
       STREAMING_STAT(tilesLaunched, Count, "Tiles launched into the SA"),
       STREAMING_STAT(tilesCompleted, Count, "Tiles completing all outputs"),
       STREAMING_STAT(outputRows, Count, "Spatial output rows collected"),
-      STREAMING_STAT(outputElements, Count, "NCHW output elements written")
+      STREAMING_STAT(outputElements, Count, "NCHW output elements written"),
+      STREAMING_STAT(spadReadRequestsA, Count, "A bank read requests"),
+      STREAMING_STAT(spadReadGrantsA, Count, "A bank read grants"),
+      STREAMING_STAT(spadReadResponsesA, Count, "A bank read responses"),
+      STREAMING_STAT(spadReadRequestsC, Count, "C bank read requests"),
+      STREAMING_STAT(spadReadGrantsC, Count, "C bank read grants"),
+      STREAMING_STAT(spadReadResponsesC, Count, "C bank read responses"),
+      STREAMING_STAT(spadReadRequestsB, Count, "B bank read requests"),
+      STREAMING_STAT(spadReadGrantsB, Count, "B bank read grants"),
+      STREAMING_STAT(spadReadResponsesB, Count, "B bank read responses"),
+      STREAMING_STAT(bBufferFillVectors, Count,
+                     "Complete vectors filled into B buffers"),
+      STREAMING_STAT(bBufferConsumedVectors, Count,
+                     "B vectors consumed by SA input fires"),
+      STREAMING_STAT(bBufferHitVectors, Count,
+                     "Expected K vectors found ready in active B buffer"),
+      STREAMING_STAT(bBufferEmptyCycles, Cycle,
+                     "ACCEPT_K cycles stalled for B data"),
+      STREAMING_STAT(bBufferSwitches, Count,
+                     "Completed B0/B1 active-buffer switches"),
+      STREAMING_STAT(bPrefetchStallCycles, Cycle,
+                     "Cycles with at least one denied B bank request"),
+      STREAMING_STAT(weightReuseHits, Count,
+                     "B vectors reused by later spatial tiles"),
+      STREAMING_STAT(spadWriteRequestsD, Count, "D bank write requests"),
+      STREAMING_STAT(spadWriteGrantsD, Count, "D bank write grants"),
+      STREAMING_STAT(dPendingPeak, Count, "Peak pending D rows"),
+      STREAMING_STAT(dWriteStallCycles, Cycle,
+                     "Cycles with at least one denied D bank write"),
+      STREAMING_STAT(bBufferAverageOccupancy, Ratio,
+                     "Average cycle-start ready B entries"),
+      STREAMING_STAT(bBufferPeakOccupancy, Count,
+                     "Peak cycle-start ready B entries"),
+      STREAMING_STAT(perBankReadCycles, Cycle,
+                     "Per-bank cycles granting a shared read"),
+      STREAMING_STAT(perBankWriteCycles, Cycle,
+                     "Per-bank cycles granting a D write"),
+      STREAMING_STAT(perBankReadWriteConflicts, Cycle,
+                     "Per-bank cycles with competing read and D write")
 {
+    perBankReadCycles.init(SpBanks);
+    perBankWriteCycles.init(SpBanks);
+    perBankReadWriteConflicts.init(SpBanks);
 }
 
 #undef STREAMING_STAT

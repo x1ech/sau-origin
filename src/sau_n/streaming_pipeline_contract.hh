@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 
+#include "sau_n/banked_scratchpad.hh"
 #include "sau_n/sau_types.hh"
 
 namespace gem5::sau_n
@@ -175,6 +176,22 @@ struct ElasticFifoDecision
     uint64_t nextCount = 0;
 };
 
+struct DPendingQueueDecision
+{
+    bool headWillRetire = false;
+    bool pushReady = false;
+    bool outputGrant = false;
+};
+
+struct SharedSpadArbitrationDecision
+{
+    SramRequest aGrant{};
+    SramRequest bGrant{};
+    SramRequest cGrant{};
+    SramRequest dGrant{};
+    SramRequest readGrant{};
+};
+
 struct StreamingConsumerDecision
 {
     bool beginLaunch = false;
@@ -191,8 +208,34 @@ struct SauInputCycleDecision
     uint64_t acceptedNext = 0;
 };
 
+struct ScratchpadAddress
+{
+    uint64_t bank = 0;
+    uint64_t row = 0;
+
+    bool operator==(const ScratchpadAddress &other) const
+    {
+        return bank == other.bank && row == other.row;
+    }
+};
+
 PipelineDerivedConfig validateStreamingConfig(
     const PipelineResolvedConfig &config);
+SharedSpadConfig resolveSharedSpadConfig(
+    const PipelineResolvedConfig &config,
+    const PipelineDerivedConfig &derived);
+ScratchpadAddress bAddress(
+    const PipelineResolvedConfig &config,
+    const PipelineDerivedConfig &derived,
+    uint64_t kIndex, uint64_t outputChannel);
+ScratchpadAddress cAddress(
+    const PipelineResolvedConfig &config,
+    const PipelineDerivedConfig &derived,
+    uint64_t outputChannel, uint64_t byteIndex);
+ScratchpadAddress dAddress(
+    const PipelineResolvedConfig &config,
+    const PipelineDerivedConfig &derived,
+    uint64_t n, uint64_t oh, uint64_t ow, uint64_t outputChannel);
 bool isCanonicalPrefixMask(uint16_t mask);
 CompactedSpatialPayload compactSpatialPayload(
     const RawSpatialPayload &raw);
@@ -210,6 +253,14 @@ ElasticAdvanceDecision decideElasticAdvance(
     const ElasticAdvanceInputs &inputs);
 ElasticFifoDecision decideElasticFifo(
     uint64_t count, bool pushValid, bool popRequest);
+DPendingQueueDecision decideDPendingQueue(
+    uint64_t occupancy, uint64_t depth, uint16_t headPendingMask,
+    uint16_t writeGrantMask, bool outputReady);
+SharedSpadArbitrationDecision arbitrateSharedSpad(
+    const SramRequest &aRequest,
+    const SramRequest &bRequest,
+    const SramRequest &cRequest,
+    const SramRequest &dRequest);
 StreamingConsumerDecision decideStreamingConsumer(
     StreamingConsumerState state,
     bool fifoValid,

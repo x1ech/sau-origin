@@ -1,6 +1,462 @@
 # Gem5 Im2Col Reference RTL 独立周期模型状态
 
-最后更新：2026-07-20
+最后更新：2026-07-31
+
+## 2026-07-30 双缓冲共享数据流计划
+
+已在 `PLAN.md` 第 13 节新增下一阶段计划：以共享 16-bank scratchpad 为基础，建模
+A/B/C/D 四个区域、B0/B1 权重双缓冲、真实 bank 仲裁、16x16 SA 消费以及 D 区
+int8 写回。该阶段保持项目自有 SA，C 为 int16 bias，D 为最终 int8 output，并保留
+跨 spatial tile 的权重复用。
+
+本次仅更新计划和状态记录，未修改 RTL/C++，未执行 gem5 编译或测试。
+
+随后完成了对该阶段计划的源码可行性复核，并修订以下必要契约：
+
+- `PipelinedIm2ColModel` 需要拆出 shared A request/grant/response 接口，同时保留
+  standalone Im2Col 兼容路径；
+- B0/B1 只有覆盖完整 `[0, K)` 时才能声明跨 spatial tile 完整复用，小容量配置
+  必须重新读取被覆盖的 K entry；
+- scratchpad 一拍响应使用逐 bank in-flight requester/destination tag；
+- streaming-only `shared_spad` 配置保持现有 common fixture 和 golden hash 不变；
+- D pending queue 有限且参与 SA output backpressure，最终结果由 D 区重建；
+- 完整 K 驻留 profile 必须验证 A 连续时 SA 连续 K 拍 input fire。
+
+本次复核仍只修改 `PLAN.md` 和本状态记录，未修改 RTL/C++，未执行 gem5 编译或
+测试。
+
+第二轮修订已吸收独立 subagent 的首轮审核意见：
+
+- 完整 K 配置等待 C、A tile-first 和 B `[0,K)` 全部 ready 后才 launch；小容量
+  配置只等待包含 K0 的 active chunk；
+- shared A response 先形成 working S1，再生成下一轮请求，避免重复读取已完成 lane；
+- standalone Im2Col 明确保留现有组合响应和逐拍 timing；
+- C bias 只在最终 MAC/drain 后的现有 bias phase 加入一次；
+- 第 12 节历史限制不约束第 13 节明确需要的固定一拍 tag 和有限 pending queue；
+- depth 1 D queue 支持 old head 完整 retire 时同拍 dequeue/enqueue，并补全可重算
+  trace 字段。
+
+本轮仍未修改 RTL/C++，也未执行 gem5 编译或测试；修订后的计划将再次交由独立
+subagent 只读审核。
+
+第二个独立 subagent 完成复审：首轮六项修订均通过，但发现计划仍有一个阻塞问题
+和一个高风险缺口，尚不能进入实现：
+
+- shared A 使用一拍 response 后，如果沿用单 S1 的串行 request/response/retire，
+  conflict-free A 的稳态最小 II 会变为 2，无法长期支持完整 K profile 的连续
+  SA input fire；计划需要冻结可流水的 S1 context 或等价的 S0-to-next-request
+  turnover 机制；
+- B0/B1 联合覆盖 `[0,K)` 时还需要冻结连续 `chunkBase + localSlot` 映射、active
+  选择、零气泡边界交换、跨 spatial tile 重置到 K0，以及完整驻留期间禁止覆盖。
+
+第二轮 subagent 未修改文件、未执行 gem5 编译。
+
+随后已修订上述两个问题：
+
+- shared A 采用单 S1 turnover 流水：current S1 response 完整且可退休时，同拍将
+  old S0 转成 incoming S1 并发出第一轮请求；conflict-free 且无下游反压时稳态
+  II=1，不增加完整 A tile buffer；
+- B0/B1 使用连续 `chunk_base_k + local_slot -> global_k` 映射，由
+  `nextExpectedK` 选择 active；冻结周期末零气泡交换、跨 spatial tile 重置到 K0、
+  完整驻留期间禁止覆盖和小容量 inactive-buffer refill 规则；
+- 验证增加长 K A turnover 测试，避免有限 FIFO 积压造成假阳性，并逐 tile 检查
+  B identity/global K 消费序列严格为 `0..K-1`。
+
+本次仍只修改计划和状态记录，未修改 RTL/C++，未执行 gem5 编译或测试。
+
+### 共享数据流 Step A：配置和地址布局
+
+已完成 `PLAN.md` 第 13.9 节 Step A 的源码实现：
+
+- streaming fixture 可选解析严格的 `shared_spad` 子对象；未提供时按
+  `A -> B -> C -> D` 自动连续布局，并补全 B buffer depth、D pending depth、
+  weight reuse 和 `A > D > B` 仲裁策略；
+- common conv fixture resolver 和 canonical hash 路径未修改；streaming resolved
+  config/hash 包含全部补全后的 shared-spad 字段；
+- Python/C++ 同步校验四个区域的最小 footprint、4096-row 边界、互不重叠、
+  A base 与 `im2col.spad_base` 一致，以及 buffer/depth/仲裁参数；
+- 冻结 B、C、D 统一地址 helper：B 为 `bank=oc,row=B_base+k`，C 为
+  `bank=oc,row=C_base+byte`（low byte first），D 为
+  `bank=oc,row=D_base+N/H/W spatial index`；
+- `StreamingConvPipelineModel` 启动时建立共享 scratchpad 镜像，预加载 A activation、
+  B weight、C signed-int16 bias bytes，并将 D 保持为零；该镜像将在 Step B 起接入
+  周期请求/仲裁，当前既有 producer timing 保持不变；
+- SimObject 参数路径已传递全部 resolved shared-spad 字段，未修改 `SConscript`。
+
+验证结果：`python3 -m unittest discover -s util/conv_pipeline -p '*_test.py'`
+共 66 项通过，`git diff --check` 通过。开发者随后完成
+`build/RISCV/gem5.opt` 增量构建；使用
+`01_c1_w1_oc1_ones.json` 的 Step A smoke run 在 cycle 50 drained，独立 streaming
+verifier 通过 9 vectors、1 tile、3 outputs 及 reference output 检查。SCons 本次
+未生成 `src/sau_n` GTest 可执行文件，因此新增 C++ contract/preload 单元测试仍待
+单独构建运行。
+
+### 共享数据流 Step B：A 路径迁移
+
+已完成 `PLAN.md` 第 13.9 节 Step B 的源码实现：
+
+- `PipelinedIm2ColModel` 现在显式区分 `StandaloneCombinational` 和
+  `SharedOneCycle`；旧构造函数、caller-provided scratchpad 和 `tick()` 保持原
+  standalone 组合响应路径；standalone scratchpad 改为只在 standalone 构造时
+  分配，shared 实例不再保留第二份 activation storage；
+- shared 模式通过 `tickShared()` 接收上拍 response，并以 callback 形式把本拍
+  proposed request 交给外部 arbiter，返回的 grant 被锁存为下一拍 in-flight read；
+- response 先更新 working S1，再生成剩余 lane 请求；当前 S1 完整且 S2 可接收时，
+  同拍由 old S0 建立 incoming S1 并发出其第一轮请求，实现单 S1 turnover；
+- grant 必须是 proposed request 的同地址子集，response valid mask 必须严格匹配
+  上拍 grant；被拒绝的 bank 会重试，没有 grant 的 bank 不允许产生 phantom
+  response；
+- `StreamingConvPipelineModel` 的 producer 已切换到 shared one-cycle 模式，
+  A response 来自 Step A 预加载的 shared scratchpad；模型和外部 A in-flight
+  状态增加一致性检查；
+- observation 增加 response 对应 request、本拍 proposed request 和实际 grant，
+  为后续 B/D 共享仲裁和可重算 trace 保留明确边界；
+- C++ 定向测试覆盖 standalone/shared 输出逐项一致、`C=8/K=72` 长序列 turnover
+  稳态 II=1、response 后不重复请求已完成 row、单 bank grant 拒绝重试，以及原
+  streaming model 确认使用 shared memory mode。
+
+非编译验证结果：66 项 `util/conv_pipeline` Python 回归、相关 `py_compile` 和
+`git diff --check` 均通过。开发者随后完成包含 Step B 的
+`build/RISCV/gem5.opt` 增量构建；三项 gem5 smoke run 和独立 verifier 全部通过：
+
+- `01_c1_w1_oc1_ones`：cycle 50 drained，9 vectors、1 tile、3 outputs，并与
+  reference output 一致；
+- `w6_stride2_scattered`：cycle 72 drained，18 vectors、1 tile、18 outputs，
+  bank conflict、scattered compaction 和 input bubble 检查通过；
+- `08_n1_c16_h16_w32_oc16`：cycle 6243 drained，4608 vectors、32 tiles、
+  8192 outputs，FIFO full exchange 检查通过。
+
+长 K profile 的 `conflictFreeOutputII=1`、`conflictFreeOutputMaxGap=1`，trace 中
+最长连续 `s2_fire` 为 148 拍，超过 S0/S1/S2/FIFO 的有限暂存容量，证明 shared A
+turnover 的稳态 II=1 不是启动前积压造成。SCons 本次仍未生成 `src/sau_n` GTest
+可执行文件，因此新增的 standalone/shared 对照和 grant-denial C++ GTest 尚待
+单独构建运行。
+
+### 共享数据流 Step C：B0/B1 权重预取
+
+已完成 `PLAN.md` 第 13.9 节 Step C 的源码实现：
+
+- `buildSauInputs()` 不再直接调用 `weightValue()`；该生成器只在启动预加载 B 区时
+  使用，运行时 SA weight 完全来自 B0/B1 entry；
+- 每个 B entry 保存 weight tile identity、global K、16-lane data 和 ready mask；
+  每个 buffer 保存连续 `chunkBaseK/chunkLength`，未使用 slot 保持 invalid；
+- B prefetch 从 Step A 的 B 区产生逐 bank read，经 shared arbiter 与 A 竞争；
+  当前策略严格为 A 优先，B 只获得 A 未使用的 bank，被拒绝 lane 保留 pending 并
+  重试；
+- 每个获准 B bank 保存 buffer/slot/global-K in-flight tag；下一拍 response 先更新
+  working B state，本拍 request 生成可看到 working ready mask，SA 只能在下一拍
+  消费新 ready entry；
+- 两个 buffer 联合覆盖 `[0,K)` 且启用 reuse 时，首次 launch 等待完整 K ready，
+  spatial tile 之间只重置 K 游标且禁止覆盖；默认 depth=K 因此只需 B0；
+- 小容量或关闭 reuse 时，B0/B1 交替保存连续 chunk；只有另一 chunk 完整 ready
+  才在周期末交换，旧 active 变为 inactive 后才 refill 后续 chunk；下一个 spatial
+  tile 从 K0 重新读取；
+- consumer launch/input fire 同时受 A FIFO 和 B ready 门控；每次 fire 校验
+  FIFO/global K 与 `nextExpectedK` 一致，chunk 未就绪时产生真实 SA input bubble；
+- 新增 B bank request/grant/response、fill/consume/hit、empty、switch、prefetch
+  stall 和 cross-spatial reuse 统计，并加入 gem5 stats 输出；
+- C++ 定向测试覆盖完整驻留只读取一次 B、后续 tile reuse、小容量 depth=2
+  refill/重新读取、逐 tile K 顺序、half-K B0/B1 零气泡交换，以及所有配置与原
+  numeric oracle 输出一致。
+
+开发者已完成包含 Step C 的 `build/RISCV/gem5.opt` 增量构建。三项 gem5 smoke
+run 和独立 verifier 全部通过：
+
+- `01_c1_w1_oc1_ones`：cycle 58 drained，9 vectors、1 tile、3 outputs，并与
+  reference output 一致；
+- `n2_w6_stride2_depth2_no_reuse`：cycle 144 drained，36 vectors、2 tiles、
+  36 outputs；B buffer fill/consume/hit 均为 36，发生 16 次 buffer switch、
+  23 个 B empty cycle 和 12 个 prefetch stall cycle，证明小容量 refill 与真实
+  input bubble 生效；
+- `08_n1_c16_h16_w32_oc16`：cycle 6387 drained，4608 vectors、32 tiles、
+  8192 outputs；B 仅填充 144 个 K vector，随后产生 4464 次
+  cross-spatial reuse hit，且 B empty cycle 为 0。
+
+独立 verifier 现会普遍检查 B request/grant/response 守恒、response 与
+`fill*out_channels` 一致、consume/hit 等于 expected vectors，并按配置判定完整
+驻留或逐 tile refill 的预期 fill/reuse 数量。新增的小深度 fixture 已注册为 quick
+gem5 regression，target profile 也明确要求 cross-spatial reuse。最终验证为：
+67 项 `util/conv_pipeline` Python 回归通过，三组已有 Step C artifact 均通过增强
+verifier，相关 `py_compile` 和 `git diff --check` 通过。SCons 本次仍未生成
+`src/sau_n` GTest 可执行文件，因此 Step C 新增的 C++ 定向 GTest 仍待单独构建
+运行。
+
+### 共享数据流 Step D：C bias 和 D output
+
+已完成 `PLAN.md` 第 13.9 节 Step D 的源码实现：
+
+- pipeline 启动时先独占共享 scratchpad 完成 C low/high 两次 byte sweep；C 未
+  ready 时暂停 A producer、B prefetch 和 SA launch，每个 bank 保存 byte
+  destination tag，下一拍 response 拼接并显式符号扩展为 int16 bias register；
+- `buildSauInputs()` 不再运行时调用 `biasValue()`，首次及后续 spatial tile launch
+  均使用 C 区读取后驻留的 bias register；既有 SA 最终 MAC/drain 后独立 bias
+  phase 未修改；
+- SA 最终 int8 row 先进入容量受 `d_pending_rows` 限制的 D pending queue；entry
+  保存 output coordinate、valid/pending mask 和各 output-channel byte；
+- 正常运行的逐 bank 仲裁改为严格 `A read > D write > B read`；D writer 只处理
+  cycle-start old head，新产生的 SA output 本拍不能直接写回；
+- `dPushReady = !full || headWillRetire`，再与周期性 output-ready 相与形成
+  `outputGrant`；因此 depth=1 时支持 old head 全部写完的同拍 dequeue/enqueue，
+  partial write 且 queue full 时会反压 SA；
+- 每次获准 D lane 写入统一 `dAddress()`，写入时检查 duplicate；drained 增加 C
+  response、D queue 和全部 D write 完成条件，并检查 missing write；
+- `outputs()` 不再由 SA output host-side 直接收集，而是在 drain 时从 D 区按 NCHW
+  顺序回读重建；
+- 新增 C read request/grant/response、D write request/grant、D pending peak 和
+  D write stall stats；独立 verifier 检查两次 C byte sweep、D 写入守恒、全部
+  output element 已写回以及 pending depth 边界；
+- C++ 定向测试增加负 bias byte 拼接及 launch 配置、D scratchpad 回读，以及
+  depth=1 queue old-head retire/new-row enqueue 同拍周转检查。
+
+非编译验证结果：67 项 `util/conv_pipeline` Python 回归、相关 `py_compile` 和
+`git diff --check` 通过；源码路径检查确认 `biasValue()` 只用于启动预加载 C，
+`collectedOutputs` 只在 drain 的 D 区回读阶段写入。
+
+开发者随后完成包含 Step D 的 `build/RISCV/gem5.opt` 增量构建，binary 显示编译
+时间为 2026-07-30 23:55:49。四项 gem5 smoke run 和增强 verifier 全部通过：
+
+- `01_c1_w1_oc1_ones`：cycle 61 drained，C request/grant/response 均为 2，
+  D request/grant 均为 3，并与 frozen reference output 一致；
+- `n2_w6_stride2_depth2_no_reuse`：cycle 147 drained，C 三项计数均为 6，
+  D request/grant 均为 36；Step C 的 36 次 B refill、16 次 buffer switch 和
+  23 个 B empty cycle 保持不变；
+- `08_n1_c16_h16_w32_oc16`：cycle 6390 drained，C 三项计数均为 32，
+  D request/grant 均为 8192；B 仍只填充 144 个 K vector 并产生 4464 次
+  cross-spatial reuse；
+- `07_c2_w5_oc3_outbp`：使用 `ready_period=11/ready_high=1` 在 cycle 342
+  drained，periodic output backpressure、reference output 和 C/D 统计检查通过。
+
+四项 profile 的 `dPendingPeak` 均为 1，D grant 均严格等于 expected outputs，
+输出 CSV 由 D 区回读后仍与独立 convolution oracle 一致。无外部 backpressure
+时最长连续 SA output accept 分别达到 3、6、16 拍；结合 depth 1 peak 和逐拍完整
+D grant，验证了 old-head retire/new-row enqueue 的连续周转。当前 profile 未触发
+A/D 同 bank 冲突，`dWriteStallCycles` 均为 0；partial-write 且 queue-full 的反压
+分支已有 C++ 定向测试，但本次 SCons 仍未生成 `src/sau_n` GTest 可执行文件，
+因此该分支尚待单独构建运行。
+
+### 共享数据流 Step E：周期 trace 和统计守恒
+
+已完成 `PLAN.md` 第 13.9 节 Step E 的源码实现：
+
+- compact trace 从 schema v1 的 54 字段升级为 schema v2 的 87 字段；原 54 字段
+  顺序保持不变，后追加 A/B/C request/grant/response mask、A request/response
+  tile/K、B request/response buffer/slot/global-K、C byte identity、D queue
+  cycle-start occupancy/head pending mask/request/grant/enqueue/dequeue，以及 B hit、
+  reuse、active buffer、next K 和 ready-entry occupancy；
+- trace writer 使用实际 in-flight tag 记录 B/C response destination；A turnover
+  request 按当前 S0/S1 来源记录 identity，下一拍 response 使用 old S1 identity；
+- 新增 A bank request/grant/response stats，使 A/B/C 三类 read 和 D write 均具备
+  requester 级守恒计数；
+- 新增 cycle-start B ready-entry average/peak occupancy，以及 16-bank
+  `perBankReadCycles`、`perBankWriteCycles`、`perBankReadWriteConflicts` vector
+  stats；read/write conflict 定义为同一 bank 同拍存在 D request 和任一 A/B/C
+  read request；
+- C++ 每拍 invariant 检查 A/B/C response<=grant<=request、所有 per-bank read
+  之和等于 A+B+C grant、per-bank write 之和等于 D grant、occupancy sample 数与
+  已执行周期一致；
+- drained 在原有 producer/FIFO/SA/read-in-flight/D queue 条件上，再要求 B
+  prefetch engine 已无未完成 entry/request；
+- 独立 Python verifier 逐拍重放 `A > D > B` 仲裁、上一拍 grant 到本拍 response、
+  A/B/C identity、D queue occupancy 递推、depth-full output backpressure 和 B
+  hit/reuse；随后将 trace 重算的 requester 总数、per-bank vectors、B occupancy、
+  B/D stall 与 gem5 stats 逐项比较；
+- C++ trace 测试已更新 schema v2 字段数和 drained 定位；模型测试增加 A 和
+  per-bank 读写守恒、B request/response identity 边界；Python 增加共享 bank
+  arbiter 优先级定向测试。
+
+非编译验证结果：68 项 `util/conv_pipeline` Python 回归、相关 `py_compile` 和
+`git diff --check` 通过；脚本检查确认 C++/Python trace schema 均为 87 个唯一
+字段，且第 54 个字段仍为原 schema 的 `drained`，新增字段从
+`a_request_mask` 开始。
+
+开发者随后完成包含 Step E 的 `build/RISCV/gem5.opt` 增量构建，binary 显示编译
+时间为 2026-07-31 00:24:13。gem5 Vector stats 的实际 key 确认为
+`perBankReadCycles::0..15` 等形式，与 verifier 兼容。四项 schema v2 gem5 run
+和逐拍 verifier 全部通过：
+
+- `01_c1_w1_oc1_ones`：cycle 61 drained；87-field/87-unique、schema=2，
+  A request/grant/response 均为 7；per-bank read/write 总数为 18/3，B ready
+  occupancy average/peak 为 7.5/9，并与 frozen reference output 一致；
+- `n2_w6_stride2_depth2_no_reuse`：cycle 147 drained；A 三项计数均为 160，
+  per-bank read/write 总数为 274/36，B occupancy average/peak 为
+  2.689189/4；refill、switch、bubble 和 identity 重放通过；
+- `08_n1_c16_h16_w32_oc16`：cycle 6390 drained；A 三项计数均为 69184，
+  per-bank read/write 总数为 71520/8192，B occupancy average/peak 为
+  142.210609/144；完整驻留、4464 次跨 tile reuse 和 full FIFO exchange
+  重放通过；
+- `07_c2_w5_oc3_outbp`：cycle 342 drained；A 三项计数均为 260，
+  per-bank read/write 总数为 320/60，periodic output backpressure 和 reference
+  output 检查通过。
+
+上述 verifier 已逐拍确认每个 bank 的 grant owner 唯一、`A > D > B` 选择、
+grant 到下一拍 response、A/B/C identity、D occupancy 递推、B hit/reuse，以及
+trace 重算 stats 与 gem5 输出完全一致。四项 profile 的 read/write conflict 均为
+0，符合 Step D 已记录的当前数据流调度；冲突非零 profile 留待 Step F 性能对照。
+本次 SCons 仍未生成 `src/sau_n` GTest 可执行文件。
+
+### 共享数据流 Step F：验证和性能对照（完成）
+
+已完成同一 workload 下可直接比较的三档 B profile：
+
+- `n2_w6_stride2_depth1_no_reuse`：depth 1、关闭 reuse，作为每 tile/每 K
+  都重新读取 B 的基线；
+- `n2_w6_stride2_depth2_no_reuse`：depth 2、关闭 reuse，作为 B0/B1 分块预取；
+- `n2_w6_stride2_full_reuse`：默认 depth 18、开启 reuse，完整驻留 `[0,K)`。
+
+三者均为 K=18、2 个 spatial tile、36 个输入向量和 36 个输出元素。Python
+fixture 测试已冻结 workload 相等性；verifier 新增
+`--expect-depth-one-baseline`，要求 depth 1、关闭 reuse、36 次 B vector fill、
+0 次 reuse，并实际出现 buffer switch、B empty 和 prefetch stall。
+
+D pending queue 的 old-state 决策已从模型内联逻辑抽成
+`decideDPendingQueue()` 契约函数，模型直接复用该函数。C++ 定向测试和独立
+Python replay 测试同时覆盖：
+
+- depth 1 old head 全部获准写回时，同拍 retire/dequeue 后允许 SA
+  output enqueue；
+- depth 1 old head 仅部分 bank 获准时，不 retire、`pushReady=false`，必须对
+  SA output 反压；
+- 外部 output-ready 为 false 时，即使 old head 本拍 retire 也不能接收新输出。
+
+使用 Step E 已构建的 2026-07-31 00:24:13 binary（新 D 契约重构前，但其运行时
+逻辑等价）运行三档 profile，并用加强后的 87-field verifier 逐拍重放，全部通过；
+三份 NCHW output SHA256 均为
+`363833976ee07dbfb18e166a0712b7282679de71eb87059ab9e57b313a5a3798`：
+
+- depth 1：cycle 170 drained / `totalCycles=171`，B request/grant/response
+  为 128/108/108，fill=36，empty=46，switch=34，prefetch stall=15，
+  PE input bubble=46；
+- depth 2：cycle 147 drained / `totalCycles=148`，B request/grant/response
+  为 123/108/108，fill=36，empty=23，switch=16，prefetch stall=12，
+  PE input bubble=23；
+- 完整驻留：cycle 155 drained / `totalCycles=156`，B request/grant/response
+  为 59/54/54，fill=18，weight reuse=18，empty=0，switch=0，
+  PE input bubble=12。
+
+因此在该小 workload 上，depth 2 相对 depth 1 将 inclusive cycles 从 171
+降至 148（约 13.5%），并将 B-empty/PE-bubble 从 46 降至 23。完整驻留将 B
+response 减半并实现第二 tile 的 18 次 reuse，但等待完整 `[0,K)` 的首次 launch
+使总周期为 156；该结果记录的是启动延迟和复用带宽的真实权衡，不宣称完整驻留在
+所有小形状上都必然最快。
+
+另运行 `w17_stride1_tail_oc7` 覆盖 spatial tail、OC=7 tail、K 末向量、负输出和
+INT8 饱和：cycle 597 drained，216 vectors、8 tiles、476 outputs，verifier
+通过；输出范围为 `[-128,127]`，其中 -128/127 分别出现 160/167 次，负数 214
+次。Step E 的单 vector/单 tile profile 和 periodic output-backpressure profile
+继续作为 Step F 功能矩阵的一部分。
+
+非编译验证结果：28 项相关 Python 回归、四份新/复用 trace 的独立 verifier、
+三档 output 逐字节一致检查和 `git diff --check` 通过。当前集成 profile 的
+D/read-write conflict 仍为 0；这是现有 33-cycle SA drain 与 A FIFO/B prefetch
+调度的可观测结果，不伪造非零统计。仲裁竞争和 D 部分写回分支由纯契约定向测试
+覆盖。新增 C++ 契约重构尚需开发者按目录规则增量构建；本次未主动执行 SCons，
+且 GTest executable 仍未生成。
+
+开发者随后完成增量构建；新 binary 显示编译时间为
+2026-07-31 00:46:16。使用该 binary 正式重跑 depth 1、depth 2、完整驻留和
+tail 四项 profile，drained cycle 仍分别为 170、147、155、597，四项
+87-field trace 均通过独立 verifier。三档性能 profile 的输出 SHA256 仍全部为
+`363833976ee07dbfb18e166a0712b7282679de71eb87059ab9e57b313a5a3798`，
+上述 B 请求、fill、bubble、reuse 和总周期统计均未变化；tail 输出仍有 160 个
+`-128`、167 个 `127` 和 214 个负数。由此确认 D queue 契约抽取没有改变模型
+功能或周期行为。
+
+rebuild 后再次运行 70 项 `util/conv_pipeline` Python 回归和
+`git diff --check`，全部通过。
+
+开发者进一步显式构建 `src/sau_n` 的四个相关 GTest executable，随后全部执行
+成功：
+
+- `streaming_pipeline_contract.test.opt`：16/16 通过，包括 depth 1 D old-head
+  完整 retire 后同拍接收新输出，以及部分 bank 写回时反压 SA；
+- `pipelined_im2col_model.test.opt`：10/10 通过，包括 shared one-cycle response、
+  长 K S1 turnover II=1、grant denial retry 和无 phantom response；
+- `streaming_conv_pipeline_model.test.opt`：8/8 通过，包括 ABCD preload/read/write、
+  D 重建输出、B chunk refill/global K 顺序和 half-K 零气泡交换；
+- `streaming_conv_pipeline_io.test.opt`：4/4 通过，包括 87-field compact trace、
+  detailed PE trace、drained cycle 输出和 resolved hash 校验。
+
+为精确覆盖计划中的 16-bank A/B conflict baseline，新增
+`n2_w16_stride1_depth1_ab_conflict`。该 profile 为 depth 1、关闭 reuse、
+OC=16，运行至 cycle 589 drained；trace 中出现 26 次
+`A_request=B_request=0xffff`。每次第一 bank access slot 均为 A 获得全部 16
+bank、B grant 为 0，下一 slot A request 为 0、B 获得全部 16 bank，确认一个
+A/B pair 需要两个 access slot。独立 verifier 已冻结并检查该两槽序列。
+
+最终回归结果：
+
+- 71 项 `util/conv_pipeline` Python 测试全部通过；
+- 四个 C++ GTest executable 共 38/38 项通过；
+- `cd tests && ./main.py run --skip-build gem5/streaming_conv_pipeline`
+  共 15 个 suite、45/45 项检查通过，覆盖 gem5 运行、drained exit 和独立
+  trace/output/stats verifier；
+- `py_compile` 和 `git diff --check` 通过。
+
+对照 `PLAN.md` 13.12，A/B/C/D shared scratchpad、B0/B1、launch/turnover、
+完整驻留 reuse、小容量 refill、C/D 数值、D finite queue/backpressure、drained、
+16-bank 冲突、统计重放和现有回归均已验收。因此双缓冲共享数据流阶段可以正式
+声明完成。仍不冻结 B buffer depth 和 D pending depth 的具体性能最优值；当前
+模型仍是 architectural timing model，不代表真实 SRAM macro 物理端口、延迟或
+功耗。集成 workload 中 D/read-write conflict 统计为 0，D 部分写回竞争由
+`A > D > B` 仲裁 replay 和已执行的 depth 1 D 契约 GTest 定向覆盖。
+
+### Step F 独立代码审查修订
+
+独立 subagent 对 Step A-F 做只读审查，未发现会导致现有 profile 数值错误的
+C++ 状态机问题，但指出 B0/B1 verifier、实际 C++ D 仲裁覆盖和 periodic
+output-ready 重放仍可加强。经逐项复核后完成以下修订：
+
+- 保持 87-field schema v2 不变。现有 trace 的 B request/response
+  buffer/slot/global-K identity，加上确定性的 K/depth/reuse 配置和 input-fire
+  事件，足以无歧义重建 chunk configure/invalidate epoch，无需为此扩 schema；
+- verifier 新增独立 B0/B1 replay state，按真实 old-state 顺序执行
+  cycle-start occupancy、refresh/switch、response fill、request selection、
+  input consume 和 chunk reset；逐拍校验 active buffer、next K、ready entries、
+  request mask/identity、launch/input readiness 和 reuse hit；
+- `bBufferFillVectors`、`bBufferConsumedVectors`、`bBufferHitVectors`、
+  `bBufferEmptyCycles`、`bBufferSwitches`、`weightReuseHits` 现在均由独立
+  B replay 重算后与 gem5 stats 对比，不再只使用最终配置公式；
+- 将实际模型原内联的 per-bank 仲裁抽成 `arbitrateSharedSpad()` C++ 契约，
+  模型的 C 初始化、producer-active 和 producer-drained 三条路径均直接调用；
+  GTest 覆盖 A/D/B 重叠 mask 的 `A > D > B` 选择、D bank 不进入 read grant
+  和 C 初始化独占；
+- testlib 将 `output_ready_period/high_cycles` 同时传给模型和 verifier；
+  verifier 逐拍计算 periodic-ready，并严格检查
+  `output_grant = periodic_ready && d_push_ready`，不再只要求观察到一次 stall。
+
+开发者完成本轮增量构建；新 `gem5.opt` 显示编译时间为
+2026-07-31 10:24:06。rebuild 后验证结果：
+
+- 四个 C++ GTest executable 共 40/40 通过，其中 shared arbitration 新增
+  2 项测试；
+- 73 项 `util/conv_pipeline` Python 回归通过，包括 B chunk 覆盖后重配和完整
+  K 跨 tile 驻留的独立 replay 测试；
+- 新 binary 下完整 streaming quick suite 仍为 15 个 suite、45/45 项检查通过；
+  output-backpressure profile 的 period/high=`11/1` 已按周期逐拍验证；
+- `py_compile` 和 `git diff --check` 通过。
+
+审查提出的 resolved SHA256 残余风险保留：该值由 Python canonical config
+计算后传给 C++ 并原样写入 trace，不是 C++ 独立重复实现 JSON canonicalization。
+本轮未引入第二份跨语言 hash 算法，因为这会扩大配置协议和重复序列化逻辑；当前
+通过 SimObject 参数校验、地址/计数、B 状态重放和数值 oracle 对实际生效配置做
+行为级交叉验证。该 hash 应视为 artifact/config identity，不应单独视为 C++
+参数映射正确性的证明。
+
+同一 subagent 随后完成闭环复审，确认原三项 finding 中 C++ 仲裁和 periodic-ready
+已经关闭，B0/B1 replay 主体也已关闭。复审另发现 verifier 的 B empty 统计在保存
+old-state readiness 后，错误地再次用 response 后状态查询，以及
+`peInputBubbleCycles` 仍只检查非零。现已修正：
+
+- B empty replay 直接使用 response 前保存的 `replay_input_ready`，严格匹配 C++
+  本拍 consumer readiness 使用 old `bBuffers` 的语义；
+- verifier 精确累计每拍 `AcceptK && acceptedK<K && !inputFire`，并将结果与
+  `peInputBubbleCycles` stats 等值比较；
+- 新增 half-K 双 buffer 完整驻留 replay-only 测试，覆盖 K 跨 B0/B1 分割、tile
+  内切换、下一 tile 重置到 B0 以及第二 tile reuse。
+
+最终 Python 回归更新为 74/74 通过；新 binary 的完整 streaming quick suite
+再次运行并保持 15 suites、45/45 项检查通过，证明现有 bubble stats 与 trace
+精确一致。`py_compile` 和 `git diff --check` 继续通过。
 
 ## 当前阶段
 
@@ -42,6 +498,8 @@ SAU fused RTL functional validation passed
 SAU gem5 model migrated and build passed
 SAU seven-profile gem5/RTL strict comparison passed
 SAU fused pipeline migration and validation complete
+SAU shared-dataflow Step F final acceptance passed
+SAU shared-scratchpad double-buffer stage complete
 ```
 
 对于原独立 Im2Col 模型，可以正式声明 `RTL per-cycle validation passed`；其

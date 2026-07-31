@@ -14,12 +14,15 @@ from util.conv_pipeline.streaming_contract import (
     SpatialCoordinate,
     StreamingConsumerState,
     StreamingConservationCounts,
+    b_address,
+    c_address,
     StreamingVectorTag,
     compact_spatial_payload,
     decide_elastic_advance,
     decide_elastic_fifo,
     decide_sau_input_cycle,
     decide_streaming_consumer,
+    d_address,
     is_canonical_prefix_mask,
     validate_same_tile_metadata,
     validate_drained_conservation,
@@ -93,6 +96,32 @@ class StreamingConfigTest(unittest.TestCase):
             with self.subTest(im2col=im2col):
                 with self.assertRaises(PipelineConfigError):
                     validate_streaming_config(replace(base, im2col=im2col))
+
+    def test_freezes_shared_spad_address_layout(self):
+        config = streaming_config()
+        derived = validate_streaming_config(config)
+        shared = derived.shared_spad
+        self.assertEqual(shared.a_base, config.im2col.spad_base)
+        self.assertEqual(
+            b_address(config, 17, 2),
+            type(b_address(config, 0, 0))(2, shared.b_base + 17))
+        self.assertEqual(
+            c_address(config, 2, 0),
+            type(c_address(config, 0, 0))(2, shared.c_base))
+        self.assertEqual(
+            c_address(config, 2, 1),
+            type(c_address(config, 0, 0))(2, shared.c_base + 1))
+        self.assertEqual(
+            d_address(config, 0, 1, 2, 2),
+            type(d_address(config, 0, 0, 0, 0))(
+                2, shared.d_base + 5))
+
+        for call in (
+                lambda: b_address(config, 18, 0),
+                lambda: c_address(config, 0, 2),
+                lambda: d_address(config, 1, 0, 0, 0)):
+            with self.assertRaises(PipelineConfigError):
+                call()
 
 
 class StreamingCompactionTest(unittest.TestCase):

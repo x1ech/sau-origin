@@ -30,6 +30,28 @@ enum class PipelineState : uint8_t
     Done = 6,
 };
 
+enum class BankArbitrationPolicy : uint8_t
+{
+    ADB = 0,
+};
+
+struct SharedSpadConfig
+{
+    bool configured = false;
+    uint64_t aBase = 0;
+    uint64_t aRows = 0;
+    uint64_t bBase = 0;
+    uint64_t bRows = 0;
+    uint64_t cBase = 0;
+    uint64_t cRows = 0;
+    uint64_t dBase = 0;
+    uint64_t dRows = 0;
+    uint64_t bBufferDepth = 0;
+    uint64_t dPendingRows = 1;
+    bool weightReuse = true;
+    BankArbitrationPolicy arbitration = BankArbitrationPolicy::ADB;
+};
+
 enum class SauInputProtocol : uint8_t
 {
     StrictRtlContinuous = 0,
@@ -47,6 +69,7 @@ struct PipelineResolvedConfig
     uint64_t cutbit = 0;
     std::string weightGenerator = "tb_weight_value_v1";
     std::string biasGenerator = "tb_bias_value_v1";
+    SharedSpadConfig sharedSpad;
 };
 
 struct PipelineDerivedConfig
@@ -56,6 +79,7 @@ struct PipelineDerivedConfig
     uint64_t expectedTiles = 0;
     uint64_t expectedOutputs = 0;
     uint64_t expectedMacs = 0;
+    SharedSpadConfig sharedSpad;
 };
 
 PipelineDerivedConfig validateAndDerive(
