@@ -1,6 +1,17 @@
 # Gem5 Im2Col Reference RTL 独立周期模型状态
 
-最后更新：2026-07-31
+最后更新：2026-08-05
+
+## 2026-08-05 D 写回期间禁止新的 A/B/C 读 grant
+
+已同步 `soc_gem5/gem5_cpu_veu/src/sau_n` 的 D 写回仲裁行为：当本拍存在 D
+写请求时，不再为 A/B 发起新的 scratchpad 读 grant；上一拍已经发出的读请求仍
+可在本拍正常接收响应。C 初始化阶段的独占读路径保持不变。
+
+- 修改 `streaming_conv_pipeline_model.cc` 的共享 scratchpad 仲裁选择；
+- 在 `streaming_conv_pipeline_model.test.cc` 增加 D-only 写回回归检查，并放宽
+  A 的 request/grant 数量必须相等这一不再成立的断言；
+- 已执行 `git diff --check`；按目录规则未主动编译或运行测试。
 
 ## 2026-07-30 双缓冲共享数据流计划
 
