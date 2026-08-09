@@ -1,6 +1,6 @@
 # SAU Plan Index
 
-Last updated: 2026-07-29
+Last updated: 2026-08-09
 
 ## Active Plan
 
@@ -26,7 +26,7 @@ Last updated: 2026-07-29
   payload/cycle regression; the rebuilt focused test passes. The ATBD and
   ABTD packages now also have an executable pair contract proving identical
   input memory/configuration except `trans_mode=1→2` and distinct RTL final
-  memory. Full ABTD runtime remains blocked on moving the proven
+  memory. At increment 5, full ABTD runtime was blocked on moving the proven
   `input_switch`/feeder mux behavior into the generic payload path: the
   current RTL's Reuse-A quirk gates transposer loading with B-valid while
   selecting resident A payload. Increment 6 wires the driver's delayed
@@ -43,8 +43,10 @@ Last updated: 2026-07-29
   tail plus 32 streamed rows, not 64; schedule passes 38/38. Increment 11
   maps early B to resident tail, consumes 32 streamed rows, and rejects final
   overflow; payload passes 5/5. Increment 12 follows frozen `sa_feeder.sv`:
-  pre-ready SA uses zero activation and the final uses the real column; payload passes 5/5. Increment 13 opens ABTD/R-A/Flow0; its linked run reaches
-  all 32 RTL result/write edges; cycle 231 and 1024/1024 RTL bytes now match. The ATBD trace compatibility fix awaits relink.
+  pre-ready SA uses zero activation and the final uses the real column; payload
+  passes 5/5. Increment 13 opens ABTD/R-A/Flow0; its linked run reaches all 32
+  RTL result/write edges, matches cycle 231 and all 1024 RTL bytes, and keeps
+  the relinked ATBD strict traces passing through an ABTD-only admission guard.
   Prediction/admission/quick regression pass; Reuse-A supports Flow0/1/2.
   K512 `[flow2, flow0]` and K768 `[flow2, flow2, flow0]` match 1024 bytes and RTL
   command/gap timing; only their final commands emit 32 result/write beats.

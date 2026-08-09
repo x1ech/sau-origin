@@ -1,18 +1,8 @@
-# SAU Plan Index
+# SAU Plan Archive Index
 
-Use [`../../PLAN.md`](../../PLAN.md) as the current short plan entry.
-Archived plans are not read by default.
-
-## Active
-
-| Plan | Status | Document |
-| --- | --- | --- |
-| PLAN3 CSR-driven functional datapath | Steps 0–4 complete; Step 5 active | [`../../PLAN3.md`](../../PLAN3.md) |
-
-Active contracts:
-
-- [`../../PLAN3_STEP0.md`](../../PLAN3_STEP0.md)
-- [`../../RTL_TIMING_PROVENANCE.md`](../../RTL_TIMING_PROVENANCE.md)
+The current plan, stage, and active contracts are maintained in
+[`../../PLAN.md`](../../PLAN.md). This historical index does not duplicate the
+current stage. Archived plans are not read by default.
 
 ## Historical
 

@@ -499,9 +499,9 @@ accepted start 语义始终以 `SauCsrWrite` 序列为准，不能补造第三�
 - [x] loader 读取 RTL memory image，建立有边界检查、稀疏 page/range backing 的
   byte-addressable `FunctionalMemory`；地址范围可以是 1 GiB，但物理分配只覆盖
   已加载或已写入的页。
-- [ ] strict fixed-SRAM 只从 `FunctionalMemory` 取 read payload，并在 RTL
+- [x] strict fixed-SRAM 只从 `FunctionalMemory` 取 read payload，并在 RTL
   对应提交边沿写入；固定 read-visible 周期保持不变。
-- [ ] timing-memory 初始化时用 functional packet 把同一 image 写入下游 memory；
+- [x] timing-memory 初始化时用 functional packet 把同一 image 写入下游 memory；
   扩展 `SauMemoryPort` 保存 read response data，write packet 不再填零。
 - [x] timing request 被拒绝后，blocked packet 的 address/payload/last/command
   metadata 保持不变，address generator 只有在 request accepted 时推进。
@@ -690,8 +690,9 @@ Yinglong 软件可见的串行 admission；不使用非权威 UVM，也不推断
 精确回归，覆盖 SRAM read、A/B feeder 和 transposer input/output 边界，重编译后
 focused test 已通过。ATBD/ABTD package 另由可执行 pair validator 冻结为相同
 initial memory、geometry、elaboration、output range 和其他 CSR，仅
-`trans_mode=1→2`，且 RTL final memory 必须不同；ABTD gem5 端到端输出仍待实现，
-因此下方成对测试验收项暂不勾选。一次 direct-A/transposed-B focused 假设虽然
+`trans_mode=1→2`，且 RTL final memory 必须不同；当时 ABTD gem5 端到端
+输出尚未实现，成对测试验收项因此保持未勾选。一次
+direct-A/transposed-B focused 假设虽然
 测试通过，但与冻结 ABTD boundary 揭示的 Reuse-A raw 控制不一致，已在未提交前
 撤回：当前 RTL 由 B-valid 触发 bank load，却经 `input_switch`/feeder mux 选择
 resident A payload。下一增量必须先把这条已证明的 mux/control 链纳入通用
@@ -718,12 +719,15 @@ tail 1 拍加 streamed 32 拍。Increment 10 补 `feeder.sv` 的
 ready gate 丢弃 single-tile 最后一个 pending overflow row；payload 通过 5/5。
 Increment 12 依据冻结 `sa_feeder.sv` 明确 pre-ready 行为：`sa_en_i=EN_i_d`
 不等待 transposer ready，而未选中 T0/T1 时 `trans_sa_data=0`，因此前 31 个
-array input 使用零 activation，最后一拍使用首个 real column；等待重编译。
+array input 使用零 activation，最后一拍使用首个 real column。
 Verdi license 当前不可用，无法为新增 array 信号补采 FSDB；此项保持未验证风险。
-Increment 12 payload 通过 5/5。Increment 13 仅把 `ABTD/Reuse-A/Flow0` 提升为
+Increment 12 重编译后 payload 通过 5/5。Increment 13 仅把
+`ABTD/Reuse-A/Flow0` 提升为
 resource-timed，并把 architecture admission 从额外的 A/B-valid 脉冲改为 32 个
-`saEnable()`；其他 ABTD flow/reuse 继续 fail-fast。CSR focused 通过 10/10，
-等待 strict runtime 增量链接。
+`saEnable()`；其他 ABTD flow/reuse 继续 fail-fast。CSR focused 通过 10/10。
+链接后的 strict runtime 到达 32 个 RTL result/write 边界，cycle 231 完成，
+boundary 与 final memory 1024/1024 bytes 均匹配；ABTD-only admission guard
+也使 ATBD strict trace 回归恢复通过。
 
 - [x] 默认 sequential workload 必须保证下一 start 在前一 command 完成且写回可见
   后出现；静态可判定时在仿真开始前拒绝，受 timing-memory 动态 stall 影响而无法
@@ -740,7 +744,7 @@ resource-timed，并把 architecture admission 从额外的 A/B-valid 脉冲改�
 - [ ] 四种 transpose × 当前支持的 Reuse-A 都有集成 focused test；端到端测试按
   当前支持域的 `trans/reuse/flow` 结构等价类覆盖，不以当前 fixture 组合替代
   合法域。deferred reuse 路径待 RTL 稳定后另行恢复。
-- [ ] 增加“合法但不符合用户意图”的成对测试：保持 memory 和其他 CSR 相同，仅将
+- [x] 增加“合法但不符合用户意图”的成对测试：保持 memory 和其他 CSR 相同，仅将
   `trans_mode=1` 改为 `trans_mode=2`。gem5 不修正输入布局或回退 mode；两个 case
   的 result、write payload、资源边界周期和 command-done 分别匹配同配置 RTL，
   但不要求两个 case 彼此相同。
